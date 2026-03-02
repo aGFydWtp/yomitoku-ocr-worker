@@ -182,18 +182,18 @@ _設計書参照: セクション 4.2, 5.2, 12_
 
 ## フェーズ 5: 監視（monitoring-stack）
 
-- [ ] 5.1. CloudWatch Alarm を定義する（P1）
-  - [ ] 5.1.1. SQS ApproximateAgeOfOldestMessage > 30分
-  - [ ] 5.1.2. SQS ApproximateNumberOfMessagesVisible > 100
-  - [ ] 5.1.3. DLQ ApproximateNumberOfMessagesVisible > 0
-  - [ ] 5.1.4. Lambda Errors > 0
-  - [ ] 5.1.5. Lambda Duration > 480秒
+- [x] 5.1. CloudWatch Alarm を定義する（P1）
+  - [x] 5.1.1. SQS ApproximateAgeOfOldestMessage > 30分
+  - [x] 5.1.2. SQS ApproximateNumberOfMessagesVisible > 100
+  - [x] 5.1.3. DLQ ApproximateNumberOfMessagesVisible > 0
+  - [x] 5.1.4. Lambda Errors > 0
+  - [x] 5.1.5. Lambda Duration > 480秒
 
-- [ ] 5.2. SNS トピックを作成しアラーム通知先を設定する（P1）
+- [x] 5.2. SNS トピックを作成しアラーム通知先を設定する（P1）
 
-- [ ] 5.3. CDK Nag の指摘を確認し対応する（P0）
-- [ ] 5.4. Biome で lint / format を実行し修正する（P0）
-- [ ] 5.5. monitoring-stack.ts として実装しデプロイ確認する（P0）
+- [x] 5.3. CDK Nag の指摘を確認し対応する（P0）
+- [x] 5.4. Biome で lint / format を実行し修正する（P0）
+- [x] 5.5. monitoring-stack.ts として実装しデプロイ確認する（P0）
 
 _設計書参照: セクション 13, 12_
 
