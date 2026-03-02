@@ -144,12 +144,12 @@ _設計書参照: セクション 4.3, 7, 9, 10, 12_
 
 ## フェーズ 4: エンドポイント制御（orchestration-stack）
 
-- [ ] 4.1. エンドポイント制御用 Lambda を実装する（P0）
-  - [ ] 4.1.1. create_endpoint: CreateEndpoint API 呼び出し
-  - [ ] 4.1.2. delete_endpoint: DeleteEndpoint API 呼び出し
-  - [ ] 4.1.3. check_endpoint_status: DescribeEndpoint API 呼び出し（NotFound 対応含む）
-  - [ ] 4.1.4. check_queue_status: SQS GetQueueAttributes（Messages + MessagesNotVisible）
-  - [ ] 4.1.5. acquire_lock / release_lock: DynamoDB 条件付き更新による排他制御
+- [x] 4.1. エンドポイント制御用 Lambda を実装する（P0）
+  - [x] 4.1.1. create_endpoint: CreateEndpoint API 呼び出し
+  - [x] 4.1.2. delete_endpoint: DeleteEndpoint API 呼び出し
+  - [x] 4.1.3. check_endpoint_status: DescribeEndpoint API 呼び出し（NotFound 対応含む）
+  - [x] 4.1.4. check_queue_status: SQS GetQueueAttributes（Messages + MessagesNotVisible）
+  - [x] 4.1.5. acquire_lock / release_lock: DynamoDB 条件付き更新による排他制御
 
 - [ ] 4.2. Step Functions ステートマシンを定義する（P0）
   - [ ] 4.2.1. ロック取得ステップ（失敗時は終了）
