@@ -44,21 +44,21 @@ _設計書参照: セクション 1, 8, 11, 12, 15_
 
 ## フェーズ 1: SageMaker スタック
 
-- [ ] 1.1. SageMaker 実行用 IAM ロールを定義する（P0）
-  - [ ] 1.1.1. SageMaker サービスプリンシパルの信頼ポリシー
-  - [ ] 1.1.2. ECR イメージ取得、S3 アクセス等の必要権限
+- [x] 1.1. SageMaker 実行用 IAM ロールを定義する（P0）
+  - [x] 1.1.1. SageMaker サービスプリンシパルの信頼ポリシー
+  - [x] 1.1.2. ECR イメージ取得、S3 アクセス等の必要権限
 
-- [ ] 1.2. CfnModel を定義する（P0）
-  - [ ] 1.2.1. modelPackageName に Marketplace の ARN を設定
-  - [ ] 1.2.2. executionRoleArn に 1.1 のロールを設定
+- [x] 1.2. CfnModel を定義する（P0）
+  - [x] 1.2.1. modelPackageName に Marketplace の ARN を設定
+  - [x] 1.2.2. executionRoleArn に 1.1 のロールを設定
 
-- [ ] 1.3. CfnEndpointConfig を定義する（P0）
-  - [ ] 1.3.1. endpointConfigName を `yomitoku-pro-config` に設定
-  - [ ] 1.3.2. productionVariants に ml.g5.xlarge / initialInstanceCount: 1 を設定
+- [x] 1.3. CfnEndpointConfig を定義する（P0）
+  - [x] 1.3.1. endpointConfigName を `yomitoku-pro-config` に設定
+  - [x] 1.3.2. productionVariants に ml.g5.xlarge / initialInstanceCount: 1 を設定
 
-- [ ] 1.4. CDK Nag の指摘を確認し対応する（P0）
-- [ ] 1.5. Biome で lint / format を実行し修正する（P0）
-- [ ] 1.6. sagemaker-stack.ts として実装しデプロイ確認する（P0）
+- [x] 1.4. CDK Nag の指摘を確認し対応する（P0）
+- [x] 1.5. Biome で lint / format を実行し修正する（P0）
+- [x] 1.6. sagemaker-stack.ts として実装しデプロイ確認する（P0）
 
 _設計書参照: セクション 8, 12_
 
