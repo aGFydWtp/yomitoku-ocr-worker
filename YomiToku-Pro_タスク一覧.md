@@ -117,26 +117,26 @@ _設計書参照: セクション 3, 5, 6, 12_
   - [x] 3.3.8. /tmp ファイルの後始末（finally）
   - [x] 3.3.9. 全テストが通ることを確認（pytest tests/ -v）
 
-- [ ] 3.4. CDK で DockerImageFunction を定義する（P0）
-  - [ ] 3.4.1. memorySize: 2048、timeout: 10分、reservedConcurrentExecutions: 4
-  - [ ] 3.4.2. 環境変数（ENDPOINT_NAME, BUCKET_NAME, STATUS_TABLE_NAME）
-  - [ ] 3.4.3. SQS Event Source Mapping（batchSize: 1, reportBatchItemFailures: true）
+- [x] 3.4. CDK で DockerImageFunction を定義する（P0）
+  - [x] 3.4.1. memorySize: 2048、timeout: 10分、reservedConcurrentExecutions: 4
+  - [x] 3.4.2. 環境変数（ENDPOINT_NAME, BUCKET_NAME, STATUS_TABLE_NAME）
+  - [x] 3.4.3. SQS Event Source Mapping（batchSize: 1, reportBatchItemFailures: true）
 
-- [ ] 3.5. IAM 権限を付与する（P0）
-  - [ ] 3.5.1. S3 input/ の読み取り権限
-  - [ ] 3.5.2. S3 output/ の書き込み権限
-  - [ ] 3.5.3. DynamoDB ステータステーブルの読み書き権限
-  - [ ] 3.5.4. SQS メインキューの消費権限
-  - [ ] 3.5.5. sagemaker:InvokeEndpoint 権限（エンドポイント ARN 指定）
+- [x] 3.5. IAM 権限を付与する（P0）
+  - [x] 3.5.1. S3 input/ の読み取り権限
+  - [x] 3.5.2. S3 output/ の書き込み権限
+  - [x] 3.5.3. DynamoDB ステータステーブルの読み書き権限
+  - [x] 3.5.4. SQS メインキューの消費権限（SqsEventSource により自動付与）
+  - [x] 3.5.5. sagemaker:InvokeEndpoint 権限（エンドポイント ARN 指定）
 
-- [ ] 3.6. CDK Nag の指摘を確認し対応する（P0）
-  - [ ] 3.6.1. `npx cdk synth` で CDK Nag の指摘を確認
-  - [ ] 3.6.2. 対応が必要な指摘を修正
-  - [ ] 3.6.3. 対応しない指摘は NagSuppressions で抑制し理由を記録
+- [x] 3.6. CDK Nag の指摘を確認し対応する（P0）
+  - [x] 3.6.1. `npx cdk synth` で CDK Nag の指摘を確認
+  - [x] 3.6.2. 対応が必要な指摘を修正
+  - [x] 3.6.3. 対応しない指摘は NagSuppressions で抑制し理由を記録
 
-- [ ] 3.7. Biome で lint / format を実行し修正する（P0）
+- [x] 3.7. Biome で lint / format を実行し修正する（P0）
 
-- [ ] 3.8. processing-stack.ts に Lambda 定義を追加し、デプロイ確認する（P0）
+- [x] 3.8. processing-stack.ts に Lambda 定義を追加し、デプロイ確認する（P0）
 
 _設計書参照: セクション 4.3, 7, 9, 10, 12_
 

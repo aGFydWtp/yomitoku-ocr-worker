@@ -5,12 +5,18 @@ import { ProcessingStack } from "../lib/processing-stack";
 const TEST_REGION = "ap-northeast-1";
 const TEST_ACCOUNT = "123456789012";
 
+const TEST_ENDPOINT_NAME = "yomitoku-pro-endpoint";
+
 function createStack(): {
   app: App;
   stack: ProcessingStack;
   template: Template;
 } {
-  const app = new App();
+  const app = new App({
+    context: {
+      endpointName: TEST_ENDPOINT_NAME,
+    },
+  });
   const stack = new ProcessingStack(app, "TestProcessingStack", {
     env: { region: TEST_REGION, account: TEST_ACCOUNT },
   });
@@ -165,6 +171,90 @@ describe("ProcessingStack", () => {
     });
   });
 
+  // --- 3.4 処理ワーカー Lambda ---
+  describe("Processor Lambda", () => {
+    it("DockerImageFunction が定義されている", () => {
+      const { template } = createStack();
+      template.hasResourceProperties("AWS::Lambda::Function", {
+        PackageType: "Image",
+      });
+    });
+
+    it("memorySize が 2048 MB", () => {
+      const { template } = createStack();
+      template.hasResourceProperties("AWS::Lambda::Function", {
+        MemorySize: 2048,
+      });
+    });
+
+    it("timeout が 600 秒（10分）", () => {
+      const { template } = createStack();
+      template.hasResourceProperties("AWS::Lambda::Function", {
+        Timeout: 600,
+      });
+    });
+
+    it("reservedConcurrentExecutions が 4", () => {
+      const { template } = createStack();
+      template.hasResourceProperties("AWS::Lambda::Function", {
+        ReservedConcurrentExecutions: 4,
+      });
+    });
+
+    it("環境変数に ENDPOINT_NAME, BUCKET_NAME, STATUS_TABLE_NAME が設定されている", () => {
+      const { template } = createStack();
+      template.hasResourceProperties("AWS::Lambda::Function", {
+        Environment: {
+          Variables: {
+            ENDPOINT_NAME: TEST_ENDPOINT_NAME,
+            BUCKET_NAME: Match.anyValue(),
+            STATUS_TABLE_NAME: Match.anyValue(),
+          },
+        },
+      });
+    });
+
+    it("processorFunction を公開プロパティとして持つ", () => {
+      const { stack } = createStack();
+      expect(stack.processorFunction).toBeDefined();
+    });
+  });
+
+  // --- 3.4.3 SQS Event Source Mapping ---
+  describe("SQS Event Source Mapping", () => {
+    it("batchSize が 1", () => {
+      const { template } = createStack();
+      template.hasResourceProperties("AWS::Lambda::EventSourceMapping", {
+        BatchSize: 1,
+      });
+    });
+
+    it("reportBatchItemFailures が有効", () => {
+      const { template } = createStack();
+      template.hasResourceProperties("AWS::Lambda::EventSourceMapping", {
+        FunctionResponseTypes: ["ReportBatchItemFailures"],
+      });
+    });
+  });
+
+  // --- 3.5 IAM Permissions ---
+  describe("IAM Permissions", () => {
+    it("SageMaker InvokeEndpoint 権限がエンドポイント ARN に限定されている", () => {
+      const { template } = createStack();
+      template.hasResourceProperties("AWS::IAM::Policy", {
+        PolicyDocument: {
+          Statement: Match.arrayWith([
+            Match.objectLike({
+              Action: "sagemaker:InvokeEndpoint",
+              Effect: "Allow",
+              Resource: `arn:aws:sagemaker:${TEST_REGION}:${TEST_ACCOUNT}:endpoint/${TEST_ENDPOINT_NAME}`,
+            }),
+          ]),
+        },
+      });
+    });
+  });
+
   // --- リソース数の確認 ---
   describe("Resource counts", () => {
     it("DynamoDB テーブルが 2 つ存在する", () => {
@@ -213,6 +303,13 @@ describe("ProcessingStack", () => {
     it("ControlTableName を出力する", () => {
       const { template } = createStack();
       template.hasOutput("ControlTableName", { Value: Match.anyValue() });
+    });
+
+    it("ProcessorFunctionName を出力する", () => {
+      const { template } = createStack();
+      template.hasOutput("ProcessorFunctionName", {
+        Value: Match.anyValue(),
+      });
     });
   });
 });
