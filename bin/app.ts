@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { App, Aspects } from "aws-cdk-lib/core";
 import { AwsSolutionsChecks } from "cdk-nag";
+import { OrchestrationStack } from "../lib/orchestration-stack";
 import { ProcessingStack } from "../lib/processing-stack";
 import { SagemakerStack } from "../lib/sagemaker-stack";
 
@@ -27,8 +28,14 @@ new SagemakerStack(app, "SagemakerStack", {
   env: { region, account },
 });
 
-new ProcessingStack(app, "ProcessingStack", {
+const processingStack = new ProcessingStack(app, "ProcessingStack", {
   env: { region, account },
+});
+
+new OrchestrationStack(app, "OrchestrationStack", {
+  env: { region, account },
+  mainQueue: processingStack.mainQueue,
+  controlTable: processingStack.controlTable,
 });
 
 Aspects.of(app).add(new AwsSolutionsChecks({ verbose: true }));

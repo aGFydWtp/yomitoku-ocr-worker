@@ -151,30 +151,30 @@ _設計書参照: セクション 4.3, 7, 9, 10, 12_
   - [x] 4.1.4. check_queue_status: SQS GetQueueAttributes（Messages + MessagesNotVisible）
   - [x] 4.1.5. acquire_lock / release_lock: DynamoDB 条件付き更新による排他制御
 
-- [ ] 4.2. Step Functions ステートマシンを定義する（P0）
-  - [ ] 4.2.1. ロック取得ステップ（失敗時は終了）
-  - [ ] 4.2.2. DescribeEndpoint による状態分岐（InService / Creating / NotFound）
-  - [ ] 4.2.3. CreateEndpoint ステップ
-  - [ ] 4.2.4. Wait + DescribeEndpoint の待機ループ（最大20回）
-  - [ ] 4.2.5. SQS キュー空判定ループ（Messages + MessagesNotVisible）
-  - [ ] 4.2.6. クールダウン Wait（15分）
-  - [ ] 4.2.7. 再確認後の DeleteEndpoint ステップ
-  - [ ] 4.2.8. ロック解放ステップ
-  - [ ] 4.2.9. エラーハンドリング（失敗時もロック解放する）
+- [x] 4.2. Step Functions ステートマシンを定義する（P0）
+  - [x] 4.2.1. ロック取得ステップ（失敗時は終了）
+  - [x] 4.2.2. DescribeEndpoint による状態分岐（InService / Creating / NotFound）
+  - [x] 4.2.3. CreateEndpoint ステップ
+  - [x] 4.2.4. Wait + DescribeEndpoint の待機ループ（最大20回）
+  - [x] 4.2.5. SQS キュー空判定ループ（Messages + MessagesNotVisible）
+  - [x] 4.2.6. クールダウン Wait（15分）
+  - [x] 4.2.7. 再確認後の DeleteEndpoint ステップ
+  - [x] 4.2.8. ロック解放ステップ
+  - [x] 4.2.9. エラーハンドリング（失敗時もロック解放する）
 
 - [ ] 4.3. EventBridge Pipes を定義する（P0）
   - [ ] 4.3.1. ソース: SQS メインキュー
   - [ ] 4.3.2. ターゲット: Step Functions ステートマシン
   - [ ] 4.3.3. Pipes 用 IAM ロール（SQS 読み取り + Step Functions 起動）
 
-- [ ] 4.4. エンドポイント制御用 IAM 権限を付与する（P0）
-  - [ ] 4.4.1. sagemaker:CreateEndpoint / DeleteEndpoint / DescribeEndpoint
-  - [ ] 4.4.2. DynamoDB エンドポイント制御テーブルの読み書き権限
-  - [ ] 4.4.3. SQS GetQueueAttributes 権限
+- [x] 4.4. エンドポイント制御用 IAM 権限を付与する（P0）
+  - [x] 4.4.1. sagemaker:CreateEndpoint / DeleteEndpoint / DescribeEndpoint
+  - [x] 4.4.2. DynamoDB エンドポイント制御テーブルの読み書き権限
+  - [x] 4.4.3. SQS GetQueueAttributes 権限
 
-- [ ] 4.5. CDK Nag の指摘を確認し対応する（P0）
-- [ ] 4.6. Biome で lint / format を実行し修正する（P0）
-- [ ] 4.7. orchestration-stack.ts として実装しデプロイ確認する（P0）
+- [x] 4.5. CDK Nag の指摘を確認し対応する（P0）
+- [x] 4.6. Biome で lint / format を実行し修正する（P0）
+- [x] 4.7. orchestration-stack.ts として実装しデプロイ確認する（P0）
 
 _設計書参照: セクション 4.2, 5.2, 12_
 
