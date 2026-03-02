@@ -92,29 +92,30 @@ _設計書参照: セクション 3, 5, 6, 12_
 
 ## フェーズ 3: 処理ワーカー Lambda
 
-- [ ] 3.1. Lambda コンテナイメージを作成する（P0）
-  - [ ] 3.1.1. Dockerfile を作成（ベース: public.ecr.aws/lambda/python:3.12）
-  - [ ] 3.1.2. requirements.txt を作成（yomitoku-client のバージョン固定）
-  - [ ] 3.1.3. ローカルで docker build が成功することを確認
+- [x] 3.1. Lambda コンテナイメージを作成する（P0）
+  - [x] 3.1.1. Dockerfile を作成（ベース: public.ecr.aws/lambda/python:3.12、uv でインストール）
+  - [x] 3.1.2. requirements.txt を作成（yomitoku-client のバージョン固定）
+  - [x] 3.1.3. ローカルで docker build が成功することを確認
+  - [x] 3.1.4. uv + venv でテスト用 Python 環境を構築
 
-- [ ] 3.2. 処理ワーカー Lambda のテストを作成する（TDD: テストを先に書く）（P0）
-  - [ ] 3.2.1. test_handler.py: SQS メッセージパースのテスト（直接 / SNS経由の各形式）
-  - [ ] 3.2.2. test_process_file.py: DynamoDB 条件付き更新のテスト（冪等性: 成功ケース + 重複スキップ）
-  - [ ] 3.2.3. test_process_file.py: S3 ダウンロード/アップロードのテスト（moto）
-  - [ ] 3.2.4. test_process_file.py: yomitoku-client 呼び出しのテスト（モック: 正常系 + 異常系）
-  - [ ] 3.2.5. test_process_file.py: 例外時の FAILED 更新と例外再送出のテスト
-  - [ ] 3.2.6. test_process_file.py: /tmp ファイルの後始末テスト（正常系/異常系）
+- [x] 3.2. 処理ワーカー Lambda のテストを作成する（TDD: テストを先に書く）（P0）
+  - [x] 3.2.1. test_handler.py: SQS メッセージパースのテスト（直接 / SNS経由の各形式）
+  - [x] 3.2.2. test_process_file.py: DynamoDB 条件付き更新のテスト（冪等性: 成功ケース + 重複スキップ）
+  - [x] 3.2.3. test_process_file.py: S3 ダウンロード/アップロードのテスト（moto）
+  - [x] 3.2.4. test_process_file.py: yomitoku-client 呼び出しのテスト（モック: 正常系 + 異常系）
+  - [x] 3.2.5. test_process_file.py: 例外時の FAILED 更新と例外再送出のテスト
+  - [x] 3.2.6. test_process_file.py: /tmp ファイルの後始末テスト（正常系/異常系）
 
-- [ ] 3.3. テストを通す処理ワーカー Lambda のコードを実装する（TDD: テストが通る最小限の実装）（P0）
-  - [ ] 3.3.1. SQS メッセージから S3 オブジェクトキーを取得する処理
-  - [ ] 3.3.2. DynamoDB 条件付き更新による冪等性確保（PENDING → PROCESSING）
-  - [ ] 3.3.3. S3 から PDF を /tmp にダウンロード
-  - [ ] 3.3.4. YomitokuClient.analyze_async() による OCR 処理
-  - [ ] 3.3.5. parse_pydantic_model() + to_json() で結果を S3 output/ に保存
-  - [ ] 3.3.6. DynamoDB ステータスを COMPLETED に更新
-  - [ ] 3.3.7. 例外時に FAILED 更新と例外再送出（SQS リトライのため）
-  - [ ] 3.3.8. /tmp ファイルの後始末（finally）
-  - [ ] 3.3.9. 全テストが通ることを確認（pytest tests/ -v）
+- [x] 3.3. テストを通す処理ワーカー Lambda のコードを実装する（TDD: テストが通る最小限の実装）（P0）
+  - [x] 3.3.1. SQS メッセージから S3 オブジェクトキーを取得する処理
+  - [x] 3.3.2. DynamoDB 条件付き更新による冪等性確保（PENDING → PROCESSING）
+  - [x] 3.3.3. S3 から PDF を /tmp にダウンロード
+  - [x] 3.3.4. YomitokuClient.analyze_async() による OCR 処理
+  - [x] 3.3.5. parse_pydantic_model() + to_json() で結果を S3 output/ に保存
+  - [x] 3.3.6. DynamoDB ステータスを COMPLETED に更新
+  - [x] 3.3.7. 例外時に FAILED 更新と例外再送出（SQS リトライのため）
+  - [x] 3.3.8. /tmp ファイルの後始末（finally）
+  - [x] 3.3.9. 全テストが通ることを確認（pytest tests/ -v）
 
 - [ ] 3.4. CDK で DockerImageFunction を定義する（P0）
   - [ ] 3.4.1. memorySize: 2048、timeout: 10分、reservedConcurrentExecutions: 4

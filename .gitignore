@@ -12,3 +12,9 @@ cdk.context.json
 
 # pnpm
 pnpm-debug.log
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+.coverage
