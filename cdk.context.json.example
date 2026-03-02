@@ -1,0 +1,4 @@
+{
+  "modelPackageArn": "arn:aws:sagemaker:ap-northeast-1:ACCOUNT_ID:model-package/yomitoku-pro-XXXX",
+  "region": "ap-northeast-1"
+}

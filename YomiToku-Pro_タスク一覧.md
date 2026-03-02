@@ -14,20 +14,26 @@
 
 ## フェーズ 0: 事前準備
 
-- [ ] 0.1. AWS MarketplaceでYomiToku-Proをサブスクライブ（P0）
-- [ ] 0.2. Model Package ARN を確認し記録する（ap-northeast-1）（P0）
-- [ ] 0.3. yomitoku-client のバージョンを確認し requirements.txt に固定する（P1）
-- [ ] 0.4. CDK プロジェクトを初期化する（P0）
-  - [ ] 0.4.1. `npx cdk init app --language typescript`
-  - [ ] 0.4.2. cdk.json に Model Package ARN、リージョン等のコンテキスト値を設定
-  - [ ] 0.4.3. ディレクトリ構成を作成（lib/, lambda/processor/, lambda/endpoint-control/）
-- [ ] 0.5. Biome をセットアップする（P0、0.4 完了後）
-  - [ ] 0.5.1. `npm install --save-dev @biomejs/biome && npx biome init`
-  - [ ] 0.5.2. biome.json を設定（indent: space/2、linter: recommended）
-  - [ ] 0.5.3. package.json に lint / format スクリプトを追加
-- [ ] 0.6. CDK Nag をセットアップする（P0、0.4 完了後）
-  - [ ] 0.6.1. `npm install --save-dev cdk-nag`
-  - [ ] 0.6.2. bin/app.ts に AwsSolutionsChecks を追加
+- [x] 0.1. AWS MarketplaceでYomiToku-Proをサブスクライブ（P0）
+- [x] 0.2. Model Package ARN を確認し記録する（ap-northeast-1）（P0）
+  - `cdk.context.json` に記録済み（リポジトリ公開のため ARN はコミットしない）
+- [x] 0.3. yomitoku-client のバージョンを確認し requirements.txt に固定する（P1）
+  - 最新バージョン: **0.2.0** (2026-03-02)
+  - Python 対応: 3.10, 3.11, 3.12 (< 3.13)
+  - Lambda ベースイメージ: `public.ecr.aws/lambda/python:3.12`
+  - requirements.txt は 0.4 の CDK プロジェクト初期化後に `lambda/processor/requirements.txt` として作成する
+- [x] 0.4. CDK プロジェクトを初期化する（P0）
+  - [x] 0.4.1. `npx cdk init app --language typescript`（pnpm 使用）
+  - [x] 0.4.2. cdk.json に Model Package ARN、リージョン等のコンテキスト値を設定
+  - [x] 0.4.3. ディレクトリ構成を作成（lib/, lambda/processor/, lambda/endpoint-control/）
+  - requirements.txt を `lambda/processor/requirements.txt` に作成済み（yomitoku-client==0.2.0）
+- [x] 0.5. Biome をセットアップする（P0、0.4 完了後）
+  - [x] 0.5.1. `pnpm add -D @biomejs/biome && npx biome init`（Biome 2.4.4）
+  - [x] 0.5.2. biome.json を設定（indent: space/2、linter: recommended、quoteStyle: double）
+  - [x] 0.5.3. package.json に lint / lint:fix / format スクリプトを追加
+- [x] 0.6. CDK Nag をセットアップする（P0、0.4 完了後）
+  - [x] 0.6.1. `pnpm add -D cdk-nag`（cdk-nag 2.37.55）
+  - [x] 0.6.2. bin/app.ts に AwsSolutionsChecks を追加
 - [ ] 0.7. Lambda テスト環境をセットアップする（P1）
   - [ ] 0.7.1. lambda/processor/tests/ ディレクトリを作成
   - [ ] 0.7.2. requirements-test.txt を作成（pytest, moto, pytest-asyncio）

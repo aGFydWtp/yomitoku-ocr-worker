@@ -558,13 +558,28 @@ const processorLambda = new lambda.DockerImageFunction(this, 'ProcessorLambda', 
 
 ## 12. 開発方針
 
+### パッケージマネージャ
+
+Node.js のパッケージマネージャには pnpm を使用する。npm / yarn は使用しない。
+
+```bash
+# 依存のインストール
+pnpm install
+
+# パッケージの追加
+pnpm add <package>
+pnpm add -D <package>  # devDependencies
+```
+
+CDK CLI の実行は `npx cdk` 経由で行う（pnpm が node_modules/.bin を解決する）。
+
 ### Lint / Format
 
 CDK プロジェクト（TypeScript）の Lint および Format には Biome を使用する。ESLint / Prettier は使用しない。
 
 ```bash
 # セットアップ
-npm install --save-dev @biomejs/biome
+pnpm install --save-dev @biomejs/biome
 npx biome init
 ```
 
@@ -607,7 +622,7 @@ package.json にスクリプトを追加:
 全スタックに cdk-nag を適用し、セキュリティ・コンプライアンスの状況を把握する。全ての警告を解消する必要はないが、各指摘を確認し、対応/抑制の判断を記録する。
 
 ```bash
-npm install --save-dev cdk-nag
+pnpm install --save-dev cdk-nag
 ```
 
 bin/app.ts での適用:
