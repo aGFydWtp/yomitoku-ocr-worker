@@ -34,9 +34,9 @@
 - [x] 0.6. CDK Nag をセットアップする（P0、0.4 完了後）
   - [x] 0.6.1. `pnpm add -D cdk-nag`（cdk-nag 2.37.55）
   - [x] 0.6.2. bin/app.ts に AwsSolutionsChecks を追加
-- [ ] 0.7. Lambda テスト環境をセットアップする（P1）
-  - [ ] 0.7.1. lambda/processor/tests/ ディレクトリを作成
-  - [ ] 0.7.2. requirements-test.txt を作成（pytest, moto, pytest-asyncio）
+- [x] 0.7. Lambda テスト環境をセットアップする（P1）
+  - [x] 0.7.1. lambda/processor/tests/ ディレクトリを作成（`__init__.py` 含む）
+  - [x] 0.7.2. requirements-test.txt を作成（pytest>=8, moto[s3,sqs,dynamodb]>=5, pytest-asyncio>=0.24）
 
 _設計書参照: セクション 1, 8, 11, 12, 15_
 
