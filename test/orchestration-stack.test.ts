@@ -187,6 +187,83 @@ describe("OrchestrationStack", () => {
     });
   });
 
+  // --- EventBridge Pipes ---
+  describe("EventBridge Pipes", () => {
+    it("CfnPipe が 1 つ存在する", () => {
+      const { template } = createStack();
+      template.resourceCountIs("AWS::Pipes::Pipe", 1);
+    });
+
+    it("SQS → Step Functions の構成で FIRE_AND_FORGET が設定されている", () => {
+      const { template } = createStack();
+      template.hasResourceProperties("AWS::Pipes::Pipe", {
+        Source: {
+          "Fn::ImportValue": Match.stringLikeRegexp(".*MainQueue.*Arn.*"),
+        },
+        Target: { Ref: Match.stringLikeRegexp("EndpointOrchestrator.*") },
+        SourceParameters: {
+          SqsQueueParameters: {
+            BatchSize: 1,
+          },
+        },
+        TargetParameters: {
+          StepFunctionStateMachineParameters: {
+            InvocationType: "FIRE_AND_FORGET",
+          },
+        },
+      });
+    });
+
+    it("Pipes 用 IAM ロールが存在する", () => {
+      const { template } = createStack();
+      template.hasResourceProperties("AWS::IAM::Role", {
+        AssumeRolePolicyDocument: {
+          Statement: Match.arrayWith([
+            Match.objectLike({
+              Action: "sts:AssumeRole",
+              Effect: "Allow",
+              Principal: {
+                Service: "pipes.amazonaws.com",
+              },
+            }),
+          ]),
+        },
+      });
+    });
+
+    it("Pipes ロールに SQS 読み取り権限がある", () => {
+      const { template } = createStack();
+      template.hasResourceProperties("AWS::IAM::Policy", {
+        PolicyDocument: {
+          Statement: Match.arrayWith([
+            Match.objectLike({
+              Action: Match.arrayWith([
+                "sqs:ReceiveMessage",
+                "sqs:DeleteMessage",
+                "sqs:GetQueueAttributes",
+              ]),
+              Effect: "Allow",
+            }),
+          ]),
+        },
+      });
+    });
+
+    it("Pipes ロールに Step Functions StartExecution 権限がある", () => {
+      const { template } = createStack();
+      template.hasResourceProperties("AWS::IAM::Policy", {
+        PolicyDocument: {
+          Statement: Match.arrayWith([
+            Match.objectLike({
+              Action: "states:StartExecution",
+              Effect: "Allow",
+            }),
+          ]),
+        },
+      });
+    });
+  });
+
   // --- Stack Outputs ---
   describe("Stack Outputs", () => {
     it("StateMachineArn を出力する", () => {

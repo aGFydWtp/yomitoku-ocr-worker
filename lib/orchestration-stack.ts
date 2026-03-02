@@ -1,10 +1,16 @@
 import type { Table } from "aws-cdk-lib/aws-dynamodb";
-import { Effect, PolicyStatement } from "aws-cdk-lib/aws-iam";
+import {
+  Effect,
+  PolicyStatement,
+  Role,
+  ServicePrincipal,
+} from "aws-cdk-lib/aws-iam";
 import {
   Code,
   Function as LambdaFunction,
   Runtime,
 } from "aws-cdk-lib/aws-lambda";
+import { CfnPipe } from "aws-cdk-lib/aws-pipes";
 import type { Queue } from "aws-cdk-lib/aws-sqs";
 import {
   Choice,
@@ -111,6 +117,51 @@ export class OrchestrationStack extends Stack {
     this.stateMachine = new StateMachine(this, "EndpointOrchestrator", {
       definitionBody: DefinitionBody.fromChainable(definition),
       timeout: Duration.hours(2),
+    });
+
+    // --- 4.3 EventBridge Pipes ---
+    const pipeRole = new Role(this, "PipeRole", {
+      assumedBy: new ServicePrincipal("pipes.amazonaws.com"),
+    });
+
+    // SQS source permissions
+    pipeRole.addToPolicy(
+      new PolicyStatement({
+        sid: "SqsSourcePermissions",
+        effect: Effect.ALLOW,
+        actions: [
+          "sqs:ReceiveMessage",
+          "sqs:DeleteMessage",
+          "sqs:GetQueueAttributes",
+        ],
+        resources: [mainQueue.queueArn],
+      }),
+    );
+
+    // Step Functions target permissions
+    pipeRole.addToPolicy(
+      new PolicyStatement({
+        sid: "StepFunctionsTargetPermission",
+        effect: Effect.ALLOW,
+        actions: ["states:StartExecution"],
+        resources: [this.stateMachine.stateMachineArn],
+      }),
+    );
+
+    new CfnPipe(this, "SqsToStepFunctionsPipe", {
+      roleArn: pipeRole.roleArn,
+      source: mainQueue.queueArn,
+      target: this.stateMachine.stateMachineArn,
+      sourceParameters: {
+        sqsQueueParameters: {
+          batchSize: 1,
+        },
+      },
+      targetParameters: {
+        stepFunctionStateMachineParameters: {
+          invocationType: "FIRE_AND_FORGET",
+        },
+      },
     });
 
     // CDK Nag suppressions

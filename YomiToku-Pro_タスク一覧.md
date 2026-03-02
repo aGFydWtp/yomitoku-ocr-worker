@@ -162,10 +162,10 @@ _設計書参照: セクション 4.3, 7, 9, 10, 12_
   - [x] 4.2.8. ロック解放ステップ
   - [x] 4.2.9. エラーハンドリング（失敗時もロック解放する）
 
-- [ ] 4.3. EventBridge Pipes を定義する（P0）
-  - [ ] 4.3.1. ソース: SQS メインキュー
-  - [ ] 4.3.2. ターゲット: Step Functions ステートマシン
-  - [ ] 4.3.3. Pipes 用 IAM ロール（SQS 読み取り + Step Functions 起動）
+- [x] 4.3. EventBridge Pipes を定義する（P0）
+  - [x] 4.3.1. ソース: SQS メインキュー
+  - [x] 4.3.2. ターゲット: Step Functions ステートマシン
+  - [x] 4.3.3. Pipes 用 IAM ロール（SQS 読み取り + Step Functions 起動）
 
 - [x] 4.4. エンドポイント制御用 IAM 権限を付与する（P0）
   - [x] 4.4.1. sagemaker:CreateEndpoint / DeleteEndpoint / DescribeEndpoint
