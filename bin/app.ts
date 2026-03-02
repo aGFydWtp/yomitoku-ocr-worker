@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { App, Aspects } from "aws-cdk-lib/core";
 import { AwsSolutionsChecks } from "cdk-nag";
+import { ProcessingStack } from "../lib/processing-stack";
 import { SagemakerStack } from "../lib/sagemaker-stack";
 
 const app = new App();
@@ -17,7 +18,16 @@ const account =
   (app.node.tryGetContext("account") as string | undefined) ??
   process.env.CDK_DEFAULT_ACCOUNT;
 
+const AWS_ACCOUNT_PATTERN = /^\d{12}$/;
+if (account && !AWS_ACCOUNT_PATTERN.test(account)) {
+  throw new Error(`Invalid AWS account ID format: "${account}"`);
+}
+
 new SagemakerStack(app, "SagemakerStack", {
+  env: { region, account },
+});
+
+new ProcessingStack(app, "ProcessingStack", {
   env: { region, account },
 });
 

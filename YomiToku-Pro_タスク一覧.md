@@ -66,25 +66,25 @@ _設計書参照: セクション 8, 12_
 
 ## フェーズ 2: データストア・キュー（processing-stack）
 
-- [ ] 2.1. S3 バケットを定義する（P1）
-  - [ ] 2.1.1. バケット作成（パブリックアクセスブロック有効化）
-  - [ ] 2.1.2. input/ プレフィックスへの ObjectCreated イベント通知を SQS に設定
+- [x] 2.1. S3 バケットを定義する（P1）
+  - [x] 2.1.1. バケット作成（パブリックアクセスブロック有効化）
+  - [x] 2.1.2. input/ プレフィックスへの ObjectCreated イベント通知を SQS に設定
 
-- [ ] 2.2. SQS キューを定義する（P1）
-  - [ ] 2.2.1. メインキュー（visibilityTimeout: 3600秒、messageRetentionPeriod: 14日、receiveMessageWaitTimeSeconds: 20秒）
-  - [ ] 2.2.2. DLQ（maxReceiveCount: 3、messageRetentionPeriod: 14日）
-  - [ ] 2.2.3. メインキューの deadLetterQueue に DLQ を設定
+- [x] 2.2. SQS キューを定義する（P1）
+  - [x] 2.2.1. メインキュー（visibilityTimeout: 3600秒、messageRetentionPeriod: 14日、receiveMessageWaitTimeSeconds: 20秒）
+  - [x] 2.2.2. DLQ（maxReceiveCount: 3、messageRetentionPeriod: 14日）
+  - [x] 2.2.3. メインキューの deadLetterQueue に DLQ を設定
 
-- [ ] 2.3. DynamoDB ステータステーブルを定義する（P1）
-  - [ ] 2.3.1. テーブル作成（PK: file_key）
-  - [ ] 2.3.2. GSI: status-created_at-index を追加
+- [x] 2.3. DynamoDB ステータステーブルを定義する（P1）
+  - [x] 2.3.1. テーブル作成（PK: file_key）
+  - [x] 2.3.2. GSI: status-created_at-index を追加
 
-- [ ] 2.4. DynamoDB エンドポイント制御テーブルを定義する（P1）
-  - [ ] 2.4.1. テーブル作成（PK: lock_key）
+- [x] 2.4. DynamoDB エンドポイント制御テーブルを定義する（P1）
+  - [x] 2.4.1. テーブル作成（PK: lock_key）
 
-- [ ] 2.5. CDK Nag の指摘を確認し対応する（P0）
-- [ ] 2.6. Biome で lint / format を実行し修正する（P0）
-- [ ] 2.7. processing-stack.ts としてまとめ、デプロイ確認する（P0）
+- [x] 2.5. CDK Nag の指摘を確認し対応する（P0）
+- [x] 2.6. Biome で lint / format を実行し修正する（P0）
+- [x] 2.7. processing-stack.ts としてまとめ、デプロイ確認する（P0）
 
 _設計書参照: セクション 3, 5, 6, 12_
 
