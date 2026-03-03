@@ -157,12 +157,12 @@ export class ProcessingStack extends Stack {
     // 3.5.3 DynamoDB status table read/write
     this.statusTable.grantReadWriteData(this.processorFunction);
     // 3.5.4 SQS consume (automatically granted by SqsEventSource)
-    // 3.5.5 SageMaker InvokeEndpoint
+    // 3.5.5 SageMaker InvokeEndpoint + DescribeEndpoint
     this.processorFunction.addToRolePolicy(
       new PolicyStatement({
-        sid: "SageMakerInvokeEndpoint",
+        sid: "SageMakerEndpointAccess",
         effect: Effect.ALLOW,
-        actions: ["sagemaker:InvokeEndpoint"],
+        actions: ["sagemaker:InvokeEndpoint", "sagemaker:DescribeEndpoint"],
         resources: [
           `arn:aws:sagemaker:${this.region}:${this.account}:endpoint/${endpointName}`,
         ],

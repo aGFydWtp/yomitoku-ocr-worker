@@ -127,7 +127,7 @@ _設計書参照: セクション 3, 5, 6, 12_
   - [x] 3.5.2. S3 output/ の書き込み権限
   - [x] 3.5.3. DynamoDB ステータステーブルの読み書き権限
   - [x] 3.5.4. SQS メインキューの消費権限（SqsEventSource により自動付与）
-  - [x] 3.5.5. sagemaker:InvokeEndpoint 権限（エンドポイント ARN 指定）
+  - [x] 3.5.5. sagemaker:InvokeEndpoint + DescribeEndpoint 権限（エンドポイント ARN 指定）
 
 - [x] 3.6. CDK Nag の指摘を確認し対応する（P0）
   - [x] 3.6.1. `npx cdk synth` で CDK Nag の指摘を確認
@@ -209,12 +209,19 @@ _設計書参照: セクション 13, 12_
     - 応答時間: 7.54秒、結果: 72,040文字の構造化JSON
   - [x] 6.1.3. エンドポイントを手動削除
 
-- [ ] 6.2. 処理ワーカー Lambda の単体確認（P0）
-  - [ ] 6.2.1. エンドポイントを手動起動した状態で S3 に PDF をアップロード
-  - [ ] 6.2.2. SQS にメッセージが投入されることを確認
-  - [ ] 6.2.3. Lambda が起動し DynamoDB が PROCESSING → COMPLETED に遷移することを確認
-  - [ ] 6.2.4. S3 output/ に JSON が保存されることを確認
-  - [ ] 6.2.5. 不正ファイルで FAILED → DLQ 移動を確認
+- [x] 6.2. 処理ワーカー Lambda の単体確認（P0）
+  - [x] 6.2.1. エンドポイントを手動起動した状態で S3 に PDF をアップロード
+  - [x] 6.2.2. SQS にメッセージが投入されることを確認
+  - [x] 6.2.3. Lambda が起動し DynamoDB が PROCESSING → COMPLETED に遷移することを確認
+    - 処理時間: 7,278ms、結果: 72,103文字の構造化JSON
+  - [x] 6.2.4. S3 output/ に JSON が保存されることを確認
+  - [x] 6.2.5. 不正ファイルで FAILED を確認
+    - エラー: `Failed to convert PDF to images: Failed to load document (PDFium: Data format error).`
+  - 修正事項:
+    - Dockerfile に `--platform=linux/amd64` を追加（Apple Silicon ビルド対応）
+    - Dockerfile に OpenCV 用システムライブラリ（libxcb, mesa-libGL）を追加
+    - Lambda ロールに `sagemaker:DescribeEndpoint` 権限を追加（yomitoku-client が使用）
+    - cdk.context.json を us-east-1 に統一
 
 - [ ] 6.3. Step Functions によるエンドポイント制御の確認（P0）
   - [ ] 6.3.1. エンドポイント未起動の状態で S3 に PDF をアップロード

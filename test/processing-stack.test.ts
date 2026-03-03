@@ -239,13 +239,16 @@ describe("ProcessingStack", () => {
 
   // --- 3.5 IAM Permissions ---
   describe("IAM Permissions", () => {
-    it("SageMaker InvokeEndpoint 権限がエンドポイント ARN に限定されている", () => {
+    it("SageMaker InvokeEndpoint + DescribeEndpoint 権限がエンドポイント ARN に限定されている", () => {
       const { template } = createStack();
       template.hasResourceProperties("AWS::IAM::Policy", {
         PolicyDocument: {
           Statement: Match.arrayWith([
             Match.objectLike({
-              Action: "sagemaker:InvokeEndpoint",
+              Action: [
+                "sagemaker:InvokeEndpoint",
+                "sagemaker:DescribeEndpoint",
+              ],
               Effect: "Allow",
               Resource: `arn:aws:sagemaker:${TEST_REGION}:${TEST_ACCOUNT}:endpoint/${TEST_ENDPOINT_NAME}`,
             }),
