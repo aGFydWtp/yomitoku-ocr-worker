@@ -1,11 +1,12 @@
-import { Hono } from "hono";
 import {
   GetCommand,
   PutCommand,
   QueryCommand,
   UpdateCommand,
 } from "@aws-sdk/lib-dynamodb";
+import { Hono } from "hono";
 import { docClient } from "../lib/dynamodb";
+import { ConflictError, NotFoundError, ValidationError } from "../lib/errors";
 import {
   createResultUrl,
   createUploadUrl,
@@ -14,7 +15,6 @@ import {
   UPLOAD_URL_EXPIRES_IN,
 } from "../lib/s3";
 import { sanitizeFilename } from "../lib/sanitize";
-import { ConflictError, NotFoundError, ValidationError } from "../lib/errors";
 
 const VALID_STATUSES = [
   "PENDING",
@@ -237,8 +237,7 @@ jobsRoutes.delete("/:jobId", async (c) => {
       new UpdateCommand({
         TableName: tableName,
         Key: { job_id: jobId },
-        UpdateExpression:
-          "SET #s = :cancelled, updated_at = :now",
+        UpdateExpression: "SET #s = :cancelled, updated_at = :now",
         ConditionExpression: "#s = :pending",
         ExpressionAttributeNames: { "#s": "status" },
         ExpressionAttributeValues: {

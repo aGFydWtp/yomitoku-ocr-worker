@@ -1,7 +1,7 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
 import { Hono } from "hono";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+// biome-ignore lint/suspicious/noExplicitAny: テストでDynamoDB/Honoレスポンスの動的JSONを扱うため
 type AnyJson = any;
 
 const mockSend = vi.fn();
@@ -25,8 +25,8 @@ vi.stubGlobal("crypto", {
   randomUUID: () => FIXED_UUID,
 });
 
-import { jobsRoutes } from "../../routes/jobs";
 import { handleError } from "../../lib/errors";
+import { jobsRoutes } from "../../routes/jobs";
 
 function createApp() {
   const app = new Hono();
@@ -212,9 +212,7 @@ describe("POST /jobs", () => {
 
     expect(res.status).toBe(201);
     const body: AnyJson = await res.json();
-    expect(body.fileKey).toBe(
-      `input/${FIXED_UUID}/請求書_2026年3月.pdf`,
-    );
+    expect(body.fileKey).toBe(`input/${FIXED_UUID}/請求書_2026年3月.pdf`);
   });
 
   it("異常系: DynamoDB書き込み失敗は500を返す", async () => {
@@ -452,7 +450,11 @@ describe("GET /jobs", () => {
   });
 
   it("正常系: ページネーション - cursorを使って次ページ取得", async () => {
-    const lastKey = { job_id: "job-2", status: "COMPLETED", created_at: "2026-03-04T00:02:00.000Z" };
+    const lastKey = {
+      job_id: "job-2",
+      status: "COMPLETED",
+      created_at: "2026-03-04T00:02:00.000Z",
+    };
     mockSend.mockResolvedValue({
       Items: makeListItems(2),
       Count: 2,
@@ -475,15 +477,17 @@ describe("GET /jobs", () => {
   });
 
   it("正常系: cursorを渡して次ページを取得できる", async () => {
-    const lastKey = { job_id: "job-2", status: "COMPLETED", created_at: "2026-03-04T00:02:00.000Z" };
+    const lastKey = {
+      job_id: "job-2",
+      status: "COMPLETED",
+      created_at: "2026-03-04T00:02:00.000Z",
+    };
     const cursor = Buffer.from(JSON.stringify(lastKey)).toString("base64url");
 
     mockSend.mockResolvedValue({ Items: makeListItems(1), Count: 1 });
 
     const app = createApp();
-    const res = await app.request(
-      `/jobs?status=COMPLETED&cursor=${cursor}`,
-    );
+    const res = await app.request(`/jobs?status=COMPLETED&cursor=${cursor}`);
 
     expect(res.status).toBe(200);
     const queryCommand = mockSend.mock.calls[0][0];
@@ -503,7 +507,10 @@ describe("GET /jobs", () => {
 
   it("正常系: 一覧にresultUrlが含まれない", async () => {
     const items = makeListItems(1);
-    items[0] = { ...items[0], result_key: "output/job-0/result.json" } as AnyJson;
+    items[0] = {
+      ...items[0],
+      result_key: "output/job-0/result.json",
+    } as AnyJson;
     mockSend.mockResolvedValue({ Items: items, Count: 1 });
 
     const app = createApp();
@@ -581,9 +588,7 @@ describe("GET /jobs", () => {
       "base64url",
     );
     const app = createApp();
-    const res = await app.request(
-      `/jobs?status=COMPLETED&cursor=${cursor}`,
-    );
+    const res = await app.request(`/jobs?status=COMPLETED&cursor=${cursor}`);
 
     expect(res.status).toBe(400);
     const body: AnyJson = await res.json();

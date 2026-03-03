@@ -12,6 +12,7 @@ export function sanitizeFilename(raw: string): string {
       .pop()
       ?.trim() || "document.pdf";
 
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: セキュリティ上制御文字の除去が必要
   const cleaned = basename.replace(/[\x00-\x1f<>:"|?*]/g, "");
 
   if (!cleaned || cleaned === ".pdf") {
