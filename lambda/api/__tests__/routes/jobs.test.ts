@@ -10,9 +10,10 @@ vi.mock("../../lib/dynamodb", () => ({
 }));
 
 const mockCreateUploadUrl = vi.fn();
+const mockCreateResultUrl = vi.fn();
 vi.mock("../../lib/s3", () => ({
   createUploadUrl: (...args: unknown[]) => mockCreateUploadUrl(...args),
-  createResultUrl: vi.fn(),
+  createResultUrl: (...args: unknown[]) => mockCreateResultUrl(...args),
   UPLOAD_URL_EXPIRES_IN: 900,
   RESULT_URL_EXPIRES_IN: 3600,
 }));
@@ -225,5 +226,174 @@ describe("POST /jobs", () => {
     });
 
     expect(res.status).toBe(500);
+  });
+});
+
+function makeItem(overrides: Record<string, unknown> = {}) {
+  return {
+    job_id: FIXED_UUID,
+    file_key: `input/${FIXED_UUID}/test.pdf`,
+    status: "PENDING",
+    created_at: "2026-03-04T00:00:00.000Z",
+    updated_at: "2026-03-04T00:01:00.000Z",
+    original_filename: "test.pdf",
+    ...overrides,
+  };
+}
+
+describe("GET /jobs/:jobId", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env.STATUS_TABLE_NAME = "test-table";
+    process.env.BUCKET_NAME = "test-bucket";
+  });
+
+  it("正常系(PENDING): 200を返しstatus=PENDINGでresultUrlなし", async () => {
+    mockSend.mockResolvedValue({ Item: makeItem({ status: "PENDING" }) });
+
+    const app = createApp();
+    const res = await app.request(`/jobs/${FIXED_UUID}`);
+
+    expect(res.status).toBe(200);
+    const body: AnyJson = await res.json();
+    expect(body.jobId).toBe(FIXED_UUID);
+    expect(body.status).toBe("PENDING");
+    expect(body.createdAt).toBe("2026-03-04T00:00:00.000Z");
+    expect(body.updatedAt).toBe("2026-03-04T00:01:00.000Z");
+    expect(body.resultUrl).toBeUndefined();
+    expect(body.resultExpiresIn).toBeUndefined();
+  });
+
+  it("正常系(PROCESSING): 200を返しstatus=PROCESSINGでresultUrlなし", async () => {
+    mockSend.mockResolvedValue({
+      Item: makeItem({ status: "PROCESSING" }),
+    });
+
+    const app = createApp();
+    const res = await app.request(`/jobs/${FIXED_UUID}`);
+
+    expect(res.status).toBe(200);
+    const body: AnyJson = await res.json();
+    expect(body.status).toBe("PROCESSING");
+    expect(body.resultUrl).toBeUndefined();
+  });
+
+  it("正常系(COMPLETED): 200を返しresultUrlとresultExpiresInとprocessingTimeMsが含まれる", async () => {
+    mockSend.mockResolvedValue({
+      Item: makeItem({
+        status: "COMPLETED",
+        result_key: `output/${FIXED_UUID}/result.json`,
+        processing_time_ms: 12345,
+      }),
+    });
+    mockCreateResultUrl.mockResolvedValue(
+      "https://s3.example.com/result-presigned",
+    );
+
+    const app = createApp();
+    const res = await app.request(`/jobs/${FIXED_UUID}`);
+
+    expect(res.status).toBe(200);
+    const body: AnyJson = await res.json();
+    expect(body.status).toBe("COMPLETED");
+    expect(body.resultUrl).toBe("https://s3.example.com/result-presigned");
+    expect(body.resultExpiresIn).toBe(3600);
+    expect(body.processingTimeMs).toBe(12345);
+    expect(mockCreateResultUrl).toHaveBeenCalledWith(
+      "test-bucket",
+      `output/${FIXED_UUID}/result.json`,
+    );
+  });
+
+  it("正常系(FAILED): 200を返しerrorMessageが含まれる", async () => {
+    mockSend.mockResolvedValue({
+      Item: makeItem({
+        status: "FAILED",
+        error_message: "PDF parsing failed",
+      }),
+    });
+
+    const app = createApp();
+    const res = await app.request(`/jobs/${FIXED_UUID}`);
+
+    expect(res.status).toBe(200);
+    const body: AnyJson = await res.json();
+    expect(body.status).toBe("FAILED");
+    expect(body.errorMessage).toBe("PDF parsing failed");
+    expect(body.resultUrl).toBeUndefined();
+  });
+
+  it("正常系(CANCELLED): 200を返しstatus=CANCELLED", async () => {
+    mockSend.mockResolvedValue({
+      Item: makeItem({ status: "CANCELLED" }),
+    });
+
+    const app = createApp();
+    const res = await app.request(`/jobs/${FIXED_UUID}`);
+
+    expect(res.status).toBe(200);
+    const body: AnyJson = await res.json();
+    expect(body.status).toBe("CANCELLED");
+  });
+
+  it("異常系: 存在しないjobIdは404を返す", async () => {
+    mockSend.mockResolvedValue({});
+
+    const app = createApp();
+    const res = await app.request(`/jobs/${FIXED_UUID}`);
+
+    expect(res.status).toBe(404);
+    const body: AnyJson = await res.json();
+    expect(body.error).toBeDefined();
+  });
+
+  it("異常系: UUID形式でないjobIdは400を返す", async () => {
+    const app = createApp();
+    const res = await app.request("/jobs/not-a-uuid");
+
+    expect(res.status).toBe(400);
+    const body: AnyJson = await res.json();
+    expect(body.error).toContain("UUID");
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  it("異常系: COMPLETED状態でS3 Presigned URL生成失敗は500を返す", async () => {
+    mockSend.mockResolvedValue({
+      Item: makeItem({
+        status: "COMPLETED",
+        result_key: `output/${FIXED_UUID}/result.json`,
+      }),
+    });
+    mockCreateResultUrl.mockRejectedValue(new Error("S3 unavailable"));
+
+    const app = createApp();
+    const res = await app.request(`/jobs/${FIXED_UUID}`);
+
+    expect(res.status).toBe(500);
+  });
+
+  it("異常系: DynamoDB読み取り失敗は500を返す", async () => {
+    mockSend.mockRejectedValue(new Error("DynamoDB unavailable"));
+
+    const app = createApp();
+    const res = await app.request(`/jobs/${FIXED_UUID}`);
+
+    expect(res.status).toBe(500);
+  });
+
+  it("正常系: DynamoDB GetItemが強整合性読み取りで呼ばれる", async () => {
+    mockSend.mockResolvedValue({ Item: makeItem() });
+
+    const app = createApp();
+    await app.request(`/jobs/${FIXED_UUID}`);
+
+    const getCommand = mockSend.mock.calls[0][0];
+    expect(getCommand.input).toEqual(
+      expect.objectContaining({
+        TableName: "test-table",
+        Key: { job_id: FIXED_UUID },
+        ConsistentRead: true,
+      }),
+    );
   });
 });
