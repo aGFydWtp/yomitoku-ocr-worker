@@ -22,14 +22,14 @@ class TestExtractFileKey:
                         {
                             "s3": {
                                 "bucket": {"name": "test-bucket"},
-                                "object": {"key": "input/test.pdf"},
+                                "object": {"key": "input/abc-123/test.pdf"},
                             }
                         }
                     ]
                 }
             )
         }
-        assert extract_file_key(record) == "input/test.pdf"
+        assert extract_file_key(record) == "input/abc-123/test.pdf"
 
     def test_sns_wrapped_s3_event(self):
         """S3 → SNS → SQS 経由のケース（Message フィールドにラップ）。"""
@@ -38,7 +38,7 @@ class TestExtractFileKey:
                 {
                     "s3": {
                         "bucket": {"name": "test-bucket"},
-                        "object": {"key": "input/document.pdf"},
+                        "object": {"key": "input/abc-456/document.pdf"},
                     }
                 }
             ]
@@ -46,7 +46,7 @@ class TestExtractFileKey:
         record = {
             "body": json.dumps({"Message": json.dumps(s3_event)})
         }
-        assert extract_file_key(record) == "input/document.pdf"
+        assert extract_file_key(record) == "input/abc-456/document.pdf"
 
     def test_url_encoded_key(self):
         """S3 キーが URL エンコードされているケース。"""
@@ -57,14 +57,14 @@ class TestExtractFileKey:
                         {
                             "s3": {
                                 "bucket": {"name": "test-bucket"},
-                                "object": {"key": "input/%E3%83%86%E3%82%B9%E3%83%88.pdf"},
+                                "object": {"key": "input/abc-789/%E3%83%86%E3%82%B9%E3%83%88.pdf"},
                             }
                         }
                     ]
                 }
             )
         }
-        assert extract_file_key(record) == "input/テスト.pdf"
+        assert extract_file_key(record) == "input/abc-789/テスト.pdf"
 
     def test_key_with_plus_as_space(self):
         """S3 キーで '+' がスペースに変換されるケース。"""
@@ -75,14 +75,14 @@ class TestExtractFileKey:
                         {
                             "s3": {
                                 "bucket": {"name": "test-bucket"},
-                                "object": {"key": "input/my+file.pdf"},
+                                "object": {"key": "input/abc-000/my+file.pdf"},
                             }
                         }
                     ]
                 }
             )
         }
-        assert extract_file_key(record) == "input/my file.pdf"
+        assert extract_file_key(record) == "input/abc-000/my file.pdf"
 
 
 class TestHandler:
@@ -100,7 +100,7 @@ class TestHandler:
                                 {
                                     "s3": {
                                         "bucket": {"name": "b"},
-                                        "object": {"key": "input/a.pdf"},
+                                        "object": {"key": "input/uuid-1/a.pdf"},
                                     }
                                 }
                             ]
@@ -114,7 +114,7 @@ class TestHandler:
                                 {
                                     "s3": {
                                         "bucket": {"name": "b"},
-                                        "object": {"key": "input/b.pdf"},
+                                        "object": {"key": "input/uuid-2/b.pdf"},
                                     }
                                 }
                             ]
@@ -126,8 +126,8 @@ class TestHandler:
         handler(event, None)
 
         assert mock_process_file.call_count == 2
-        mock_process_file.assert_any_call("input/a.pdf")
-        mock_process_file.assert_any_call("input/b.pdf")
+        mock_process_file.assert_any_call("input/uuid-1/a.pdf")
+        mock_process_file.assert_any_call("input/uuid-2/b.pdf")
 
     @patch("index.process_file", new_callable=AsyncMock)
     def test_returns_batch_item_failures(self, mock_process_file):
@@ -143,7 +143,7 @@ class TestHandler:
                                 {
                                     "s3": {
                                         "bucket": {"name": "b"},
-                                        "object": {"key": "input/ok.pdf"},
+                                        "object": {"key": "input/uuid-1/ok.pdf"},
                                     }
                                 }
                             ]
@@ -158,7 +158,7 @@ class TestHandler:
                                 {
                                     "s3": {
                                         "bucket": {"name": "b"},
-                                        "object": {"key": "input/fail.pdf"},
+                                        "object": {"key": "input/uuid-2/fail.pdf"},
                                     }
                                 }
                             ]
@@ -186,7 +186,7 @@ class TestHandler:
                                 {
                                     "s3": {
                                         "bucket": {"name": "b"},
-                                        "object": {"key": "input/ok.pdf"},
+                                        "object": {"key": "input/uuid-1/ok.pdf"},
                                     }
                                 }
                             ]

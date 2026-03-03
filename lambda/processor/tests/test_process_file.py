@@ -19,7 +19,8 @@ os.environ.setdefault("AWS_DEFAULT_REGION", "ap-northeast-1")
 
 BUCKET_NAME = "test-bucket"
 TABLE_NAME = "test-status-table"
-FILE_KEY = "input/sample.pdf"
+JOB_ID = "550e8400-e29b-41d4-a716-446655440000"
+FILE_KEY = f"input/{JOB_ID}/sample.pdf"
 
 
 @pytest.fixture
@@ -40,14 +41,15 @@ def aws_setup(tmp_path):
         dynamodb = boto3.resource("dynamodb", region_name=region)
         table = dynamodb.create_table(
             TableName=TABLE_NAME,
-            KeySchema=[{"AttributeName": "file_key", "KeyType": "HASH"}],
+            KeySchema=[{"AttributeName": "job_id", "KeyType": "HASH"}],
             AttributeDefinitions=[
-                {"AttributeName": "file_key", "AttributeType": "S"}
+                {"AttributeName": "job_id", "AttributeType": "S"}
             ],
             BillingMode="PAY_PER_REQUEST",
         )
         table.put_item(
             Item={
+                "job_id": JOB_ID,
                 "file_key": FILE_KEY,
                 "status": "PENDING",
                 "created_at": "2026-01-01T00:00:00",
@@ -68,6 +70,49 @@ def aws_setup(tmp_path):
             "dynamodb": dynamodb,
             "table": table,
         }
+
+
+class TestExtractJobId:
+    """extract_job_id: S3 キーから job_id (UUID) を抽出する。"""
+
+    def test_extracts_uuid_from_standard_key(self):
+        """input/{uuid}/{filename} から UUID を抽出する。"""
+        from index import extract_job_id
+
+        assert extract_job_id(f"input/{JOB_ID}/sample.pdf") == JOB_ID
+
+    def test_extracts_uuid_from_japanese_filename(self):
+        """日本語ファイル名でも UUID が正しく抽出される。"""
+        from index import extract_job_id
+
+        assert extract_job_id(f"input/{JOB_ID}/請求書.pdf") == JOB_ID
+
+    def test_extracts_uuid_from_nested_path(self):
+        """パスに追加のセグメントがあっても2番目を抽出する。"""
+        from index import extract_job_id
+
+        assert extract_job_id(f"input/{JOB_ID}/sub/file.pdf") == JOB_ID
+
+    def test_raises_on_flat_key(self):
+        """スラッシュなしのキーで ValueError が発生する。"""
+        from index import extract_job_id
+
+        with pytest.raises(ValueError, match="Unexpected S3 key format"):
+            extract_job_id("file.pdf")
+
+    def test_raises_on_legacy_two_segment_key(self):
+        """旧形式 input/file.pdf で ValueError が発生する。"""
+        from index import extract_job_id
+
+        with pytest.raises(ValueError, match="Unexpected S3 key format"):
+            extract_job_id("input/file.pdf")
+
+    def test_raises_on_empty_string(self):
+        """空文字で ValueError が発生する。"""
+        from index import extract_job_id
+
+        with pytest.raises(ValueError, match="Unexpected S3 key format"):
+            extract_job_id("")
 
 
 def _to_json_side_effect(path, **kwargs):
@@ -108,7 +153,7 @@ class TestProcessFileIdempotency:
             await process_file(FILE_KEY)
 
         # COMPLETED に遷移していること
-        item = aws_setup["table"].get_item(Key={"file_key": FILE_KEY})["Item"]
+        item = aws_setup["table"].get_item(Key={"job_id": JOB_ID})["Item"]
         assert item["status"] == "COMPLETED"
         assert "output_key" in item
         assert "processing_time_ms" in item
@@ -120,7 +165,7 @@ class TestProcessFileIdempotency:
 
         # ステータスを PROCESSING に変更
         aws_setup["table"].update_item(
-            Key={"file_key": FILE_KEY},
+            Key={"job_id": JOB_ID},
             UpdateExpression="SET #s = :s",
             ExpressionAttributeNames={"#s": "status"},
             ExpressionAttributeValues={":s": "PROCESSING"},
@@ -130,7 +175,7 @@ class TestProcessFileIdempotency:
         await process_file(FILE_KEY)
 
         # ステータスは PROCESSING のまま
-        item = aws_setup["table"].get_item(Key={"file_key": FILE_KEY})["Item"]
+        item = aws_setup["table"].get_item(Key={"job_id": JOB_ID})["Item"]
         assert item["status"] == "PROCESSING"
 
     @pytest.mark.asyncio
@@ -139,7 +184,7 @@ class TestProcessFileIdempotency:
         from index import process_file
 
         aws_setup["table"].update_item(
-            Key={"file_key": FILE_KEY},
+            Key={"job_id": JOB_ID},
             UpdateExpression="SET #s = :s",
             ExpressionAttributeNames={"#s": "status"},
             ExpressionAttributeValues={":s": "COMPLETED"},
@@ -147,7 +192,7 @@ class TestProcessFileIdempotency:
 
         await process_file(FILE_KEY)
 
-        item = aws_setup["table"].get_item(Key={"file_key": FILE_KEY})["Item"]
+        item = aws_setup["table"].get_item(Key={"job_id": JOB_ID})["Item"]
         assert item["status"] == "COMPLETED"
 
 
@@ -169,7 +214,7 @@ class TestProcessFileS3Operations:
             await process_file(FILE_KEY)
 
         # output/ に JSON が保存されていること
-        output_key = "output/sample.json"
+        output_key = f"output/{JOB_ID}/sample.json"
         response = aws_setup["s3"].get_object(Bucket=BUCKET_NAME, Key=output_key)
         body = response["Body"].read().decode()
         assert len(body) > 0
@@ -211,7 +256,7 @@ class TestProcessFileYomitokuClient:
             with pytest.raises(RuntimeError, match="SageMaker timeout"):
                 await process_file(FILE_KEY)
 
-        item = aws_setup["table"].get_item(Key={"file_key": FILE_KEY})["Item"]
+        item = aws_setup["table"].get_item(Key={"job_id": JOB_ID})["Item"]
         assert item["status"] == "FAILED"
         assert "SageMaker timeout" in item["error_message"]
 

@@ -32,6 +32,14 @@ def extract_file_key(record: dict) -> str:
     return unquote_plus(raw_key)
 
 
+def extract_job_id(file_key: str) -> str:
+    """Extract job_id (UUID) from S3 key: input/{job_id}/{filename}."""
+    parts = file_key.split("/")
+    if len(parts) < 3 or parts[0] != "input" or not parts[1]:
+        raise ValueError(f"Unexpected S3 key format, cannot extract job_id: {file_key!r}")
+    return parts[1]
+
+
 def handler(event: dict, context: object) -> dict:
     """SQS event handler for OCR processing.
 
@@ -53,12 +61,13 @@ def handler(event: dict, context: object) -> dict:
 
 async def process_file(file_key: str) -> None:
     """Download PDF from S3, run OCR, and upload result."""
+    job_id = extract_job_id(file_key)
     now = datetime.now(timezone.utc).isoformat()
 
     # 1. Idempotency: conditional update PENDING → PROCESSING
     try:
         table.update_item(
-            Key={"file_key": file_key},
+            Key={"job_id": job_id},
             UpdateExpression="SET #s = :processing, updated_at = :t",
             ConditionExpression="#s = :pending",
             ExpressionAttributeNames={"#s": "status"},
@@ -120,7 +129,7 @@ async def process_file(file_key: str) -> None:
 
         # 5. Update DynamoDB: COMPLETED
         table.update_item(
-            Key={"file_key": file_key},
+            Key={"job_id": job_id},
             UpdateExpression="SET #s = :s, updated_at = :t, output_key = :o, processing_time_ms = :p",
             ExpressionAttributeNames={"#s": "status"},
             ExpressionAttributeValues={
@@ -134,7 +143,7 @@ async def process_file(file_key: str) -> None:
     except Exception as e:
         # 6. Update DynamoDB: FAILED and re-raise for SQS retry
         table.update_item(
-            Key={"file_key": file_key},
+            Key={"job_id": job_id},
             UpdateExpression="SET #s = :s, updated_at = :t, error_message = :e",
             ExpressionAttributeNames={"#s": "status"},
             ExpressionAttributeValues={
