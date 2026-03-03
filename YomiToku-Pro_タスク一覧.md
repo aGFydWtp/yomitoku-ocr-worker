@@ -223,11 +223,18 @@ _設計書参照: セクション 13, 12_
     - Lambda ロールに `sagemaker:DescribeEndpoint` 権限を追加（yomitoku-client が使用）
     - cdk.context.json を us-east-1 に統一
 
-- [ ] 6.3. Step Functions によるエンドポイント制御の確認（P0）
-  - [ ] 6.3.1. エンドポイント未起動の状態で S3 に PDF をアップロード
-  - [ ] 6.3.2. Step Functions がエンドポイントを自動作成することを確認
-  - [ ] 6.3.3. 処理完了後、クールダウン経過後にエンドポイントが自動削除されることを確認
-  - [ ] 6.3.4. DynamoDB の endpoint_state が IDLE に戻ることを確認
+- [x] 6.3. Step Functions によるエンドポイント制御の確認（P0）
+  - [x] 6.3.1. エンドポイント未起動の状態で S3 に PDF をアップロード
+  - [x] 6.3.2. Step Functions がエンドポイントを自動作成することを確認
+  - [x] 6.3.3. 処理完了後、クールダウン経過後にエンドポイントが自動削除されることを確認
+  - [x] 6.3.4. DynamoDB の endpoint_state が IDLE に戻ることを確認
+  - 修正点:
+    - EventBridge Pipe がSQSメッセージを配列で送る問題 → `UnwrapPipeInput` Pass ステート追加
+    - Pipe target に `inputTemplate` を追加
+    - CreateEndpoint IAM に `endpoint-config` リソースを追加
+    - `Pass` ステートの `result` を `Result.fromObject()` で正しくラップ
+    - `incrementCounter` から不要な `inputPath` を削除
+  - 全ステート遷移の確認: UnwrapPipeInput → AcquireLock → CheckEndpointStatus(NOT_FOUND) → CreateEndpoint → WaitLoop(5回) → CheckQueueStatus → CooldownWait(15分) → RecheckQueueStatus → DeleteEndpoint → ReleaseLock → Done
 
 - [ ] 6.4. 冪等性・排他制御の確認（P0）
   - [ ] 6.4.1. 同一ファイルの重複処理が発生しないことを確認（DynamoDB 条件付き更新）

@@ -18,6 +18,7 @@ import {
   DefinitionBody,
   Fail,
   Pass,
+  Result,
   StateMachine,
   Succeed,
   TaskInput,
@@ -92,6 +93,7 @@ export class OrchestrationStack extends Stack {
         ],
         resources: [
           `arn:aws:sagemaker:${this.region}:${this.account}:endpoint/${endpointName}`,
+          `arn:aws:sagemaker:${this.region}:${this.account}:endpoint-config/${endpointConfigName}`,
         ],
       }),
     );
@@ -158,6 +160,7 @@ export class OrchestrationStack extends Stack {
         },
       },
       targetParameters: {
+        inputTemplate: '{"trigger": "sqs_message"}',
         stepFunctionStateMachineParameters: {
           invocationType: "FIRE_AND_FORGET",
         },
@@ -323,12 +326,11 @@ export class OrchestrationStack extends Stack {
 
     // --- Wait loop counter ---
     const initCounter = new Pass(this, "InitWaitCounter", {
-      result: { value: 0 },
+      result: Result.fromObject({ value: 0 }),
       resultPath: "$.waitCount",
     });
 
     const incrementCounter = new Pass(this, "IncrementWaitCounter", {
-      inputPath: "$.waitCount",
       resultPath: "$.waitCount",
       parameters: {
         "value.$": "States.MathAdd($.waitCount.value, 1)",
@@ -336,6 +338,11 @@ export class OrchestrationStack extends Stack {
     });
 
     // --- Flow construction ---
+
+    // [0] Unwrap array input from EventBridge Pipe (SQS batch is always an array)
+    const unwrapInput = new Pass(this, "UnwrapPipeInput", {
+      inputPath: "$[0]",
+    });
 
     // [1] Acquire lock → check result
     const lockChoice = new Choice(this, "LockAcquired?")
@@ -345,6 +352,7 @@ export class OrchestrationStack extends Stack {
       )
       .otherwise(lockNotAcquired);
 
+    unwrapInput.next(acquireLock);
     acquireLock.next(lockChoice);
 
     // [2] Check endpoint status → branch
@@ -447,6 +455,6 @@ export class OrchestrationStack extends Stack {
       });
     }
 
-    return acquireLock;
+    return unwrapInput;
   }
 }
