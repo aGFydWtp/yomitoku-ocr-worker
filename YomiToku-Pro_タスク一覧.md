@@ -236,9 +236,14 @@ _設計書参照: セクション 13, 12_
     - `incrementCounter` から不要な `inputPath` を削除
   - 全ステート遷移の確認: UnwrapPipeInput → AcquireLock → CheckEndpointStatus(NOT_FOUND) → CreateEndpoint → WaitLoop(5回) → CheckQueueStatus → CooldownWait(15分) → RecheckQueueStatus → DeleteEndpoint → ReleaseLock → Done
 
-- [ ] 6.4. 冪等性・排他制御の確認（P0）
-  - [ ] 6.4.1. 同一ファイルの重複処理が発生しないことを確認（DynamoDB 条件付き更新）
-  - [ ] 6.4.2. 複数の Step Functions 実行が同時にエンドポイントを操作しないことを確認
+- [x] 6.4. 冪等性・排他制御の確認（P0）
+  - [x] 6.4.1. 同一ファイルの重複処理が発生しないことを確認（DynamoDB 条件付き更新）
+    - COMPLETED/PROCESSING/FAILED いずれのステータスでも再処理されないことを確認
+    - Lambda 直接呼び出しでの検証（batchItemFailures 空、DynamoDB レコード不変）
+  - [x] 6.4.2. 複数の Step Functions 実行が同時にエンドポイントを操作しないことを確認
+    - acquire_lock → lock_acquired=true、2回目 → lock_acquired=false を確認
+    - ロック保持者の execution_id が正しいことを確認
+    - release_lock 後の再取得が成功することを確認
 
 - [ ] 6.5. 複数ファイルの連続処理テスト（P0）
   - [ ] 6.5.1. 5-10件の PDF を一括アップロード
