@@ -261,6 +261,74 @@ class TestProcessFileYomitokuClient:
         assert "SageMaker timeout" in item["error_message"]
 
 
+class TestPdfMagicNumberValidation:
+    """PDF マジックナンバー検証テスト。"""
+
+    @pytest.mark.asyncio
+    async def test_valid_pdf_passes_validation(self, aws_setup):
+        """先頭が %PDF- の正常 PDF は処理が続行される。"""
+        from index import process_file
+
+        with (
+            patch("index.YomitokuClient") as MockClient,
+            patch("index.parse_pydantic_model") as mock_parse,
+        ):
+            mock_instance, mock_parsed = _mock_yomitoku(MockClient)
+            mock_parse.return_value = mock_parsed
+
+            await process_file(FILE_KEY)
+
+        item = aws_setup["table"].get_item(Key={"job_id": JOB_ID})["Item"]
+        assert item["status"] == "COMPLETED"
+
+    @pytest.mark.asyncio
+    async def test_invalid_file_raises_and_sets_failed(self, aws_setup):
+        """先頭が %PDF- でないファイルは ValueError で FAILED に遷移する。"""
+        from index import process_file
+
+        # S3 に不正ファイル（PNG ヘッダー）をアップロード
+        aws_setup["s3"].put_object(
+            Bucket=BUCKET_NAME, Key=FILE_KEY, Body=b"\x89PNG\r\nfake"
+        )
+
+        with pytest.raises(ValueError, match="not a valid PDF"):
+            await process_file(FILE_KEY)
+
+        item = aws_setup["table"].get_item(Key={"job_id": JOB_ID})["Item"]
+        assert item["status"] == "FAILED"
+        assert "not a valid PDF" in item["error_message"]
+
+    @pytest.mark.asyncio
+    async def test_empty_file_raises_and_sets_failed(self, aws_setup):
+        """空ファイルは ValueError で FAILED に遷移する。"""
+        from index import process_file
+
+        aws_setup["s3"].put_object(
+            Bucket=BUCKET_NAME, Key=FILE_KEY, Body=b""
+        )
+
+        with pytest.raises(ValueError, match="not a valid PDF"):
+            await process_file(FILE_KEY)
+
+        item = aws_setup["table"].get_item(Key={"job_id": JOB_ID})["Item"]
+        assert item["status"] == "FAILED"
+
+    @pytest.mark.asyncio
+    async def test_text_file_raises_and_sets_failed(self, aws_setup):
+        """テキストファイルは ValueError で FAILED に遷移する。"""
+        from index import process_file
+
+        aws_setup["s3"].put_object(
+            Bucket=BUCKET_NAME, Key=FILE_KEY, Body=b"Hello, World!"
+        )
+
+        with pytest.raises(ValueError, match="not a valid PDF"):
+            await process_file(FILE_KEY)
+
+        item = aws_setup["table"].get_item(Key={"job_id": JOB_ID})["Item"]
+        assert item["status"] == "FAILED"
+
+
 class TestProcessFileTmpCleanup:
     """/tmp ファイルの後始末テスト。"""
 

@@ -92,6 +92,12 @@ async def process_file(file_key: str) -> None:
         with open(tmp_path, "wb") as f:
             f.write(obj["Body"].read())
 
+        # 2.5. Validate PDF magic number
+        with open(tmp_path, "rb") as f:
+            header = f.read(5)
+            if header != b"%PDF-":
+                raise ValueError("Uploaded file is not a valid PDF")
+
         # 3. Run OCR with yomitoku-client
         start = time.time()
 
