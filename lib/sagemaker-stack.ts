@@ -111,6 +111,7 @@ export class SagemakerStack extends Stack {
     // --- 1.2 CfnModel ---
     const model = new CfnModel(this, "YomitokuProModel", {
       executionRoleArn: executionRole.roleArn,
+      enableNetworkIsolation: true,
       containers: [
         {
           modelPackageName: modelPackageArn,
