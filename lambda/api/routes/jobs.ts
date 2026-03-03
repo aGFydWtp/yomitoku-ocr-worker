@@ -1,14 +1,20 @@
 import { Hono } from "hono";
-import { GetCommand, PutCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
+import {
+  GetCommand,
+  PutCommand,
+  QueryCommand,
+  UpdateCommand,
+} from "@aws-sdk/lib-dynamodb";
 import { docClient } from "../lib/dynamodb";
 import {
   createResultUrl,
   createUploadUrl,
+  deleteObject,
   RESULT_URL_EXPIRES_IN,
   UPLOAD_URL_EXPIRES_IN,
 } from "../lib/s3";
 import { sanitizeFilename } from "../lib/sanitize";
-import { NotFoundError, ValidationError } from "../lib/errors";
+import { ConflictError, NotFoundError, ValidationError } from "../lib/errors";
 
 const VALID_STATUSES = [
   "PENDING",
@@ -210,4 +216,70 @@ jobsRoutes.get("/:jobId", async (c) => {
   }
 
   return c.json(response);
+});
+
+jobsRoutes.delete("/:jobId", async (c) => {
+  const tableName = process.env.STATUS_TABLE_NAME;
+  const bucketName = process.env.BUCKET_NAME;
+  if (!tableName || !bucketName) {
+    throw new Error("STATUS_TABLE_NAME and BUCKET_NAME must be set");
+  }
+
+  const jobId = c.req.param("jobId");
+  if (!UUID_RE.test(jobId)) {
+    throw new ValidationError("jobId must be a valid UUID");
+  }
+
+  let fileKey: string | undefined;
+  let updatedStatus: string | undefined;
+  try {
+    const result = await docClient.send(
+      new UpdateCommand({
+        TableName: tableName,
+        Key: { job_id: jobId },
+        UpdateExpression:
+          "SET #s = :cancelled, updated_at = :now",
+        ConditionExpression: "#s = :pending",
+        ExpressionAttributeNames: { "#s": "status" },
+        ExpressionAttributeValues: {
+          ":cancelled": "CANCELLED",
+          ":pending": "PENDING",
+          ":now": new Date().toISOString(),
+        },
+        ReturnValues: "ALL_NEW",
+      }),
+    );
+    fileKey = result.Attributes?.file_key as string | undefined;
+    updatedStatus = result.Attributes?.status as string | undefined;
+  } catch (err: unknown) {
+    if (
+      err instanceof Error &&
+      err.name === "ConditionalCheckFailedException"
+    ) {
+      const existing = await docClient.send(
+        new GetCommand({
+          TableName: tableName,
+          Key: { job_id: jobId },
+          ConsistentRead: true,
+        }),
+      );
+      if (!existing.Item) {
+        throw new NotFoundError("Job not found");
+      }
+      throw new ConflictError(
+        `Job cannot be cancelled: current status is ${existing.Item.status}`,
+      );
+    }
+    throw err;
+  }
+
+  if (fileKey) {
+    try {
+      await deleteObject(bucketName, fileKey);
+    } catch {
+      // best-effort: ignore S3 delete failure
+    }
+  }
+
+  return c.json({ status: updatedStatus });
 });

@@ -1,4 +1,5 @@
 import {
+  DeleteObjectCommand,
   GetObjectCommand,
   PutObjectCommand,
   S3Client,
@@ -31,4 +32,16 @@ export async function createResultUrl(
     Key: key,
   });
   return getSignedUrl(s3Client, command, { expiresIn: RESULT_URL_EXPIRES_IN });
+}
+
+export async function deleteObject(
+  bucket: string,
+  key: string,
+): Promise<void> {
+  await s3Client.send(
+    new DeleteObjectCommand({
+      Bucket: bucket,
+      Key: key,
+    }),
+  );
 }

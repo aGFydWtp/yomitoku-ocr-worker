@@ -11,9 +11,11 @@ vi.mock("../../lib/dynamodb", () => ({
 
 const mockCreateUploadUrl = vi.fn();
 const mockCreateResultUrl = vi.fn();
+const mockDeleteObject = vi.fn();
 vi.mock("../../lib/s3", () => ({
   createUploadUrl: (...args: unknown[]) => mockCreateUploadUrl(...args),
   createResultUrl: (...args: unknown[]) => mockCreateResultUrl(...args),
+  deleteObject: (...args: unknown[]) => mockDeleteObject(...args),
   UPLOAD_URL_EXPIRES_IN: 900,
   RESULT_URL_EXPIRES_IN: 3600,
 }));
@@ -606,5 +608,142 @@ describe("GET /jobs", () => {
     const body: AnyJson = await res.json();
     expect(body.error).toContain("status");
     expect(mockSend).not.toHaveBeenCalled();
+  });
+});
+
+describe("DELETE /jobs/:jobId", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env.STATUS_TABLE_NAME = "test-table";
+    process.env.BUCKET_NAME = "test-bucket";
+    mockDeleteObject.mockResolvedValue(undefined);
+  });
+
+  it("正常系: PENDINGジョブを200でCANCELLEDに遷移", async () => {
+    // UpdateCommand succeeds (ConditionExpression met)
+    mockSend.mockResolvedValueOnce({
+      Attributes: {
+        ...makeItem({ status: "CANCELLED" }),
+        file_key: `input/${FIXED_UUID}/test.pdf`,
+      },
+    });
+
+    const app = createApp();
+    const res = await app.request(`/jobs/${FIXED_UUID}`, {
+      method: "DELETE",
+    });
+
+    expect(res.status).toBe(200);
+    const body: AnyJson = await res.json();
+    expect(body.status).toBe("CANCELLED");
+  });
+
+  it("正常系: S3 inputファイルのベストエフォート削除が呼ばれる", async () => {
+    mockSend.mockResolvedValueOnce({
+      Attributes: makeItem({
+        status: "CANCELLED",
+        file_key: `input/${FIXED_UUID}/test.pdf`,
+      }),
+    });
+
+    const app = createApp();
+    await app.request(`/jobs/${FIXED_UUID}`, { method: "DELETE" });
+
+    expect(mockDeleteObject).toHaveBeenCalledWith(
+      "test-bucket",
+      `input/${FIXED_UUID}/test.pdf`,
+    );
+  });
+
+  it("異常系: PROCESSINGジョブは409を返す", async () => {
+    // UpdateCommand fails with ConditionalCheckFailedException
+    const err = new Error("Condition not met");
+    err.name = "ConditionalCheckFailedException";
+    mockSend.mockRejectedValueOnce(err);
+
+    // GetItem returns existing PROCESSING item
+    mockSend.mockResolvedValueOnce({
+      Item: makeItem({ status: "PROCESSING" }),
+    });
+
+    const app = createApp();
+    const res = await app.request(`/jobs/${FIXED_UUID}`, {
+      method: "DELETE",
+    });
+
+    expect(res.status).toBe(409);
+    const body: AnyJson = await res.json();
+    expect(body.error).toBeDefined();
+  });
+
+  it("異常系: COMPLETEDジョブは409を返す", async () => {
+    const err = new Error("Condition not met");
+    err.name = "ConditionalCheckFailedException";
+    mockSend.mockRejectedValueOnce(err);
+
+    mockSend.mockResolvedValueOnce({
+      Item: makeItem({ status: "COMPLETED" }),
+    });
+
+    const app = createApp();
+    const res = await app.request(`/jobs/${FIXED_UUID}`, {
+      method: "DELETE",
+    });
+
+    expect(res.status).toBe(409);
+  });
+
+  it("異常系: 存在しないjobIdは404を返す", async () => {
+    const err = new Error("Condition not met");
+    err.name = "ConditionalCheckFailedException";
+    mockSend.mockRejectedValueOnce(err);
+
+    // GetItem returns no item
+    mockSend.mockResolvedValueOnce({});
+
+    const app = createApp();
+    const res = await app.request(`/jobs/${FIXED_UUID}`, {
+      method: "DELETE",
+    });
+
+    expect(res.status).toBe(404);
+  });
+
+  it("競合安全性: S3削除が失敗してもレスポンスは200", async () => {
+    mockSend.mockResolvedValueOnce({
+      Attributes: makeItem({
+        status: "CANCELLED",
+        file_key: `input/${FIXED_UUID}/test.pdf`,
+      }),
+    });
+    mockDeleteObject.mockRejectedValue(new Error("S3 unavailable"));
+
+    const app = createApp();
+    const res = await app.request(`/jobs/${FIXED_UUID}`, {
+      method: "DELETE",
+    });
+
+    expect(res.status).toBe(200);
+  });
+
+  it("異常系: UUID形式でないjobIdは400を返す", async () => {
+    const app = createApp();
+    const res = await app.request("/jobs/not-a-uuid", {
+      method: "DELETE",
+    });
+
+    expect(res.status).toBe(400);
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  it("異常系: DynamoDB UpdateCommand失敗(非ConditionalCheck)は500を返す", async () => {
+    mockSend.mockRejectedValueOnce(new Error("DynamoDB unavailable"));
+
+    const app = createApp();
+    const res = await app.request(`/jobs/${FIXED_UUID}`, {
+      method: "DELETE",
+    });
+
+    expect(res.status).toBe(500);
   });
 });
