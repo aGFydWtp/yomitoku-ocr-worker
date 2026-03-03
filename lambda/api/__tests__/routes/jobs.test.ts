@@ -397,3 +397,214 @@ describe("GET /jobs/:jobId", () => {
     );
   });
 });
+
+function makeListItems(count: number, status = "COMPLETED") {
+  return Array.from({ length: count }, (_, i) => ({
+    job_id: `job-${i}`,
+    file_key: `input/job-${i}/test.pdf`,
+    status,
+    created_at: `2026-03-04T${String(i).padStart(2, "0")}:00:00.000Z`,
+    updated_at: `2026-03-04T${String(i).padStart(2, "0")}:00:30.000Z`,
+    original_filename: `test-${i}.pdf`,
+  }));
+}
+
+describe("GET /jobs", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env.STATUS_TABLE_NAME = "test-table";
+    process.env.BUCKET_NAME = "test-bucket";
+  });
+
+  it("正常系: ?status=COMPLETEDで200を返しitems, count, cursorを含む", async () => {
+    const items = makeListItems(3);
+    mockSend.mockResolvedValue({ Items: items, Count: 3 });
+
+    const app = createApp();
+    const res = await app.request("/jobs?status=COMPLETED");
+
+    expect(res.status).toBe(200);
+    const body: AnyJson = await res.json();
+    expect(body.items).toHaveLength(3);
+    expect(body.count).toBe(3);
+    expect(body.cursor).toBeNull();
+    expect(body.items[0].jobId).toBe("job-0");
+    expect(body.items[0].status).toBe("COMPLETED");
+    expect(body.items[0].createdAt).toBeDefined();
+    expect(body.items[0].updatedAt).toBeDefined();
+  });
+
+  it("正常系: ?status=PENDING&limit=5で最大5件を返す", async () => {
+    const items = makeListItems(5, "PENDING");
+    mockSend.mockResolvedValue({ Items: items, Count: 5 });
+
+    const app = createApp();
+    const res = await app.request("/jobs?status=PENDING&limit=5");
+
+    expect(res.status).toBe(200);
+    const body: AnyJson = await res.json();
+    expect(body.items).toHaveLength(5);
+
+    const queryCommand = mockSend.mock.calls[0][0];
+    expect(queryCommand.input.Limit).toBe(5);
+  });
+
+  it("正常系: ページネーション - cursorを使って次ページ取得", async () => {
+    const lastKey = { job_id: "job-2", status: "COMPLETED", created_at: "2026-03-04T00:02:00.000Z" };
+    mockSend.mockResolvedValue({
+      Items: makeListItems(2),
+      Count: 2,
+      LastEvaluatedKey: lastKey,
+    });
+
+    const app = createApp();
+    const res = await app.request("/jobs?status=COMPLETED&limit=2");
+
+    expect(res.status).toBe(200);
+    const body: AnyJson = await res.json();
+    expect(body.cursor).not.toBeNull();
+    expect(typeof body.cursor).toBe("string");
+
+    // cursorをデコードしてLastEvaluatedKeyと一致するか検証
+    const decoded = JSON.parse(
+      Buffer.from(body.cursor, "base64url").toString("utf8"),
+    );
+    expect(decoded).toEqual(lastKey);
+  });
+
+  it("正常系: cursorを渡して次ページを取得できる", async () => {
+    const lastKey = { job_id: "job-2", status: "COMPLETED", created_at: "2026-03-04T00:02:00.000Z" };
+    const cursor = Buffer.from(JSON.stringify(lastKey)).toString("base64url");
+
+    mockSend.mockResolvedValue({ Items: makeListItems(1), Count: 1 });
+
+    const app = createApp();
+    const res = await app.request(
+      `/jobs?status=COMPLETED&cursor=${cursor}`,
+    );
+
+    expect(res.status).toBe(200);
+    const queryCommand = mockSend.mock.calls[0][0];
+    expect(queryCommand.input.ExclusiveStartKey).toEqual(lastKey);
+  });
+
+  it("正常系: 最終ページではcursorがnull", async () => {
+    mockSend.mockResolvedValue({ Items: makeListItems(1), Count: 1 });
+
+    const app = createApp();
+    const res = await app.request("/jobs?status=COMPLETED");
+
+    expect(res.status).toBe(200);
+    const body: AnyJson = await res.json();
+    expect(body.cursor).toBeNull();
+  });
+
+  it("正常系: 一覧にresultUrlが含まれない", async () => {
+    const items = makeListItems(1);
+    items[0] = { ...items[0], result_key: "output/job-0/result.json" } as AnyJson;
+    mockSend.mockResolvedValue({ Items: items, Count: 1 });
+
+    const app = createApp();
+    const res = await app.request("/jobs?status=COMPLETED");
+
+    expect(res.status).toBe(200);
+    const body: AnyJson = await res.json();
+    expect(body.items[0].resultUrl).toBeUndefined();
+  });
+
+  it("正常系: GSI status-created_at-indexでQueryが呼ばれる", async () => {
+    mockSend.mockResolvedValue({ Items: [], Count: 0 });
+
+    const app = createApp();
+    await app.request("/jobs?status=PENDING");
+
+    const queryCommand = mockSend.mock.calls[0][0];
+    expect(queryCommand.input).toEqual(
+      expect.objectContaining({
+        TableName: "test-table",
+        IndexName: "status-created_at-index",
+        KeyConditionExpression: "#s = :status",
+        ExpressionAttributeNames: { "#s": "status" },
+        ExpressionAttributeValues: { ":status": "PENDING" },
+        Limit: 20,
+        ScanIndexForward: false,
+      }),
+    );
+  });
+
+  it("バリデーション: status未指定は400を返す", async () => {
+    const app = createApp();
+    const res = await app.request("/jobs");
+
+    expect(res.status).toBe(400);
+    const body: AnyJson = await res.json();
+    expect(body.error).toContain("status");
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  it("バリデーション: limitが0以下は400を返す", async () => {
+    const app = createApp();
+    const res = await app.request("/jobs?status=COMPLETED&limit=0");
+
+    expect(res.status).toBe(400);
+    const body: AnyJson = await res.json();
+    expect(body.error).toContain("limit");
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  it("バリデーション: limitが100超は400を返す", async () => {
+    const app = createApp();
+    const res = await app.request("/jobs?status=COMPLETED&limit=101");
+
+    expect(res.status).toBe(400);
+    const body: AnyJson = await res.json();
+    expect(body.error).toContain("limit");
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  it("バリデーション: 不正なcursorは400を返す", async () => {
+    const app = createApp();
+    const res = await app.request(
+      "/jobs?status=COMPLETED&cursor=not-valid-base64url",
+    );
+
+    expect(res.status).toBe(400);
+    const body: AnyJson = await res.json();
+    expect(body.error).toContain("cursor");
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  it("バリデーション: cursorが非オブジェクトJSONの場合は400を返す", async () => {
+    const cursor = Buffer.from(JSON.stringify("a string")).toString(
+      "base64url",
+    );
+    const app = createApp();
+    const res = await app.request(
+      `/jobs?status=COMPLETED&cursor=${cursor}`,
+    );
+
+    expect(res.status).toBe(400);
+    const body: AnyJson = await res.json();
+    expect(body.error).toContain("cursor");
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  it("異常系: DynamoDBクエリ失敗は500を返す", async () => {
+    mockSend.mockRejectedValue(new Error("DynamoDB unavailable"));
+
+    const app = createApp();
+    const res = await app.request("/jobs?status=COMPLETED");
+
+    expect(res.status).toBe(500);
+  });
+
+  it("バリデーション: 不正なstatusは400を返す", async () => {
+    const app = createApp();
+    const res = await app.request("/jobs?status=INVALID");
+
+    expect(res.status).toBe(400);
+    const body: AnyJson = await res.json();
+    expect(body.error).toContain("status");
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+});

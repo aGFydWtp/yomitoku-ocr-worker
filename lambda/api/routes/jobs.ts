@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { GetCommand, PutCommand } from "@aws-sdk/lib-dynamodb";
+import { GetCommand, PutCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
 import { docClient } from "../lib/dynamodb";
 import {
   createResultUrl,
@@ -9,6 +9,14 @@ import {
 } from "../lib/s3";
 import { sanitizeFilename } from "../lib/sanitize";
 import { NotFoundError, ValidationError } from "../lib/errors";
+
+const VALID_STATUSES = [
+  "PENDING",
+  "PROCESSING",
+  "COMPLETED",
+  "FAILED",
+  "CANCELLED",
+] as const;
 
 export const jobsRoutes = new Hono();
 
@@ -63,6 +71,80 @@ jobsRoutes.post("/", async (c) => {
     },
     201,
   );
+});
+
+jobsRoutes.get("/", async (c) => {
+  const tableName = process.env.STATUS_TABLE_NAME;
+  if (!tableName) {
+    throw new Error("STATUS_TABLE_NAME must be set");
+  }
+
+  const status = c.req.query("status");
+  if (!status) {
+    throw new ValidationError("status query parameter is required");
+  }
+  if (!VALID_STATUSES.includes(status as (typeof VALID_STATUSES)[number])) {
+    throw new ValidationError(
+      `status must be one of: ${VALID_STATUSES.join(", ")}`,
+    );
+  }
+
+  const limitParam = c.req.query("limit");
+  const limit = limitParam ? Number(limitParam) : 20;
+  if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
+    throw new ValidationError("limit must be an integer between 1 and 100");
+  }
+
+  let exclusiveStartKey: Record<string, unknown> | undefined;
+  const cursorParam = c.req.query("cursor");
+  if (cursorParam) {
+    try {
+      const decoded: unknown = JSON.parse(
+        Buffer.from(cursorParam, "base64url").toString("utf8"),
+      );
+      if (
+        typeof decoded !== "object" ||
+        decoded === null ||
+        Array.isArray(decoded)
+      ) {
+        throw new Error("not an object");
+      }
+      exclusiveStartKey = decoded as Record<string, unknown>;
+    } catch {
+      throw new ValidationError("cursor is invalid");
+    }
+  }
+
+  const result = await docClient.send(
+    new QueryCommand({
+      TableName: tableName,
+      IndexName: "status-created_at-index",
+      KeyConditionExpression: "#s = :status",
+      ExpressionAttributeNames: { "#s": "status" },
+      ExpressionAttributeValues: { ":status": status },
+      Limit: limit,
+      ScanIndexForward: false,
+      ...(exclusiveStartKey && { ExclusiveStartKey: exclusiveStartKey }),
+    }),
+  );
+
+  const items = (result.Items ?? []).map((item) => ({
+    jobId: item.job_id as string,
+    status: item.status as string,
+    createdAt: item.created_at as string,
+    updatedAt: item.updated_at as string,
+    originalFilename: item.original_filename as string,
+  }));
+
+  const cursor = result.LastEvaluatedKey
+    ? Buffer.from(JSON.stringify(result.LastEvaluatedKey)).toString("base64url")
+    : null;
+
+  return c.json({
+    items,
+    count: items.length,
+    cursor,
+  });
 });
 
 const UUID_RE =
