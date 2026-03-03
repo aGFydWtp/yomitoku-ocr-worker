@@ -1,4 +1,9 @@
-import { AttributeType, BillingMode, Table } from "aws-cdk-lib/aws-dynamodb";
+import {
+  AttributeType,
+  BillingMode,
+  ProjectionType,
+  Table,
+} from "aws-cdk-lib/aws-dynamodb";
 import { Effect, PolicyStatement } from "aws-cdk-lib/aws-iam";
 import { DockerImageCode, DockerImageFunction } from "aws-cdk-lib/aws-lambda";
 import { SqsEventSource } from "aws-cdk-lib/aws-lambda-event-sources";
@@ -95,7 +100,7 @@ export class ProcessingStack extends Stack {
 
     // --- 2.3 DynamoDB ステータステーブル ---
     this.statusTable = new Table(this, "StatusTable", {
-      partitionKey: { name: "file_key", type: AttributeType.STRING },
+      partitionKey: { name: "job_id", type: AttributeType.STRING },
       billingMode: BillingMode.PAY_PER_REQUEST,
       removalPolicy: RemovalPolicy.RETAIN,
       pointInTimeRecoverySpecification: { pointInTimeRecoveryEnabled: true },
@@ -105,6 +110,12 @@ export class ProcessingStack extends Stack {
       indexName: "status-created_at-index",
       partitionKey: { name: "status", type: AttributeType.STRING },
       sortKey: { name: "created_at", type: AttributeType.STRING },
+    });
+
+    this.statusTable.addGlobalSecondaryIndex({
+      indexName: "file_key-index",
+      partitionKey: { name: "file_key", type: AttributeType.STRING },
+      projectionType: ProjectionType.ALL,
     });
 
     // --- 2.4 DynamoDB エンドポイント制御テーブル ---

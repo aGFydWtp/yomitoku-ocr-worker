@@ -106,12 +106,12 @@ describe("ProcessingStack", () => {
 
   // --- 2.3 DynamoDB ステータステーブル ---
   describe("DynamoDB Status Table", () => {
-    it("PK が file_key (String) である", () => {
+    it("PK が job_id (String) である", () => {
       const { template } = createStack();
       template.hasResourceProperties("AWS::DynamoDB::Table", {
-        KeySchema: [{ AttributeName: "file_key", KeyType: "HASH" }],
+        KeySchema: [{ AttributeName: "job_id", KeyType: "HASH" }],
         AttributeDefinitions: Match.arrayWith([
-          { AttributeName: "file_key", AttributeType: "S" },
+          { AttributeName: "job_id", AttributeType: "S" },
         ]),
       });
     });
@@ -119,7 +119,8 @@ describe("ProcessingStack", () => {
     it("GSI: status-created_at-index が設定されている", () => {
       const { template } = createStack();
       template.hasResourceProperties("AWS::DynamoDB::Table", {
-        GlobalSecondaryIndexes: [
+        KeySchema: [{ AttributeName: "job_id", KeyType: "HASH" }],
+        GlobalSecondaryIndexes: Match.arrayWith([
           Match.objectLike({
             IndexName: "status-created_at-index",
             KeySchema: [
@@ -127,14 +128,30 @@ describe("ProcessingStack", () => {
               { AttributeName: "created_at", KeyType: "RANGE" },
             ],
           }),
-        ],
+        ]),
+      });
+    });
+
+    it("GSI: file_key-index が設定されている", () => {
+      const { template } = createStack();
+      template.hasResourceProperties("AWS::DynamoDB::Table", {
+        KeySchema: [{ AttributeName: "job_id", KeyType: "HASH" }],
+        AttributeDefinitions: Match.arrayWith([
+          { AttributeName: "file_key", AttributeType: "S" },
+        ]),
+        GlobalSecondaryIndexes: Match.arrayWith([
+          Match.objectLike({
+            IndexName: "file_key-index",
+            KeySchema: [{ AttributeName: "file_key", KeyType: "HASH" }],
+          }),
+        ]),
       });
     });
 
     it("PAY_PER_REQUEST (オンデマンド) 課金である", () => {
       const { template } = createStack();
       template.hasResourceProperties("AWS::DynamoDB::Table", {
-        KeySchema: [{ AttributeName: "file_key", KeyType: "HASH" }],
+        KeySchema: [{ AttributeName: "job_id", KeyType: "HASH" }],
         BillingMode: "PAY_PER_REQUEST",
       });
     });
