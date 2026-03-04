@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { App, Aspects } from "aws-cdk-lib/core";
 import { AwsSolutionsChecks } from "cdk-nag";
+import { ApiStack } from "../lib/api-stack";
 import { MonitoringStack } from "../lib/monitoring-stack";
 import { OrchestrationStack } from "../lib/orchestration-stack";
 import { ProcessingStack } from "../lib/processing-stack";
@@ -37,6 +38,12 @@ new OrchestrationStack(app, "OrchestrationStack", {
   env: { region, account },
   mainQueue: processingStack.mainQueue,
   controlTable: processingStack.controlTable,
+});
+
+new ApiStack(app, "ApiStack", {
+  env: { region, account },
+  bucket: processingStack.bucket,
+  statusTable: processingStack.statusTable,
 });
 
 new MonitoringStack(app, "MonitoringStack", {

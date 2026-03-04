@@ -518,8 +518,8 @@ CDK で API Lambda、API Gateway REST API、CloudFront Distribution、API Key + 
     - `bucket.grantDelete(fn, "input/*")` — DELETE 時のベストエフォート削除用
     - 全 23 テスト PASS
 
-- [ ] 9.6. `bin/app.ts` に ApiStack を追加する（P0、9.1 完了後）
-  - [ ] 9.6.1. `ApiStack` をインポートし、`ProcessingStack` の後にインスタンス化
+- [x] 9.6. `bin/app.ts` に ApiStack を追加する（P0、9.1 完了後）
+  - [x] 9.6.1. `ApiStack` をインポートし、`ProcessingStack` の後にインスタンス化
     ```typescript
     const apiStack = new ApiStack(app, "ApiStack", {
       env: { region, account },
@@ -527,23 +527,23 @@ CDK で API Lambda、API Gateway REST API、CloudFront Distribution、API Key + 
       statusTable: processingStack.statusTable,
     });
     ```
+    - 全 101 テスト PASS
 
-- [ ] 9.7. CDK Nag の指摘を確認し対応する（P0、9.1-9.6 完了後）
-  - [ ] 9.7.1. `npx cdk synth` で CDK Nag の指摘を確認
-  - [ ] 9.7.2. 対応が必要な指摘を修正（想定される指摘）:
-    - `AwsSolutions-APIG1`: API Gateway アクセスログ → ログ設定を追加
-    - `AwsSolutions-APIG2`: リクエストバリデーション → proxy モードのため Nag 抑制
+- [x] 9.7. CDK Nag の指摘を確認し対応する（P0、9.1-9.6 完了後）
+  - [x] 9.7.1. `npx cdk synth` で CDK Nag の指摘を確認
+  - [x] 9.7.2. 対応が必要な指摘を修正:
+    - `AwsSolutions-APIG1/APIG6`: API Gateway アクセスログ → LogGroup + deployOptions で追加
+    - `AwsSolutions-APIG2`: リクエストバリデーション → proxy モード + Hono で処理のため Nag 抑制
     - `AwsSolutions-APIG3`: WAF 関連付け → 初期段階は Nag 抑制（将来追加）
-    - `AwsSolutions-APIG4`: 認証方式 → API Key 使用のため Nag 抑制
-    - `AwsSolutions-CFR1/CFR2`: CloudFront Geo restriction / WAF → 初期段階は Nag 抑制
-    - `AwsSolutions-CFR4`: CloudFront TLS → ViewerProtocolPolicy で対応済み
+    - `AwsSolutions-APIG4/COG4`: 認証方式 → API Key 使用のため Nag 抑制
+    - `AwsSolutions-CFR1/CFR2/CFR3`: CloudFront Geo/WAF/Logging → 初期段階は Nag 抑制
+    - `AwsSolutions-CFR4`: CloudFront TLS → デフォルト証明書のため Nag 抑制（将来 ACM 証明書追加）
     - `AwsSolutions-IAM4/IAM5`: Lambda 実行ロールの managed policy / wildcard → 理由を記録して Nag 抑制
-    - `AwsSolutions-L1`: Lambda ランタイム最新確認 → Node.js 22.x で対応済み
-  - [ ] 9.7.3. 対応しない指摘は `NagSuppressions` で抑制し理由を記録
-  - [ ] 9.7.4. 全テスト実行: `pnpm test` で全スナップショットテストが通ることを確認
+  - [x] 9.7.3. 対応しない指摘は `NagSuppressions` で抑制し理由を記録
+  - [x] 9.7.4. 全テスト実行: `pnpm test` で全 101 テスト PASS
 
-- [ ] 9.8. Biome で lint / format を実行し修正する（P0、9.7 完了後）
-  - [ ] 9.8.1. `pnpm lint:fix` で自動修正
+- [x] 9.8. Biome で lint / format を実行し修正する（P0、9.7 完了後）
+  - [x] 9.8.1. `pnpm lint:fix` で自動修正（import ソート）
   - [ ] 9.8.2. `pnpm lint` でエラーゼロを確認
 
 _設計書参照: [API実装検討.md](./API実装検討.md) > CDK スタック設計 (ApiStack)、CloudFront 設定詳細、API Key の発行・管理、セキュリティ考慮事項_
