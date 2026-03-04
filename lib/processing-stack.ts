@@ -65,8 +65,12 @@ export class ProcessingStack extends Stack {
       blockPublicAccess: BlockPublicAccess.BLOCK_ALL,
       removalPolicy: RemovalPolicy.RETAIN,
       enforceSSL: true,
+      eventBridgeEnabled: true,
     });
 
+    // S3 → SQS: OCR processor Lambda の入力トリガー（独立パス）
+    // S3 → EventBridge → Step Functions: エンドポイントライフサイクル管理（独立パス）
+    // 両パスは同じ input/ プレフィックスで発火するが、互いに独立して動作する
     this.bucket.addEventNotification(
       EventType.OBJECT_CREATED,
       new SqsDestination(this.mainQueue),
@@ -224,7 +228,7 @@ export class ProcessingStack extends Stack {
 
     new CfnOutput(this, "MainQueueArn", {
       value: this.mainQueue.queueArn,
-      description: "Main SQS queue ARN (used by EventBridge Pipes in Phase 4)",
+      description: "Main SQS queue ARN (consumed by OCR processor Lambda)",
     });
 
     new CfnOutput(this, "DeadLetterQueueArn", {

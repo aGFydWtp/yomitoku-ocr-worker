@@ -1,16 +1,13 @@
 import type { Table } from "aws-cdk-lib/aws-dynamodb";
-import {
-  Effect,
-  PolicyStatement,
-  Role,
-  ServicePrincipal,
-} from "aws-cdk-lib/aws-iam";
+import { Rule, RuleTargetInput } from "aws-cdk-lib/aws-events";
+import { SfnStateMachine } from "aws-cdk-lib/aws-events-targets";
+import { Effect, PolicyStatement } from "aws-cdk-lib/aws-iam";
 import {
   Code,
   Function as LambdaFunction,
   Runtime,
 } from "aws-cdk-lib/aws-lambda";
-import { CfnPipe } from "aws-cdk-lib/aws-pipes";
+import type { IBucket } from "aws-cdk-lib/aws-s3";
 import type { Queue } from "aws-cdk-lib/aws-sqs";
 import {
   Choice,
@@ -31,8 +28,11 @@ import { NagSuppressions } from "cdk-nag";
 import type { Construct } from "constructs";
 
 export interface OrchestrationStackProps extends StackProps {
+  /** endpoint control Lambda がキュー深度をポーリングするために使用 */
   mainQueue: Queue;
   controlTable: Table;
+  /** EventBridge Rule のイベントソース（S3 ObjectCreated → Step Functions） */
+  bucket: IBucket;
 }
 
 export class OrchestrationStack extends Stack {
@@ -42,7 +42,7 @@ export class OrchestrationStack extends Stack {
   constructor(scope: Construct, id: string, props: OrchestrationStackProps) {
     super(scope, id, props);
 
-    const { mainQueue, controlTable } = props;
+    const { mainQueue, controlTable, bucket } = props;
 
     const endpointName = this.node.tryGetContext("endpointName") as
       | string
@@ -121,50 +121,21 @@ export class OrchestrationStack extends Stack {
       timeout: Duration.hours(2),
     });
 
-    // --- 4.3 EventBridge Pipes ---
-    const pipeRole = new Role(this, "PipeRole", {
-      assumedBy: new ServicePrincipal("pipes.amazonaws.com"),
-    });
-
-    // SQS source permissions
-    pipeRole.addToPolicy(
-      new PolicyStatement({
-        sid: "SqsSourcePermissions",
-        effect: Effect.ALLOW,
-        actions: [
-          "sqs:ReceiveMessage",
-          "sqs:DeleteMessage",
-          "sqs:GetQueueAttributes",
-        ],
-        resources: [mainQueue.queueArn],
-      }),
-    );
-
-    // Step Functions target permissions
-    pipeRole.addToPolicy(
-      new PolicyStatement({
-        sid: "StepFunctionsTargetPermission",
-        effect: Effect.ALLOW,
-        actions: ["states:StartExecution"],
-        resources: [this.stateMachine.stateMachineArn],
-      }),
-    );
-
-    new CfnPipe(this, "SqsToStepFunctionsPipe", {
-      roleArn: pipeRole.roleArn,
-      source: mainQueue.queueArn,
-      target: this.stateMachine.stateMachineArn,
-      sourceParameters: {
-        sqsQueueParameters: {
-          batchSize: 1,
+    // --- 4.3 EventBridge Rule (S3 → Step Functions) ---
+    new Rule(this, "S3ObjectCreatedRule", {
+      eventPattern: {
+        source: ["aws.s3"],
+        detailType: ["Object Created"],
+        detail: {
+          bucket: { name: [bucket.bucketName] },
+          object: { key: [{ prefix: "input/" }] },
         },
       },
-      targetParameters: {
-        inputTemplate: '{"trigger": "sqs_message"}',
-        stepFunctionStateMachineParameters: {
-          invocationType: "FIRE_AND_FORGET",
-        },
-      },
+      targets: [
+        new SfnStateMachine(this.stateMachine, {
+          input: RuleTargetInput.fromObject({ trigger: "s3_event" }),
+        }),
+      ],
     });
 
     // CDK Nag suppressions
@@ -339,11 +310,6 @@ export class OrchestrationStack extends Stack {
 
     // --- Flow construction ---
 
-    // [0] Unwrap array input from EventBridge Pipe (SQS batch is always an array)
-    const unwrapInput = new Pass(this, "UnwrapPipeInput", {
-      inputPath: "$[0]",
-    });
-
     // [1] Acquire lock → check result
     const lockChoice = new Choice(this, "LockAcquired?")
       .when(
@@ -352,7 +318,6 @@ export class OrchestrationStack extends Stack {
       )
       .otherwise(lockNotAcquired);
 
-    unwrapInput.next(acquireLock);
     acquireLock.next(lockChoice);
 
     // [2] Check endpoint status → branch
@@ -441,6 +406,9 @@ export class OrchestrationStack extends Stack {
     // Error handling: add catch to all Lambda invokes
     const errorHandler = releaseLockOnError;
 
+    // acquireLock failure: lock was not acquired, so skip release and fail directly
+    acquireLock.addCatch(failState, { resultPath: "$.error" });
+
     for (const task of [
       checkEndpointStatus,
       createEndpoint,
@@ -455,6 +423,6 @@ export class OrchestrationStack extends Stack {
       });
     }
 
-    return unwrapInput;
+    return acquireLock;
   }
 }

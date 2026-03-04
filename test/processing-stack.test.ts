@@ -61,6 +61,15 @@ describe("ProcessingStack", () => {
       const { stack } = createStack();
       expect(stack.bucket).toBeDefined();
     });
+
+    it("EventBridge 通知が有効化されている", () => {
+      const { template } = createStack();
+      template.hasResourceProperties("Custom::S3BucketNotifications", {
+        NotificationConfiguration: {
+          EventBridgeConfiguration: {},
+        },
+      });
+    });
   });
 
   // --- 2.2 SQS キュー ---

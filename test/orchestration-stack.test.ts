@@ -1,5 +1,6 @@
 import { Match, Template } from "aws-cdk-lib/assertions";
 import { AttributeType, BillingMode, Table } from "aws-cdk-lib/aws-dynamodb";
+import { Bucket } from "aws-cdk-lib/aws-s3";
 import { Queue } from "aws-cdk-lib/aws-sqs";
 import { App, Duration, Stack } from "aws-cdk-lib/core";
 import { OrchestrationStack } from "../lib/orchestration-stack";
@@ -32,11 +33,13 @@ function createStack(): {
     partitionKey: { name: "lock_key", type: AttributeType.STRING },
     billingMode: BillingMode.PAY_PER_REQUEST,
   });
+  const bucket = new Bucket(depStack, "DataBucket");
 
   const stack = new OrchestrationStack(app, "TestOrchestrationStack", {
     env: { region: TEST_REGION, account: TEST_ACCOUNT },
     mainQueue,
     controlTable,
+    bucket,
   });
   const template = Template.fromStack(stack);
   return { app, stack, template };
@@ -187,34 +190,44 @@ describe("OrchestrationStack", () => {
     });
   });
 
-  // --- EventBridge Pipes ---
-  describe("EventBridge Pipes", () => {
-    it("CfnPipe が 1 つ存在する", () => {
+  // --- EventBridge Rule ---
+  describe("EventBridge Rule", () => {
+    it("S3 Object Created ルールが 1 つ存在する", () => {
       const { template } = createStack();
-      template.resourceCountIs("AWS::Pipes::Pipe", 1);
+      template.resourceCountIs("AWS::Events::Rule", 1);
     });
 
-    it("SQS → Step Functions の構成で FIRE_AND_FORGET が設定されている", () => {
+    it("S3 ObjectCreated イベントパターンが設定されている", () => {
       const { template } = createStack();
-      template.hasResourceProperties("AWS::Pipes::Pipe", {
-        Source: {
-          "Fn::ImportValue": Match.stringLikeRegexp(".*MainQueue.*Arn.*"),
-        },
-        Target: { Ref: Match.stringLikeRegexp("EndpointOrchestrator.*") },
-        SourceParameters: {
-          SqsQueueParameters: {
-            BatchSize: 1,
-          },
-        },
-        TargetParameters: {
-          StepFunctionStateMachineParameters: {
-            InvocationType: "FIRE_AND_FORGET",
+      template.hasResourceProperties("AWS::Events::Rule", {
+        EventPattern: {
+          source: ["aws.s3"],
+          "detail-type": ["Object Created"],
+          detail: {
+            bucket: { name: Match.anyValue() },
+            object: { key: [{ prefix: "input/" }] },
           },
         },
       });
     });
 
-    it("Pipes 用 IAM ロールが存在する", () => {
+    it("ターゲットに Step Functions ステートマシンが設定されている", () => {
+      const { template } = createStack();
+      template.hasResourceProperties("AWS::Events::Rule", {
+        Targets: Match.arrayWith([
+          Match.objectLike({
+            Arn: { Ref: Match.stringLikeRegexp("EndpointOrchestrator.*") },
+          }),
+        ]),
+      });
+    });
+
+    it("Pipes リソースが存在しない", () => {
+      const { template } = createStack();
+      template.resourceCountIs("AWS::Pipes::Pipe", 0);
+    });
+
+    it("EventBridge Rule ターゲット用 IAM ロールに states:StartExecution 権限がある", () => {
       const { template } = createStack();
       template.hasResourceProperties("AWS::IAM::Role", {
         AssumeRolePolicyDocument: {
@@ -223,40 +236,8 @@ describe("OrchestrationStack", () => {
               Action: "sts:AssumeRole",
               Effect: "Allow",
               Principal: {
-                Service: "pipes.amazonaws.com",
+                Service: "events.amazonaws.com",
               },
-            }),
-          ]),
-        },
-      });
-    });
-
-    it("Pipes ロールに SQS 読み取り権限がある", () => {
-      const { template } = createStack();
-      template.hasResourceProperties("AWS::IAM::Policy", {
-        PolicyDocument: {
-          Statement: Match.arrayWith([
-            Match.objectLike({
-              Action: Match.arrayWith([
-                "sqs:ReceiveMessage",
-                "sqs:DeleteMessage",
-                "sqs:GetQueueAttributes",
-              ]),
-              Effect: "Allow",
-            }),
-          ]),
-        },
-      });
-    });
-
-    it("Pipes ロールに Step Functions StartExecution 権限がある", () => {
-      const { template } = createStack();
-      template.hasResourceProperties("AWS::IAM::Policy", {
-        PolicyDocument: {
-          Statement: Match.arrayWith([
-            Match.objectLike({
-              Action: "states:StartExecution",
-              Effect: "Allow",
             }),
           ]),
         },

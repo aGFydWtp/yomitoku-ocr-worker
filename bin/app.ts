@@ -38,6 +38,7 @@ new OrchestrationStack(app, "OrchestrationStack", {
   env: { region, account },
   mainQueue: processingStack.mainQueue,
   controlTable: processingStack.controlTable,
+  bucket: processingStack.bucket,
 });
 
 new ApiStack(app, "ApiStack", {
