@@ -492,28 +492,31 @@ CDK で API Lambda、API Gateway REST API、CloudFront Distribution、API Key + 
     - `CfnOutput` で `ApiKeyId` を出力
     - 全 12 テスト PASS
 
-- [ ] 9.3. CloudFront Distribution を設定する（P0、9.1 完了後）
-  - [ ] 9.3.1. テストに追加: `CloudFront::Distribution` が作成されること、Origin Custom Header `x-origin-verify` が設定されていること
-  - [ ] 9.3.2. `api-stack.ts` に追加
+- [x] 9.3. CloudFront Distribution を設定する（P0、9.1 完了後）
+  - [x] 9.3.1. テストに追加: `CloudFront::Distribution` が作成されること、Origin Custom Header `x-origin-verify` が設定されていること
+  - [x] 9.3.2. `api-stack.ts` に追加
     - `origins.RestApiOrigin` を使用（`customHeaders: { "x-origin-verify": originVerifySecret }`）
     - `CachePolicy.CACHING_DISABLED`
     - `OriginRequestPolicy.ALL_VIEWER_EXCEPT_HOST_HEADER`
     - `AllowedMethods.ALLOW_ALL`
     - `ViewerProtocolPolicy.REDIRECT_TO_HTTPS`
     - `CfnOutput` で `DistributionDomainName` を出力
+    - 全 17 テスト PASS
 
-- [ ] 9.4. API Gateway リソースポリシーを設定する（P0、9.3 完了後）
-  - [ ] 9.4.1. `api-stack.ts` に CloudFront 経由以外のアクセスを拒否するリソースポリシーを追加
-    - CloudFront Origin Custom Header (`x-origin-verify`) の値と一致しないリクエストを DENY
-    - 具体的な実装方法は CDK の `RestApi.policy` またはリソースポリシーで設定
+- [x] 9.4. API Gateway リソースポリシーを設定する（P0、9.3 完了後）
+  - [x] 9.4.1. `api-stack.ts` に CloudFront 経由以外のアクセスを拒否するリソースポリシーを追加
+    - `aws:Referer` 条件キーで CloudFront Origin Custom Header の値と一致しないリクエストを DENY
+    - `arnForExecuteApi()` は循環参照になるためリテラル `"execute-api:/*"` を使用
+    - 全 19 テスト PASS
 
-- [ ] 9.5. IAM 権限を付与する（P0、9.1 完了後）
-  - [ ] 9.5.1. テストに追加: Lambda ロールに必要な IAM ポリシーが付与されていること
-  - [ ] 9.5.2. `api-stack.ts` に追加
+- [x] 9.5. IAM 権限を付与する（P0、9.1 完了後）
+  - [x] 9.5.1. テストに追加: Lambda ロールに必要な IAM ポリシーが付与されていること
+  - [x] 9.5.2. `api-stack.ts` に追加
     - `statusTable.grantReadWriteData(fn)` — DynamoDB の GetItem, PutItem, UpdateItem, Query
     - `bucket.grantPut(fn, "input/*")` — S3 Presigned PUT URL 発行用
     - `bucket.grantRead(fn, "output/*")` — S3 Presigned GET URL 発行用
     - `bucket.grantDelete(fn, "input/*")` — DELETE 時のベストエフォート削除用
+    - 全 23 テスト PASS
 
 - [ ] 9.6. `bin/app.ts` に ApiStack を追加する（P0、9.1 完了後）
   - [ ] 9.6.1. `ApiStack` をインポートし、`ProcessingStack` の後にインスタンス化
