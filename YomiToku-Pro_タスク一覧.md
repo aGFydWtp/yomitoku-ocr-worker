@@ -544,7 +544,7 @@ CDK で API Lambda、API Gateway REST API、CloudFront Distribution、API Key + 
 
 - [x] 9.8. Biome で lint / format を実行し修正する（P0、9.7 完了後）
   - [x] 9.8.1. `pnpm lint:fix` で自動修正（import ソート）
-  - [ ] 9.8.2. `pnpm lint` でエラーゼロを確認
+  - [x] 9.8.2. `pnpm lint` でエラーゼロを確認
 
 _設計書参照: [API実装検討.md](./API実装検討.md) > CDK スタック設計 (ApiStack)、CloudFront 設定詳細、API Key の発行・管理、セキュリティ考慮事項_
 
