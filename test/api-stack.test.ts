@@ -82,11 +82,56 @@ describe("ApiStack", () => {
     });
   });
 
-  // --- 9.1 Stack Outputs ---
+  // --- 9.2 API Key + Usage Plan ---
+  describe("API Key + Usage Plan", () => {
+    it("API Key ソースが HEADER に設定されている", () => {
+      const { template } = createStack();
+      template.hasResourceProperties("AWS::ApiGateway::RestApi", {
+        ApiKeySourceType: "HEADER",
+      });
+    });
+
+    it("ApiKey リソースが作成されている", () => {
+      const { template } = createStack();
+      template.resourceCountIs("AWS::ApiGateway::ApiKey", 1);
+    });
+
+    it("UsagePlan にレート制限が設定されている（rateLimit: 100, burstLimit: 200）", () => {
+      const { template } = createStack();
+      template.hasResourceProperties("AWS::ApiGateway::UsagePlan", {
+        Throttle: {
+          RateLimit: 100,
+          BurstLimit: 200,
+        },
+      });
+    });
+
+    it("UsagePlan にクォータが設定されている（10,000 req/day）", () => {
+      const { template } = createStack();
+      template.hasResourceProperties("AWS::ApiGateway::UsagePlan", {
+        Quota: {
+          Limit: 10000,
+          Period: "DAY",
+        },
+      });
+    });
+
+    it("UsagePlanKey で ApiKey と UsagePlan が紐付けられている", () => {
+      const { template } = createStack();
+      template.resourceCountIs("AWS::ApiGateway::UsagePlanKey", 1);
+    });
+  });
+
+  // --- Stack Outputs ---
   describe("Stack Outputs", () => {
     it("ApiUrl を出力する", () => {
       const { template } = createStack();
       template.hasOutput("ApiUrl", { Value: Match.anyValue() });
+    });
+
+    it("ApiKeyId を出力する", () => {
+      const { template } = createStack();
+      template.hasOutput("ApiKeyId", { Value: Match.anyValue() });
     });
   });
 });

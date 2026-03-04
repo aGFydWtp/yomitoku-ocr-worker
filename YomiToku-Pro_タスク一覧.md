@@ -483,13 +483,14 @@ CDK で API Lambda、API Gateway REST API、CloudFront Distribution、API Key + 
     - `LambdaRestApi` を作成（`proxy: true`, `endpointTypes: [REGIONAL]`）
     - `esbuild` を root devDependency に追加（NodejsFunction バンドリング用）
 
-- [ ] 9.2. API Key + Usage Plan を設定する（P0、9.1 完了後）
-  - [ ] 9.2.1. テストに追加: `ApiKey` リソースが作成されること、`UsagePlan` にレート制限が設定されていること
-  - [ ] 9.2.2. `api-stack.ts` に追加
+- [x] 9.2. API Key + Usage Plan を設定する（P0、9.1 完了後）
+  - [x] 9.2.1. テストに追加（5テスト）: `ApiKey` 作成、`ApiKeySourceType: HEADER`、`UsagePlan` レート制限・クォータ、`UsagePlanKey` 紐付け
+  - [x] 9.2.2. `api-stack.ts` に追加
     - `apiKeySourceType: ApiKeySourceType.HEADER`、`defaultMethodOptions: { apiKeyRequired: true }`
     - `UsagePlan` を作成（`throttle: { rateLimit: 100, burstLimit: 200 }`、`quota: { limit: 10000, period: Period.DAY }`）
-    - `ApiKey` を作成し `UsagePlan` に紐付け
-    - `CfnOutput` で `ApiKeyId` を出力（デプロイ後に `aws apigateway get-api-key --api-key <ID> --include-value` で値を取得）
+    - `ApiKey` を作成し `UsagePlan` に紐付け、`addApiStage` でデプロイステージを関連付け
+    - `CfnOutput` で `ApiKeyId` を出力
+    - 全 12 テスト PASS
 
 - [ ] 9.3. CloudFront Distribution を設定する（P0、9.1 完了後）
   - [ ] 9.3.1. テストに追加: `CloudFront::Distribution` が作成されること、Origin Custom Header `x-origin-verify` が設定されていること
