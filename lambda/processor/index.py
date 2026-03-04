@@ -147,7 +147,10 @@ async def process_file(file_key: str) -> None:
         )
 
     except Exception as e:
-        # 6. Update DynamoDB: FAILED and re-raise for SQS retry
+        # 6. Update DynamoDB: FAILED — do NOT re-raise.
+        # The same PDF will produce the same error on retry, so SQS retry is pointless.
+        # Letting the message be deleted avoids blocking the queue for up to
+        # VisibilityTimeout × maxReceiveCount (potentially hours).
         table.update_item(
             Key={"job_id": job_id},
             UpdateExpression="SET #s = :s, updated_at = :t, error_message = :e",
@@ -158,7 +161,7 @@ async def process_file(file_key: str) -> None:
                 ":e": str(e),
             },
         )
-        raise
+        print(f"[ERROR] job_id={job_id} failed: {e}")
 
     finally:
         # 7. Cleanup /tmp files

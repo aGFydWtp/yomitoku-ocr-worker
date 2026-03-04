@@ -130,9 +130,9 @@ class TestHandler:
         mock_process_file.assert_any_call("input/uuid-2/b.pdf")
 
     @patch("index.process_file", new_callable=AsyncMock)
-    def test_returns_batch_item_failures(self, mock_process_file):
-        """process_file が例外を投げたレコードを batchItemFailures で返す。"""
-        mock_process_file.side_effect = [None, RuntimeError("OCR failed")]
+    def test_returns_batch_item_failures_on_unexpected_error(self, mock_process_file):
+        """extract_file_key 等の予期しない例外時のみ batchItemFailures で返す。"""
+        mock_process_file.side_effect = [None, RuntimeError("unexpected")]
         event = {
             "Records": [
                 {
@@ -169,6 +169,8 @@ class TestHandler:
         }
         result = handler(event, None)
 
+        # process_file 自体はもう raise しないが、handler レベルで
+        # extract_file_key のパースエラー等が起きた場合は batchItemFailures に入る
         assert result == {
             "batchItemFailures": [{"itemIdentifier": "msg-2"}]
         }

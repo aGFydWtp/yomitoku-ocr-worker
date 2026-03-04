@@ -241,7 +241,7 @@ class TestProcessFileYomitokuClient:
 
     @pytest.mark.asyncio
     async def test_ocr_failure_sets_status_to_failed(self, aws_setup):
-        """OCR 処理が失敗したら FAILED に更新し、例外を再送出する。"""
+        """OCR 処理が失敗したら FAILED に更新し、例外は送出しない（SQS リトライ抑止）。"""
         from index import process_file
 
         with patch("index.YomitokuClient") as MockClient:
@@ -253,8 +253,8 @@ class TestProcessFileYomitokuClient:
             mock_instance.__aexit__ = AsyncMock(return_value=False)
             MockClient.return_value = mock_instance
 
-            with pytest.raises(RuntimeError, match="SageMaker timeout"):
-                await process_file(FILE_KEY)
+            # 例外が送出されないこと（SQS メッセージが正常消化される）
+            await process_file(FILE_KEY)
 
         item = aws_setup["table"].get_item(Key={"job_id": JOB_ID})["Item"]
         assert item["status"] == "FAILED"
@@ -282,8 +282,8 @@ class TestPdfMagicNumberValidation:
         assert item["status"] == "COMPLETED"
 
     @pytest.mark.asyncio
-    async def test_invalid_file_raises_and_sets_failed(self, aws_setup):
-        """先頭が %PDF- でないファイルは ValueError で FAILED に遷移する。"""
+    async def test_invalid_file_sets_failed_without_raising(self, aws_setup):
+        """先頭が %PDF- でないファイルは FAILED に遷移し、例外は送出しない。"""
         from index import process_file
 
         # S3 に不正ファイル（PNG ヘッダー）をアップロード
@@ -291,39 +291,37 @@ class TestPdfMagicNumberValidation:
             Bucket=BUCKET_NAME, Key=FILE_KEY, Body=b"\x89PNG\r\nfake"
         )
 
-        with pytest.raises(ValueError, match="not a valid PDF"):
-            await process_file(FILE_KEY)
+        # 例外が送出されないこと
+        await process_file(FILE_KEY)
 
         item = aws_setup["table"].get_item(Key={"job_id": JOB_ID})["Item"]
         assert item["status"] == "FAILED"
         assert "not a valid PDF" in item["error_message"]
 
     @pytest.mark.asyncio
-    async def test_empty_file_raises_and_sets_failed(self, aws_setup):
-        """空ファイルは ValueError で FAILED に遷移する。"""
+    async def test_empty_file_sets_failed_without_raising(self, aws_setup):
+        """空ファイルは FAILED に遷移し、例外は送出しない。"""
         from index import process_file
 
         aws_setup["s3"].put_object(
             Bucket=BUCKET_NAME, Key=FILE_KEY, Body=b""
         )
 
-        with pytest.raises(ValueError, match="not a valid PDF"):
-            await process_file(FILE_KEY)
+        await process_file(FILE_KEY)
 
         item = aws_setup["table"].get_item(Key={"job_id": JOB_ID})["Item"]
         assert item["status"] == "FAILED"
 
     @pytest.mark.asyncio
-    async def test_text_file_raises_and_sets_failed(self, aws_setup):
-        """テキストファイルは ValueError で FAILED に遷移する。"""
+    async def test_text_file_sets_failed_without_raising(self, aws_setup):
+        """テキストファイルは FAILED に遷移し、例外は送出しない。"""
         from index import process_file
 
         aws_setup["s3"].put_object(
             Bucket=BUCKET_NAME, Key=FILE_KEY, Body=b"Hello, World!"
         )
 
-        with pytest.raises(ValueError, match="not a valid PDF"):
-            await process_file(FILE_KEY)
+        await process_file(FILE_KEY)
 
         item = aws_setup["table"].get_item(Key={"job_id": JOB_ID})["Item"]
         assert item["status"] == "FAILED"
@@ -352,7 +350,7 @@ class TestProcessFileTmpCleanup:
 
     @pytest.mark.asyncio
     async def test_tmp_files_cleaned_on_failure(self, aws_setup):
-        """異常終了時でも /tmp ファイルが削除される。"""
+        """OCR 失敗時でも /tmp ファイルが削除される。"""
         from index import process_file
 
         with patch("index.YomitokuClient") as MockClient:
@@ -364,8 +362,7 @@ class TestProcessFileTmpCleanup:
             mock_instance.__aexit__ = AsyncMock(return_value=False)
             MockClient.return_value = mock_instance
 
-            with pytest.raises(RuntimeError):
-                await process_file(FILE_KEY)
+            await process_file(FILE_KEY)
 
-        # 異常終了後でも /tmp にファイルが残っていないこと
+        # 失敗後でも /tmp にファイルが残っていないこと
         assert not os.path.exists("/tmp/sample.pdf")

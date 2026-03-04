@@ -65,10 +65,10 @@ describe("ProcessingStack", () => {
 
   // --- 2.2 SQS キュー ---
   describe("SQS Queue", () => {
-    it("メインキューの visibilityTimeout が 3600 秒", () => {
+    it("メインキューの visibilityTimeout が 720 秒", () => {
       const { template } = createStack();
       template.hasResourceProperties("AWS::SQS::Queue", {
-        VisibilityTimeout: 3600,
+        VisibilityTimeout: 720,
         MessageRetentionPeriod: 1209600,
         ReceiveMessageWaitTimeSeconds: 20,
       });

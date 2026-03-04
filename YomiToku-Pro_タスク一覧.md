@@ -596,6 +596,27 @@ _設計書参照: [API実装検討.md](./API実装検討.md) 全体_
 
 ---
 
+## フェーズ 11: Processor エラーハンドリング改善
+
+**目的**: OCR 処理失敗時に SQS メッセージが in-flight で長時間残留し、キュー全体をブロックする問題を修正する。
+
+**背景**: E2E テスト（Phase 10）で発見。無効な PDF をアップロードすると Processor Lambda が DynamoDB を `FAILED` に更新した後 `raise` で例外を再送出するため、SQS の `ReportBatchItemFailures` により メッセージが返却される。VisibilityTimeout（1時間）× maxReceiveCount（3回）で最大 3 時間キューが詰まる。同じ PDF で再試行しても同じエラーになるためリトライは無意味。
+
+- [x] 11.1. Processor Lambda のエラーハンドリング修正（P0）
+  - [x] 11.1.1. `lambda/processor/index.py` の `process_file` 内 except ブロックで DynamoDB を `FAILED` に更新した後の `raise` を削除
+    - DynamoDB に FAILED + error_message が記録済みのため、SQS リトライは不要
+    - handler レベルで `batchItemFailures` に追加されなくなり、メッセージが正常消化される
+  - [x] 11.1.2. handler レベルの except で FAILED 更新済みの場合はログ出力のみ（`batchItemFailures` に追加しない）
+  - [x] 11.1.3. 既存ユニットテスト（`lambda/processor/tests/test_process_file.py`、`test_handler.py`）の修正
+    - エラー時に例外が送出されないことを検証するテストに変更
+  - [x] 11.1.4. `pnpm test`（101 PASS）+ `uv run pytest`（25 PASS）全テスト PASS 確認
+- [ ] 11.2. デプロイ & E2E 検証（P0、11.1 完了後）
+  - [ ] 11.2.1. ProcessingStack を再デプロイ
+  - [ ] 11.2.2. 無効な PDF（ダミーファイル）をアップロードし、ジョブが速やかに FAILED になること・SQS メッセージが残留しないことを確認
+  - [ ] 11.2.3. 正常な PDF をアップロードし、COMPLETED になること・resultUrl が返却されることを確認
+
+---
+
 ## 依存関係
 
 ```
@@ -628,6 +649,9 @@ _設計書参照: [API実装検討.md](./API実装検討.md) 全体_
           |
           v
         フェーズ 10（API 結合テスト）
+          |
+          v
+        フェーズ 11（Processor エラーハンドリング改善）
 ```
 
 - フェーズ 7 はフェーズ 6 完了後に着手（既存パイプラインの正常動作確認後にスキーマ変更）
@@ -636,6 +660,7 @@ _設計書参照: [API実装検討.md](./API実装検討.md) 全体_
 - フェーズ 9 はフェーズ 8 完了後に着手（API Lambda が完成してから CDK スタック構築）
 - フェーズ 9 の 9.2, 9.3, 9.5 は 9.1 完了後に並行着手可能
 - フェーズ 10 はフェーズ 9 完了後に着手（デプロイ後に結合テスト）
+- フェーズ 11 はフェーズ 10 で発見された問題の修正（独立して着手可能）
 
 ---
 

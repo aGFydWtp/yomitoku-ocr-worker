@@ -53,7 +53,7 @@ export class ProcessingStack extends Stack {
     };
 
     this.mainQueue = new Queue(this, "MainQueue", {
-      visibilityTimeout: Duration.seconds(3600),
+      visibilityTimeout: Duration.seconds(720),
       retentionPeriod: Duration.days(14),
       receiveMessageWaitTime: Duration.seconds(20),
       deadLetterQueue: dlqSetting,
