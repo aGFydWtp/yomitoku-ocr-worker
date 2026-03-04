@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import {
   AccessLogFormat,
   ApiKeySourceType,
+  CfnAccount,
   EndpointType,
   LambdaRestApi,
   LogGroupLogDestination,
@@ -17,7 +18,14 @@ import {
 } from "aws-cdk-lib/aws-cloudfront";
 import { RestApiOrigin } from "aws-cdk-lib/aws-cloudfront-origins";
 import type { Table } from "aws-cdk-lib/aws-dynamodb";
-import { AnyPrincipal, Effect, PolicyStatement } from "aws-cdk-lib/aws-iam";
+import {
+  AnyPrincipal,
+  Effect,
+  ManagedPolicy,
+  PolicyStatement,
+  Role,
+  ServicePrincipal,
+} from "aws-cdk-lib/aws-iam";
 import { Runtime } from "aws-cdk-lib/aws-lambda";
 import { NodejsFunction } from "aws-cdk-lib/aws-lambda-nodejs";
 import { LogGroup, RetentionDays } from "aws-cdk-lib/aws-logs";
@@ -59,6 +67,19 @@ export class ApiStack extends Stack {
     bucket.grantRead(fn, "output/*");
     bucket.grantDelete(fn, "input/*");
 
+    // --- API Gateway アカウント設定（CloudWatch ログ用） ---
+    const apiGatewayRole = new Role(this, "ApiGatewayCloudWatchRole", {
+      assumedBy: new ServicePrincipal("apigateway.amazonaws.com"),
+      managedPolicies: [
+        ManagedPolicy.fromAwsManagedPolicyName(
+          "service-role/AmazonAPIGatewayPushToCloudWatchLogs",
+        ),
+      ],
+    });
+    const apigwAccount = new CfnAccount(this, "ApiGatewayAccount", {
+      cloudWatchRoleArn: apiGatewayRole.roleArn,
+    });
+
     const accessLogGroup = new LogGroup(this, "ApiAccessLog", {
       retention: RetentionDays.ONE_MONTH,
     });
@@ -75,6 +96,8 @@ export class ApiStack extends Stack {
         loggingLevel: MethodLoggingLevel.INFO,
       },
     });
+    // デプロイステージが CfnAccount（CloudWatch ロール設定）に依存
+    api.deploymentStage.node.addDependency(apigwAccount);
 
     const plan = api.addUsagePlan("UsagePlan", {
       throttle: { rateLimit: 100, burstLimit: 200 },
@@ -146,6 +169,18 @@ export class ApiStack extends Stack {
     });
 
     // --- CDK Nag Suppressions ---
+    NagSuppressions.addResourceSuppressions(apiGatewayRole, [
+      {
+        id: "AwsSolutions-IAM4",
+        reason:
+          "AmazonAPIGatewayPushToCloudWatchLogs is the AWS-recommended managed policy " +
+          "for API Gateway CloudWatch logging at the account level.",
+        appliesTo: [
+          "Policy::arn:<AWS::Partition>:iam::aws:policy/service-role/AmazonAPIGatewayPushToCloudWatchLogs",
+        ],
+      },
+    ]);
+
     NagSuppressions.addResourceSuppressions(
       fn,
       [
