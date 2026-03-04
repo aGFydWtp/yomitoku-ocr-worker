@@ -200,10 +200,10 @@ jobsRoutes.get("/:jobId", async (c) => {
     updatedAt: item.updated_at as string,
   };
 
-  if (item.status === "COMPLETED" && item.result_key) {
+  if (item.status === "COMPLETED" && item.output_key) {
     response.resultUrl = await createResultUrl(
       bucketName,
-      item.result_key as string,
+      item.output_key as string,
     );
     response.resultExpiresIn = RESULT_URL_EXPIRES_IN;
     if (item.processing_time_ms !== undefined) {

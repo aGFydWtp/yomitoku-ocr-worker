@@ -282,7 +282,7 @@ describe("GET /jobs/:jobId", () => {
     mockSend.mockResolvedValue({
       Item: makeItem({
         status: "COMPLETED",
-        result_key: `output/${FIXED_UUID}/result.json`,
+        output_key: `output/${FIXED_UUID}/result.json`,
         processing_time_ms: 12345,
       }),
     });
@@ -361,7 +361,7 @@ describe("GET /jobs/:jobId", () => {
     mockSend.mockResolvedValue({
       Item: makeItem({
         status: "COMPLETED",
-        result_key: `output/${FIXED_UUID}/result.json`,
+        output_key: `output/${FIXED_UUID}/result.json`,
       }),
     });
     mockCreateResultUrl.mockRejectedValue(new Error("S3 unavailable"));
@@ -509,7 +509,7 @@ describe("GET /jobs", () => {
     const items = makeListItems(1);
     items[0] = {
       ...items[0],
-      result_key: "output/job-0/result.json",
+      output_key: "output/job-0/result.json",
     } as AnyJson;
     mockSend.mockResolvedValue({ Items: items, Count: 1 });
 
