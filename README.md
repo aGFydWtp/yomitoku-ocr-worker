@@ -30,7 +30,7 @@ S3 (input/) ─→ EventBridge Rule ─→ Step Functions (エンドポイント
 
 ## 前提条件
 
-- Node.js 18+, pnpm
+- Node.js 18+, pnpm (workspace 構成)
 - AWS CLI (認証済み)
 - Docker (Lambda コンテナビルド用)
 - AWS Marketplace で YomiToku-Pro をサブスクライブ済み
@@ -272,10 +272,24 @@ RESULT_URL=$(curl -s https://<DistributionDomainName>/jobs/$JOB_ID \
 curl -o result.json "$RESULT_URL"
 ```
 
+### Swagger UI
+
+API Lambda には Swagger UI が組み込まれています。デプロイ後、以下の URL でインタラクティブに API を確認できます。
+
+```
+https://<DistributionDomainName>/ui
+```
+
+OpenAPI ドキュメント (JSON) は `/doc` で取得できます。
+
 ## 開発
 
+pnpm workspace で管理しています。ルートで `pnpm install` を実行すると、`lambda/api` の依存も一括インストールされます。
+
 ```bash
-pnpm test        # Jest テスト
+pnpm install     # 全ワークスペースの依存をインストール
+pnpm test        # CDK テスト (Jest)
+pnpm test:api    # API テスト (Vitest, lambda/api)
 pnpm lint        # Biome lint
 pnpm lint:fix    # 自動修正
 npx cdk synth    # CloudFormation テンプレート生成 + CDK Nag チェック
@@ -291,14 +305,26 @@ lib/
   orchestration-stack.ts      Step Functions / EventBridge Rule
   api-stack.ts                API Gateway / CloudFront / API Lambda
   monitoring-stack.ts         CloudWatch / SNS
+pnpm-workspace.yaml           ワークスペース定義
 lambda/
   processor/                  OCR 処理ワーカー (Python, Docker)
   endpoint-control/           エンドポイント制御 (Python)
-  api/                        REST API (Hono, TypeScript)
-    index.ts                  エントリポイント
-    routes/jobs.ts            ジョブ CRUD ルート
-    routes/status.ts          エンドポイント状態取得ルート
-    lib/                      共通ユーティリティ
+  api/                        REST API (Hono, TypeScript) ← pnpm workspace
+    index.ts                  エントリポイント + Swagger UI
+    schemas.ts                Zod スキーマ + OpenAPI 定義
+    openapi.ts                OpenAPI ドキュメント設定
+    routes/
+      jobs.routes.ts          ルート定義 (OpenAPI メタデータ)
+      jobs.ts                 ジョブ CRUD ハンドラ
+      status.ts               エンドポイント状態取得
+    lib/
+      validate.ts             basePath / cursor バリデーション
+      errors.ts               エラークラス + ハンドラ
+      s3.ts                   S3 操作 (presigned URL, 削除)
+      sanitize.ts             ファイル名サニタイズ
+      dynamodb.ts             DynamoDB クライアント
+      sfn.ts                  Step Functions クライアント
+    biome.json                Biome 設定 (ルート継承)
 test/                         CDK スナップショットテスト
 scripts/                      結合テスト用スクリプト
 ```
