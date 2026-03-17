@@ -60,6 +60,7 @@ export const listJobsRoute = createRoute({
         .default(20)
         .optional(),
       cursor: z.string().optional(),
+      basePath: z.string().optional(),
     }),
   },
   responses: {

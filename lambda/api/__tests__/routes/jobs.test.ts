@@ -66,13 +66,13 @@ describe("POST /jobs", () => {
     const res = await app.request("/jobs", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ filename: "test.pdf" }),
+      body: JSON.stringify({ filename: "test.pdf", basePath: "test" }),
     });
 
     expect(res.status).toBe(201);
     const body: AnyJson = await res.json();
     expect(body.jobId).toBe(FIXED_UUID);
-    expect(body.fileKey).toBe(`input/${FIXED_UUID}/test.pdf`);
+    expect(body.fileKey).toBe(`input/test/${FIXED_UUID}/test.pdf`);
     expect(body.uploadUrl).toBe("https://s3.example.com/presigned");
     expect(body.expiresIn).toBe(900);
   });
@@ -82,7 +82,7 @@ describe("POST /jobs", () => {
     await app.request("/jobs", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ filename: "test.pdf" }),
+      body: JSON.stringify({ filename: "test.pdf", basePath: "test" }),
     });
 
     // calls[0] = Control Table read, calls[1] = Status Table write
@@ -93,7 +93,7 @@ describe("POST /jobs", () => {
         TableName: "test-table",
         Item: expect.objectContaining({
           job_id: FIXED_UUID,
-          file_key: `input/${FIXED_UUID}/test.pdf`,
+          file_key: `input/test/${FIXED_UUID}/test.pdf`,
           status: "PENDING",
           original_filename: "test.pdf",
         }),
@@ -108,14 +108,14 @@ describe("POST /jobs", () => {
     await app.request("/jobs", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ filename: "../../secret.pdf" }),
+      body: JSON.stringify({ filename: "../../secret.pdf", basePath: "test" }),
     });
 
     // calls[0] = Control Table read, calls[1] = Status Table write
     const putCommand = mockSend.mock.calls[1][0];
     expect(putCommand.input.Item.original_filename).toBe("../../secret.pdf");
     expect(putCommand.input.Item.file_key).toBe(
-      `input/${FIXED_UUID}/secret.pdf`,
+      `input/test/${FIXED_UUID}/secret.pdf`,
     );
   });
 
@@ -124,12 +124,12 @@ describe("POST /jobs", () => {
     await app.request("/jobs", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ filename: "test.pdf" }),
+      body: JSON.stringify({ filename: "test.pdf", basePath: "test" }),
     });
 
     expect(mockCreateUploadUrl).toHaveBeenCalledWith(
       "test-bucket",
-      `input/${FIXED_UUID}/test.pdf`,
+      `input/test/${FIXED_UUID}/test.pdf`,
     );
   });
 
@@ -156,7 +156,7 @@ describe("POST /jobs", () => {
     await app.request("/jobs", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ filename: "test.pdf" }),
+      body: JSON.stringify({ filename: "test.pdf", basePath: "test" }),
     });
 
     expect(callOrder).toEqual(["control-read", "s3-presign", "status-write"]);
@@ -180,7 +180,7 @@ describe("POST /jobs", () => {
     const res = await app.request("/jobs", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ filename: "test.txt" }),
+      body: JSON.stringify({ filename: "test.txt", basePath: "test" }),
     });
 
     expect(res.status).toBe(400);
@@ -193,12 +193,12 @@ describe("POST /jobs", () => {
     const res = await app.request("/jobs", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ filename: "" }),
+      body: JSON.stringify({ filename: "", basePath: "test" }),
     });
 
     expect(res.status).toBe(201);
     const body: AnyJson = await res.json();
-    expect(body.fileKey).toBe(`input/${FIXED_UUID}/document.pdf`);
+    expect(body.fileKey).toBe(`input/test/${FIXED_UUID}/document.pdf`);
   });
 
   it("バリデーション: filenameが文字列でない場合は400を返す", async () => {
@@ -230,12 +230,15 @@ describe("POST /jobs", () => {
     const res = await app.request("/jobs", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ filename: "請求書_2026年3月.pdf" }),
+      body: JSON.stringify({
+        filename: "請求書_2026年3月.pdf",
+        basePath: "test",
+      }),
     });
 
     expect(res.status).toBe(201);
     const body: AnyJson = await res.json();
-    expect(body.fileKey).toBe(`input/${FIXED_UUID}/請求書_2026年3月.pdf`);
+    expect(body.fileKey).toBe(`input/test/${FIXED_UUID}/請求書_2026年3月.pdf`);
   });
 
   it("正常系: basePath指定時にfileKeyが input/{basePath}/{jobId}/{filename} になる", async () => {
@@ -292,7 +295,7 @@ describe("POST /jobs", () => {
     expect(putCommand.input.Item.base_path).toBe("myProject/2026031701");
   });
 
-  it("正常系: basePath未指定時は従来通り input/{jobId}/{filename}", async () => {
+  it("バリデーション: basePath未指定は400を返す", async () => {
     const app = createApp();
     const res = await app.request("/jobs", {
       method: "POST",
@@ -300,22 +303,7 @@ describe("POST /jobs", () => {
       body: JSON.stringify({ filename: "test.pdf" }),
     });
 
-    expect(res.status).toBe(201);
-    const body: AnyJson = await res.json();
-    expect(body.fileKey).toBe(`input/${FIXED_UUID}/test.pdf`);
-  });
-
-  it("正常系: basePath未指定時にDynamoDBにbase_pathが保存されない", async () => {
-    const app = createApp();
-    await app.request("/jobs", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ filename: "test.pdf" }),
-    });
-
-    // calls[0] = Control Table read, calls[1] = Status Table write
-    const putCommand = mockSend.mock.calls[1][0];
-    expect(putCommand.input.Item.base_path).toBeUndefined();
+    expect(res.status).toBe(400);
   });
 
   it("バリデーション: basePathが文字列でない場合は400を返す", async () => {
@@ -399,7 +387,7 @@ describe("POST /jobs", () => {
     expect(body.error).toContain("invalid");
   });
 
-  it("正常系: basePath=nullは未指定と同じ扱いになる", async () => {
+  it("バリデーション: basePath=nullは400を返す", async () => {
     const app = createApp();
     const res = await app.request("/jobs", {
       method: "POST",
@@ -407,9 +395,7 @@ describe("POST /jobs", () => {
       body: JSON.stringify({ filename: "test.pdf", basePath: null }),
     });
 
-    expect(res.status).toBe(201);
-    const body: AnyJson = await res.json();
-    expect(body.fileKey).toBe(`input/${FIXED_UUID}/test.pdf`);
+    expect(res.status).toBe(400);
   });
 
   it("バリデーション: basePathが空文字の場合は400を返す", async () => {
@@ -458,7 +444,7 @@ describe("POST /jobs", () => {
     const res = await app.request("/jobs", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ filename: "test.pdf" }),
+      body: JSON.stringify({ filename: "test.pdf", basePath: "test" }),
     });
 
     expect(res.status).toBe(500);
@@ -474,7 +460,7 @@ describe("POST /jobs", () => {
     const res = await app.request("/jobs", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ filename: "test.pdf" }),
+      body: JSON.stringify({ filename: "test.pdf", basePath: "test" }),
     });
 
     expect(res.status).toBe(503);
@@ -493,7 +479,7 @@ describe("POST /jobs", () => {
     const res = await app.request("/jobs", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ filename: "test.pdf" }),
+      body: JSON.stringify({ filename: "test.pdf", basePath: "test" }),
     });
 
     expect(res.status).toBe(503);
@@ -511,7 +497,7 @@ describe("POST /jobs", () => {
     await app.request("/jobs", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ filename: "test.pdf" }),
+      body: JSON.stringify({ filename: "test.pdf", basePath: "test" }),
     });
 
     expect(mockSfnSend).toHaveBeenCalledOnce();
@@ -531,7 +517,7 @@ describe("POST /jobs", () => {
     await app.request("/jobs", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ filename: "test.pdf" }),
+      body: JSON.stringify({ filename: "test.pdf", basePath: "test" }),
     });
 
     expect(mockSfnSend).not.toHaveBeenCalled();
@@ -545,7 +531,7 @@ describe("POST /jobs", () => {
     const res = await app.request("/jobs", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ filename: "test.pdf" }),
+      body: JSON.stringify({ filename: "test.pdf", basePath: "test" }),
     });
 
     expect(res.status).toBe(503);
@@ -565,7 +551,7 @@ describe("POST /jobs", () => {
     const res = await app.request("/jobs", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ filename: "test.pdf" }),
+      body: JSON.stringify({ filename: "test.pdf", basePath: "test" }),
     });
 
     expect(res.status).toBe(503);
@@ -575,7 +561,7 @@ describe("POST /jobs", () => {
 function makeItem(overrides: Record<string, unknown> = {}) {
   return {
     job_id: FIXED_UUID,
-    file_key: `input/${FIXED_UUID}/test.pdf`,
+    file_key: `input/test/${FIXED_UUID}/test.pdf`,
     status: "PENDING",
     created_at: "2026-03-04T00:00:00.000Z",
     updated_at: "2026-03-04T00:01:00.000Z",
@@ -884,6 +870,41 @@ describe("GET /jobs", () => {
     );
   });
 
+  it("正常系: basePath指定時にFilterExpressionでbegins_withフィルタされる", async () => {
+    mockSend.mockResolvedValue({ Items: makeListItems(1), Count: 1 });
+
+    const app = createApp();
+    const res = await app.request("/jobs?status=COMPLETED&basePath=myProject");
+
+    expect(res.status).toBe(200);
+    const queryCommand = mockSend.mock.calls[0][0];
+    expect(queryCommand.input.FilterExpression).toBe(
+      "begins_with(base_path, :basePath)",
+    );
+    expect(queryCommand.input.ExpressionAttributeValues).toEqual(
+      expect.objectContaining({ ":basePath": "myProject" }),
+    );
+  });
+
+  it("正常系: basePath未指定時はFilterExpressionが含まれない", async () => {
+    mockSend.mockResolvedValue({ Items: [], Count: 0 });
+
+    const app = createApp();
+    await app.request("/jobs?status=PENDING");
+
+    const queryCommand = mockSend.mock.calls[0][0];
+    expect(queryCommand.input.FilterExpression).toBeUndefined();
+  });
+
+  it("バリデーション: basePathに..が含まれる場合は400を返す", async () => {
+    const app = createApp();
+    const res = await app.request(
+      "/jobs?status=COMPLETED&basePath=legit/../escape",
+    );
+
+    expect(res.status).toBe(400);
+  });
+
   it("バリデーション: status未指定は400を返す", async () => {
     const app = createApp();
     const res = await app.request("/jobs");
@@ -972,7 +993,7 @@ describe("DELETE /jobs/:jobId", () => {
     mockSend.mockResolvedValueOnce({
       Attributes: {
         ...makeItem({ status: "CANCELLED" }),
-        file_key: `input/${FIXED_UUID}/test.pdf`,
+        file_key: `input/test/${FIXED_UUID}/test.pdf`,
       },
     });
 
@@ -990,7 +1011,7 @@ describe("DELETE /jobs/:jobId", () => {
     mockSend.mockResolvedValueOnce({
       Attributes: makeItem({
         status: "CANCELLED",
-        file_key: `input/${FIXED_UUID}/test.pdf`,
+        file_key: `input/test/${FIXED_UUID}/test.pdf`,
       }),
     });
 
@@ -999,7 +1020,7 @@ describe("DELETE /jobs/:jobId", () => {
 
     expect(mockDeleteObject).toHaveBeenCalledWith(
       "test-bucket",
-      `input/${FIXED_UUID}/test.pdf`,
+      `input/test/${FIXED_UUID}/test.pdf`,
     );
   });
 
@@ -1061,7 +1082,7 @@ describe("DELETE /jobs/:jobId", () => {
     mockSend.mockResolvedValueOnce({
       Attributes: makeItem({
         status: "CANCELLED",
-        file_key: `input/${FIXED_UUID}/test.pdf`,
+        file_key: `input/test/${FIXED_UUID}/test.pdf`,
       }),
     });
     mockDeleteObject.mockRejectedValue(new Error("S3 unavailable"));

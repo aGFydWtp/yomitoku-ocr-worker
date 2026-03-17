@@ -96,13 +96,12 @@ jobsRoutes.openapi(createJobRoute, async (c) => {
   }
 
   const { filename, basePath: rawBasePath } = c.req.valid("json");
-  const basePath = validateBasePath(rawBasePath);
+  // Zod スキーマで必須・min(1) を保証済み。validateBasePath はトリム・文字種・パストラバーサルチェック。
+  const basePath = validateBasePath(rawBasePath) as string;
 
   const sanitized = sanitizeFilename(filename);
   const jobId = crypto.randomUUID();
-  const fileKey = basePath
-    ? `input/${basePath}/${jobId}/${sanitized}`
-    : `input/${jobId}/${sanitized}`;
+  const fileKey = `input/${basePath}/${jobId}/${sanitized}`;
   const now = new Date().toISOString();
 
   const uploadUrl = await createUploadUrl(bucketName, fileKey);
@@ -114,10 +113,8 @@ jobsRoutes.openapi(createJobRoute, async (c) => {
     created_at: now,
     updated_at: now,
     original_filename: filename,
+    base_path: basePath,
   };
-  if (basePath) {
-    item.base_path = basePath;
-  }
 
   await docClient.send(
     new PutCommand({
@@ -145,8 +142,16 @@ jobsRoutes.openapi(listJobsRoute, async (c) => {
     throw new Error("STATUS_TABLE_NAME must be set");
   }
 
-  const { status, limit, cursor: cursorParam } = c.req.valid("query");
+  const {
+    status,
+    limit,
+    cursor: cursorParam,
+    basePath: rawBasePath,
+  } = c.req.valid("query");
   const exclusiveStartKey = decodeCursor(cursorParam);
+  const normalizedBasePath = rawBasePath
+    ? validateBasePath(rawBasePath)
+    : undefined;
 
   const result = await docClient.send(
     new QueryCommand({
@@ -154,10 +159,16 @@ jobsRoutes.openapi(listJobsRoute, async (c) => {
       IndexName: "status-created_at-index",
       KeyConditionExpression: "#s = :status",
       ExpressionAttributeNames: { "#s": "status" },
-      ExpressionAttributeValues: { ":status": status },
+      ExpressionAttributeValues: {
+        ":status": status,
+        ...(normalizedBasePath && { ":basePath": normalizedBasePath }),
+      },
       Limit: limit,
       ScanIndexForward: false,
       ...(exclusiveStartKey && { ExclusiveStartKey: exclusiveStartKey }),
+      ...(normalizedBasePath && {
+        FilterExpression: "begins_with(base_path, :basePath)",
+      }),
     }),
   );
 

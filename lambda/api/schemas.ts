@@ -35,15 +35,11 @@ export const CreateJobBodySchema = z
       example: "sample.pdf",
       description: "PDF ファイル名（.pdf で終わる必要あり）",
     }),
-    basePath: z
-      .string()
-      .min(1, "basePath must not be empty")
-      .nullish()
-      .openapi({
-        example: "myProject/2026031701",
-        description:
-          "処理単位のパスプレフィックス。指定すると input/{basePath}/{jobId}/{filename} に配置される",
-      }),
+    basePath: z.string().min(1, "basePath must not be empty").openapi({
+      example: "myProject/2026031701",
+      description:
+        "処理単位のパスプレフィックス。input/{basePath}/{jobId}/{filename} に配置される",
+    }),
   })
   .openapi("CreateJobBody");
 
