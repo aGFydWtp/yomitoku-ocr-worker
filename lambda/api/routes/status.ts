@@ -1,5 +1,5 @@
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import { OpenAPIHono, createRoute } from "@hono/zod-openapi";
+import { createRoute, OpenAPIHono } from "@hono/zod-openapi";
 import { docClient } from "../lib/dynamodb";
 import { EndpointStatusResponseSchema } from "../schemas";
 
@@ -9,6 +9,7 @@ export const statusRoutes = new OpenAPIHono({
       const firstIssue = result.error.issues[0];
       return c.json({ error: firstIssue.message }, 400);
     }
+    return undefined;
   },
 });
 
@@ -43,7 +44,11 @@ statusRoutes.openapi(getStatusRoute, async (c) => {
 
   const item = result.Item;
   return c.json({
-    endpointState: (item?.endpoint_state as string) ?? "IDLE",
+    endpointState: ((item?.endpoint_state as string) ?? "IDLE") as
+      | "IDLE"
+      | "CREATING"
+      | "IN_SERVICE"
+      | "DELETING",
     updatedAt: (item?.updated_at as string) ?? null,
   });
 });

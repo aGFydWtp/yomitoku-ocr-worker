@@ -349,7 +349,10 @@ describe("POST /jobs", () => {
     const res = await app.request("/jobs", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ filename: "test.pdf", basePath: "legit/../escape" }),
+      body: JSON.stringify({
+        filename: "test.pdf",
+        basePath: "legit/../escape",
+      }),
     });
 
     expect(res.status).toBe(400);
@@ -360,7 +363,10 @@ describe("POST /jobs", () => {
     const res = await app.request("/jobs", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ filename: "test.pdf", basePath: "legit/subdir/.." }),
+      body: JSON.stringify({
+        filename: "test.pdf",
+        basePath: "legit/subdir/..",
+      }),
     });
 
     expect(res.status).toBe(400);

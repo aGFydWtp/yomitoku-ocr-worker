@@ -4,9 +4,10 @@ import { z } from "@hono/zod-openapi";
 
 export const CreateJobBodySchema = z
   .object({
-    filename: z
-      .string()
-      .openapi({ example: "sample.pdf", description: "PDF ファイル名（.pdf で終わる必要あり）" }),
+    filename: z.string().openapi({
+      example: "sample.pdf",
+      description: "PDF ファイル名（.pdf で終わる必要あり）",
+    }),
     basePath: z
       .string()
       .min(1, "basePath must not be empty")
@@ -21,15 +22,21 @@ export const CreateJobBodySchema = z
 
 export const CreateJobResponseSchema = z
   .object({
-    jobId: z.string().uuid().openapi({ example: "550e8400-e29b-41d4-a716-446655440000" }),
-    fileKey: z
+    jobId: z
       .string()
-      .openapi({ example: "input/myProject/2026031701/550e8400-.../sample.pdf" }),
+      .uuid()
+      .openapi({ example: "550e8400-e29b-41d4-a716-446655440000" }),
+    fileKey: z.string().openapi({
+      example: "input/myProject/2026031701/550e8400-.../sample.pdf",
+    }),
     uploadUrl: z
       .string()
       .url()
       .openapi({ description: "S3 署名付き PUT URL（有効期限 15 分）" }),
-    expiresIn: z.number().int().openapi({ example: 900, description: "uploadUrl の有効秒数" }),
+    expiresIn: z
+      .number()
+      .int()
+      .openapi({ example: 900, description: "uploadUrl の有効秒数" }),
   })
   .openapi("CreateJobResponse");
 
@@ -47,7 +54,13 @@ export const ServiceUnavailableSchema = z
 export const JobListItemSchema = z
   .object({
     jobId: z.string(),
-    status: z.string(),
+    status: z.enum([
+      "PENDING",
+      "PROCESSING",
+      "COMPLETED",
+      "FAILED",
+      "CANCELLED",
+    ]),
     createdAt: z.string().datetime(),
     updatedAt: z.string().datetime(),
     originalFilename: z.string(),
@@ -67,13 +80,26 @@ export const JobListResponseSchema = z
 export const JobDetailResponseSchema = z
   .object({
     jobId: z.string().uuid(),
-    status: z.enum(["PENDING", "PROCESSING", "COMPLETED", "FAILED", "CANCELLED"]),
+    status: z.enum([
+      "PENDING",
+      "PROCESSING",
+      "COMPLETED",
+      "FAILED",
+      "CANCELLED",
+    ]),
     createdAt: z.string().datetime(),
     updatedAt: z.string().datetime(),
-    resultUrl: z.string().url().optional().openapi({ description: "COMPLETED 時のみ。有効期限 60 分" }),
+    resultUrl: z
+      .string()
+      .url()
+      .optional()
+      .openapi({ description: "COMPLETED 時のみ。有効期限 60 分" }),
     resultExpiresIn: z.number().int().optional().openapi({ example: 3600 }),
     processingTimeMs: z.number().int().optional(),
-    errorMessage: z.string().optional().openapi({ description: "FAILED 時のみ" }),
+    errorMessage: z
+      .string()
+      .optional()
+      .openapi({ description: "FAILED 時のみ" }),
   })
   .openapi("JobDetailResponse");
 

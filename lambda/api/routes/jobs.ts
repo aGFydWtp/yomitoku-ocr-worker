@@ -5,14 +5,15 @@ import {
   QueryCommand,
   UpdateCommand,
 } from "@aws-sdk/lib-dynamodb";
-import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
+import type { z as zType } from "@hono/zod-openapi";
+import { createRoute, OpenAPIHono, z } from "@hono/zod-openapi";
 import { docClient } from "../lib/dynamodb";
 import {
   ConflictError,
+  handleError,
   NotFoundError,
   ServiceUnavailableError,
   ValidationError,
-  handleError,
 } from "../lib/errors";
 import {
   createResultUrl,
@@ -33,12 +34,20 @@ import {
   ServiceUnavailableSchema,
 } from "../schemas";
 
+type JobStatus =
+  | "PENDING"
+  | "PROCESSING"
+  | "COMPLETED"
+  | "FAILED"
+  | "CANCELLED";
+
 export const jobsRoutes = new OpenAPIHono({
   defaultHook: (result, c) => {
     if (!result.success) {
       const firstIssue = result.error.issues[0];
       return c.json({ error: firstIssue.message }, 400);
     }
+    return undefined;
   },
 });
 
@@ -133,9 +142,7 @@ jobsRoutes.openapi(createJobRoute, async (c) => {
     if (!trimmed) {
       throw new ValidationError("basePath must not be empty");
     }
-    if (
-      !/^[a-zA-Z0-9\u3000-\u9FFF\u{20000}-\u{2FA1F}\-_./]+$/u.test(trimmed)
-    ) {
+    if (!/^[a-zA-Z0-9\u3000-\u9FFF\u{20000}-\u{2FA1F}\-_./]+$/u.test(trimmed)) {
       throw new ValidationError("basePath contains invalid characters");
     }
     if (/(^|\/)\.\.($|\/)/.test(trimmed)) {
@@ -201,12 +208,14 @@ const listJobsRoute = createRoute({
       status: z.enum(
         ["PENDING", "PROCESSING", "COMPLETED", "FAILED", "CANCELLED"],
         {
-          required_error: "status query parameter is required",
-          message: "status must be one of: PENDING, PROCESSING, COMPLETED, FAILED, CANCELLED",
+          error:
+            "status must be one of: PENDING, PROCESSING, COMPLETED, FAILED, CANCELLED",
         },
       ),
       limit: z.coerce
-        .number({ invalid_type_error: "limit must be an integer between 1 and 100" })
+        .number({
+          error: "limit must be an integer between 1 and 100",
+        })
         .int("limit must be an integer between 1 and 100")
         .min(1, "limit must be an integer between 1 and 100")
         .max(100, "limit must be an integer between 1 and 100")
@@ -269,7 +278,7 @@ jobsRoutes.openapi(listJobsRoute, async (c) => {
 
   const items = (result.Items ?? []).map((item) => ({
     jobId: item.job_id as string,
-    status: item.status as string,
+    status: item.status as JobStatus,
     createdAt: item.created_at as string,
     updatedAt: item.updated_at as string,
     originalFilename: item.original_filename as string,
@@ -279,11 +288,14 @@ jobsRoutes.openapi(listJobsRoute, async (c) => {
     ? Buffer.from(JSON.stringify(result.LastEvaluatedKey)).toString("base64url")
     : null;
 
-  return c.json({
-    items,
-    count: items.length,
-    cursor,
-  });
+  return c.json(
+    {
+      items,
+      count: items.length,
+      cursor,
+    },
+    200 as const,
+  );
 });
 
 // --- GET /jobs/:jobId ---
@@ -336,20 +348,9 @@ jobsRoutes.openapi(getJobRoute, async (c) => {
 
   const item = result.Item;
 
-  interface JobResponse {
-    jobId: string;
-    status: string;
-    createdAt: string;
-    updatedAt: string;
-    resultUrl?: string;
-    resultExpiresIn?: number;
-    processingTimeMs?: number;
-    errorMessage?: string;
-  }
-
-  const response: JobResponse = {
+  const response: zType.infer<typeof JobDetailResponseSchema> = {
     jobId: item.job_id as string,
-    status: item.status as string,
+    status: item.status as JobStatus,
     createdAt: item.created_at as string,
     updatedAt: item.updated_at as string,
   };
@@ -369,7 +370,7 @@ jobsRoutes.openapi(getJobRoute, async (c) => {
     response.errorMessage = item.error_message as string;
   }
 
-  return c.json(response);
+  return c.json(response, 200 as const);
 });
 
 // --- DELETE /jobs/:jobId ---
@@ -463,5 +464,5 @@ jobsRoutes.openapi(cancelJobRoute, async (c) => {
     }
   }
 
-  return c.json({ status: updatedStatus });
+  return c.json({ status: updatedStatus as string }, 200 as const);
 });
