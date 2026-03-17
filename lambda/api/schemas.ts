@@ -111,16 +111,39 @@ export const JobDetailResponseSchema = z
       .string()
       .optional()
       .openapi({ description: "FAILED 時のみ" }),
-    visualizations: z
-      .object({
-        layoutUrls: z.array(z.string().url()),
-        ocrUrls: z.array(z.string().url()),
-        expiresIn: z.number().int(),
-      })
-      .optional()
-      .openapi({ description: "COMPLETED 時、可視化画像がある場合のみ" }),
   })
   .openapi("JobDetailResponse");
+
+// --- GET /jobs/:jobId/visualizations ---
+
+export const VISUALIZATION_MODES = ["layout", "ocr"] as const;
+export type VisualizationMode = (typeof VISUALIZATION_MODES)[number];
+
+export const VisualizationsQuerySchema = z.object({
+  mode: z.enum(VISUALIZATION_MODES).optional().openapi({
+    description: "取得するモード。省略時は layout + ocr 両方",
+  }),
+  page: z.string().optional().openapi({
+    example: "0,1,2",
+    description: "カンマ区切りの 0-indexed ページ番号。省略時は全ページ",
+  }),
+});
+
+export const VisualizationItemSchema = z
+  .object({
+    mode: z.enum(VISUALIZATION_MODES),
+    page: z.number().int(),
+    url: z.string().url(),
+  })
+  .openapi("VisualizationItem");
+
+export const VisualizationsResponseSchema = z
+  .object({
+    items: z.array(VisualizationItemSchema),
+    numPages: z.number().int(),
+    expiresIn: z.number().int(),
+  })
+  .openapi("VisualizationsResponse");
 
 // --- DELETE /jobs/:jobId ---
 

@@ -33,6 +33,7 @@ import {
   cancelJobRoute,
   createJobRoute,
   getJobRoute,
+  getVisualizationsRoute,
   listJobsRoute,
 } from "./jobs.routes";
 
@@ -235,43 +236,6 @@ jobsRoutes.openapi(getJobRoute, async (c) => {
     if (item.processing_time_ms !== undefined) {
       response.processingTimeMs = item.processing_time_ms as number;
     }
-
-    // Visualization presigned URLs
-    const MAX_VIZ_PAGES = 200;
-    if (
-      typeof item.visualization_prefix === "string" &&
-      typeof item.num_pages === "number" &&
-      item.num_pages > 0 &&
-      item.num_pages <= MAX_VIZ_PAGES
-    ) {
-      const vizPrefix = item.visualization_prefix;
-      const numPages = item.num_pages;
-      const basename =
-        (item.file_key as string)
-          .split("/")
-          .pop()
-          ?.replace(/\.pdf$/i, "") ?? "";
-
-      const layoutKeys = Array.from(
-        { length: numPages },
-        (_, i) => `${vizPrefix}${basename}_layout_page_${i}.jpg`,
-      );
-      const ocrKeys = Array.from(
-        { length: numPages },
-        (_, i) => `${vizPrefix}${basename}_ocr_page_${i}.jpg`,
-      );
-
-      const [layoutUrls, ocrUrls] = await Promise.all([
-        Promise.all(layoutKeys.map((k) => createResultUrl(bucketName, k))),
-        Promise.all(ocrKeys.map((k) => createResultUrl(bucketName, k))),
-      ]);
-
-      response.visualizations = {
-        layoutUrls,
-        ocrUrls,
-        expiresIn: RESULT_URL_EXPIRES_IN,
-      };
-    }
   }
 
   if (item.status === "FAILED" && item.error_message) {
@@ -279,6 +243,120 @@ jobsRoutes.openapi(getJobRoute, async (c) => {
   }
 
   return c.json(response, 200 as const);
+});
+
+// --- GET /jobs/:jobId/visualizations ---
+
+const MAX_VIZ_PAGES = 200;
+
+function parsePageParam(
+  pageStr: string | undefined,
+  numPages: number,
+): number[] {
+  if (pageStr === undefined || pageStr === "") {
+    return Array.from({ length: numPages }, (_, i) => i);
+  }
+  const pages = pageStr.split(",").map((s) => {
+    const trimmed = s.trim();
+    if (!/^\d+$/.test(trimmed)) {
+      return -1; // sentinel for invalid
+    }
+    return parseInt(trimmed, 10);
+  });
+  if (pages.some((p) => p < 0)) {
+    throw new Error("page must be comma-separated non-negative integers");
+  }
+  if (pages.some((p) => p >= numPages)) {
+    throw new Error(
+      `page index out of range: valid range is 0-${numPages - 1}`,
+    );
+  }
+  return [...new Set(pages)];
+}
+
+jobsRoutes.openapi(getVisualizationsRoute, async (c) => {
+  const tableName = process.env.STATUS_TABLE_NAME;
+  const bucketName = process.env.BUCKET_NAME;
+  if (!tableName || !bucketName) {
+    throw new Error("STATUS_TABLE_NAME and BUCKET_NAME must be set");
+  }
+
+  const { jobId } = c.req.valid("param");
+  const { mode, page: pageParam } = c.req.valid("query");
+
+  const { Item: item } = await docClient.send(
+    new GetCommand({
+      TableName: tableName,
+      Key: { job_id: jobId },
+      ConsistentRead: true,
+    }),
+  );
+
+  if (!item) {
+    throw new NotFoundError("Job not found");
+  }
+
+  if (
+    item.status !== "COMPLETED" ||
+    typeof item.visualization_prefix !== "string" ||
+    typeof item.num_pages !== "number" ||
+    typeof item.file_key !== "string" ||
+    item.num_pages < 1 ||
+    item.num_pages > MAX_VIZ_PAGES
+  ) {
+    throw new NotFoundError("Visualization data not available");
+  }
+
+  const vizPrefix = item.visualization_prefix;
+  const numPages = item.num_pages as number;
+  const basename =
+    (item.file_key as string)
+      .split("/")
+      .pop()
+      ?.replace(/\.pdf$/i, "") ?? "";
+
+  let pages: number[];
+  try {
+    pages = parsePageParam(pageParam, numPages);
+  } catch (err) {
+    return c.json({ error: (err as Error).message }, 400 as const);
+  }
+
+  const modes: Array<"layout" | "ocr"> = mode ? [mode] : ["layout", "ocr"];
+
+  const itemEntries: Array<{
+    mode: "layout" | "ocr";
+    page: number;
+    key: string;
+  }> = [];
+  for (const p of pages) {
+    for (const m of modes) {
+      itemEntries.push({
+        mode: m,
+        page: p,
+        key: `${vizPrefix}${basename}_${m}_page_${p}.jpg`,
+      });
+    }
+  }
+
+  const urls = await Promise.all(
+    itemEntries.map((e) => createResultUrl(bucketName, e.key)),
+  );
+
+  const items = itemEntries.map((e, i) => ({
+    mode: e.mode,
+    page: e.page,
+    url: urls[i],
+  }));
+
+  return c.json(
+    {
+      items,
+      numPages,
+      expiresIn: RESULT_URL_EXPIRES_IN,
+    },
+    200 as const,
+  );
 });
 
 // --- DELETE /jobs/:jobId ---

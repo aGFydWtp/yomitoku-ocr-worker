@@ -8,6 +8,8 @@ import {
   JobDetailResponseSchema,
   JobListResponseSchema,
   ServiceUnavailableSchema,
+  VisualizationsQuerySchema,
+  VisualizationsResponseSchema,
 } from "../schemas";
 
 export const createJobRoute = createRoute({
@@ -97,6 +99,34 @@ export const getJobRoute = createRoute({
     },
     404: {
       description: "ジョブが見つからない",
+      content: { "application/json": { schema: ErrorResponseSchema } },
+    },
+  },
+});
+
+export const getVisualizationsRoute = createRoute({
+  method: "get",
+  path: "/{jobId}/visualizations",
+  summary: "可視化画像 URL 取得",
+  description:
+    "COMPLETED ジョブのレイアウト/OCR 可視化画像の署名付き URL を返します。mode / page で絞り込み可能。",
+  request: {
+    params: jobIdParams,
+    query: VisualizationsQuerySchema,
+  },
+  responses: {
+    200: {
+      description: "可視化画像 URL 一覧",
+      content: {
+        "application/json": { schema: VisualizationsResponseSchema },
+      },
+    },
+    400: {
+      description: "不正なパラメーター",
+      content: { "application/json": { schema: ErrorResponseSchema } },
+    },
+    404: {
+      description: "ジョブが見つからない、または可視化データなし",
       content: { "application/json": { schema: ErrorResponseSchema } },
     },
   },

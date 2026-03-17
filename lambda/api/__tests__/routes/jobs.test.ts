@@ -634,12 +634,11 @@ describe("GET /jobs/:jobId", () => {
     );
   });
 
-  it("正常系(COMPLETED+visualization): visualizationsにlayoutUrlsとocrUrlsが含まれる", async () => {
+  it("正常系(COMPLETED+visualization): visualizationsフィールドが含まれない", async () => {
     mockSend.mockResolvedValue({
       Item: makeItem({
         status: "COMPLETED",
         output_key: `output/test/${FIXED_UUID}/test.json`,
-        processing_time_ms: 5000,
         visualization_prefix: `visualizations/test/${FIXED_UUID}/`,
         num_pages: 2,
       }),
@@ -651,75 +650,9 @@ describe("GET /jobs/:jobId", () => {
 
     expect(res.status).toBe(200);
     const body: AnyJson = await res.json();
-    expect(body.visualizations).toBeDefined();
-    expect(body.visualizations.layoutUrls).toHaveLength(2);
-    expect(body.visualizations.ocrUrls).toHaveLength(2);
-    expect(body.visualizations.expiresIn).toBe(3600);
-
-    // result URL + 2 layout + 2 ocr = 5 calls to createResultUrl
-    expect(mockCreateResultUrl).toHaveBeenCalledTimes(5);
-    expect(mockCreateResultUrl).toHaveBeenCalledWith(
-      "test-bucket",
-      `visualizations/test/${FIXED_UUID}/test_layout_page_0.jpg`,
-    );
-    expect(mockCreateResultUrl).toHaveBeenCalledWith(
-      "test-bucket",
-      `visualizations/test/${FIXED_UUID}/test_ocr_page_1.jpg`,
-    );
-  });
-
-  it("正常系(COMPLETED without visualization): visualizationsが含まれない", async () => {
-    mockSend.mockResolvedValue({
-      Item: makeItem({
-        status: "COMPLETED",
-        output_key: `output/test/${FIXED_UUID}/test.json`,
-      }),
-    });
-    mockCreateResultUrl.mockResolvedValue("https://s3.example.com/presigned");
-
-    const app = createApp();
-    const res = await app.request(`/jobs/${FIXED_UUID}`);
-
-    expect(res.status).toBe(200);
-    const body: AnyJson = await res.json();
     expect(body.visualizations).toBeUndefined();
-  });
-
-  it("正常系(COMPLETED+num_pages=0): visualizationsが含まれない", async () => {
-    mockSend.mockResolvedValue({
-      Item: makeItem({
-        status: "COMPLETED",
-        output_key: `output/test/${FIXED_UUID}/test.json`,
-        visualization_prefix: `visualizations/test/${FIXED_UUID}/`,
-        num_pages: 0,
-      }),
-    });
-    mockCreateResultUrl.mockResolvedValue("https://s3.example.com/presigned");
-
-    const app = createApp();
-    const res = await app.request(`/jobs/${FIXED_UUID}`);
-
-    expect(res.status).toBe(200);
-    const body: AnyJson = await res.json();
-    expect(body.visualizations).toBeUndefined();
-  });
-
-  it("正常系(COMPLETED+visualization_prefixのみ): visualizationsが含まれない", async () => {
-    mockSend.mockResolvedValue({
-      Item: makeItem({
-        status: "COMPLETED",
-        output_key: `output/test/${FIXED_UUID}/test.json`,
-        visualization_prefix: `visualizations/test/${FIXED_UUID}/`,
-      }),
-    });
-    mockCreateResultUrl.mockResolvedValue("https://s3.example.com/presigned");
-
-    const app = createApp();
-    const res = await app.request(`/jobs/${FIXED_UUID}`);
-
-    expect(res.status).toBe(200);
-    const body: AnyJson = await res.json();
-    expect(body.visualizations).toBeUndefined();
+    // resultUrl のみ (visualization presigned URL は生成しない)
+    expect(mockCreateResultUrl).toHaveBeenCalledTimes(1);
   });
 
   it("正常系(FAILED): 200を返しerrorMessageが含まれる", async () => {
@@ -1202,5 +1135,245 @@ describe("DELETE /jobs/:jobId", () => {
     });
 
     expect(res.status).toBe(500);
+  });
+});
+
+// ---- GET /jobs/:jobId/visualizations ----
+
+describe("GET /jobs/:jobId/visualizations", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env.STATUS_TABLE_NAME = "test-table";
+    process.env.BUCKET_NAME = "test-bucket";
+  });
+
+  const vizItem = (overrides: Record<string, unknown> = {}) =>
+    makeItem({
+      status: "COMPLETED",
+      output_key: `output/test/${FIXED_UUID}/test.json`,
+      visualization_prefix: `visualizations/test/${FIXED_UUID}/`,
+      num_pages: 3,
+      ...overrides,
+    });
+
+  it("正常系: 全ページ・全モード取得", async () => {
+    mockSend.mockResolvedValue({ Item: vizItem() });
+    mockCreateResultUrl.mockResolvedValue("https://s3.example.com/presigned");
+
+    const app = createApp();
+    const res = await app.request(`/jobs/${FIXED_UUID}/visualizations`);
+
+    expect(res.status).toBe(200);
+    const body: AnyJson = await res.json();
+    expect(body.numPages).toBe(3);
+    expect(body.expiresIn).toBe(3600);
+    // 3 pages * 2 modes = 6 items
+    expect(body.items).toHaveLength(6);
+    expect(mockCreateResultUrl).toHaveBeenCalledTimes(6);
+  });
+
+  it("正常系: mode=layout のみ", async () => {
+    mockSend.mockResolvedValue({ Item: vizItem() });
+    mockCreateResultUrl.mockResolvedValue("https://s3.example.com/presigned");
+
+    const app = createApp();
+    const res = await app.request(
+      `/jobs/${FIXED_UUID}/visualizations?mode=layout`,
+    );
+
+    expect(res.status).toBe(200);
+    const body: AnyJson = await res.json();
+    expect(body.items).toHaveLength(3);
+    expect(body.items.every((i: AnyJson) => i.mode === "layout")).toBe(true);
+  });
+
+  it("正常系: mode=ocr のみ", async () => {
+    mockSend.mockResolvedValue({ Item: vizItem() });
+    mockCreateResultUrl.mockResolvedValue("https://s3.example.com/presigned");
+
+    const app = createApp();
+    const res = await app.request(
+      `/jobs/${FIXED_UUID}/visualizations?mode=ocr`,
+    );
+
+    expect(res.status).toBe(200);
+    const body: AnyJson = await res.json();
+    expect(body.items).toHaveLength(3);
+    expect(body.items.every((i: AnyJson) => i.mode === "ocr")).toBe(true);
+  });
+
+  it("正常系: page=0,2 で特定ページのみ", async () => {
+    mockSend.mockResolvedValue({ Item: vizItem() });
+    mockCreateResultUrl.mockResolvedValue("https://s3.example.com/presigned");
+
+    const app = createApp();
+    const res = await app.request(
+      `/jobs/${FIXED_UUID}/visualizations?page=0,2`,
+    );
+
+    expect(res.status).toBe(200);
+    const body: AnyJson = await res.json();
+    // 2 pages * 2 modes = 4 items
+    expect(body.items).toHaveLength(4);
+    const pages = body.items.map((i: AnyJson) => i.page);
+    expect(pages).toContain(0);
+    expect(pages).toContain(2);
+    expect(pages).not.toContain(1);
+  });
+
+  it("正常系: mode=layout&page=0 で単一画像", async () => {
+    mockSend.mockResolvedValue({ Item: vizItem() });
+    mockCreateResultUrl.mockResolvedValue("https://s3.example.com/presigned");
+
+    const app = createApp();
+    const res = await app.request(
+      `/jobs/${FIXED_UUID}/visualizations?mode=layout&page=0`,
+    );
+
+    expect(res.status).toBe(200);
+    const body: AnyJson = await res.json();
+    expect(body.items).toHaveLength(1);
+    expect(body.items[0].mode).toBe("layout");
+    expect(body.items[0].page).toBe(0);
+    expect(mockCreateResultUrl).toHaveBeenCalledTimes(1);
+    expect(mockCreateResultUrl).toHaveBeenCalledWith(
+      "test-bucket",
+      `visualizations/test/${FIXED_UUID}/test_layout_page_0.jpg`,
+    );
+  });
+
+  it("異常系: PENDING ジョブは 404", async () => {
+    mockSend.mockResolvedValue({
+      Item: makeItem({ status: "PENDING" }),
+    });
+
+    const app = createApp();
+    const res = await app.request(`/jobs/${FIXED_UUID}/visualizations`);
+
+    expect(res.status).toBe(404);
+  });
+
+  it("異常系: COMPLETED だが visualization なしは 404", async () => {
+    mockSend.mockResolvedValue({
+      Item: makeItem({
+        status: "COMPLETED",
+        output_key: `output/test/${FIXED_UUID}/test.json`,
+      }),
+    });
+
+    const app = createApp();
+    const res = await app.request(`/jobs/${FIXED_UUID}/visualizations`);
+
+    expect(res.status).toBe(404);
+  });
+
+  it("異常系: 存在しない jobId は 404", async () => {
+    mockSend.mockResolvedValue({ Item: undefined });
+
+    const app = createApp();
+    const res = await app.request(`/jobs/${FIXED_UUID}/visualizations`);
+
+    expect(res.status).toBe(404);
+  });
+
+  it("異常系: 不正な UUID は 400", async () => {
+    const app = createApp();
+    const res = await app.request("/jobs/not-a-uuid/visualizations");
+
+    expect(res.status).toBe(400);
+  });
+
+  it("異常系: 範囲外ページ番号は 400", async () => {
+    mockSend.mockResolvedValue({ Item: vizItem({ num_pages: 3 }) });
+
+    const app = createApp();
+    const res = await app.request(
+      `/jobs/${FIXED_UUID}/visualizations?page=0,5`,
+    );
+
+    expect(res.status).toBe(400);
+    const body: AnyJson = await res.json();
+    expect(body.error).toMatch(/page/i);
+  });
+
+  it("異常系: 不正な mode 値は 400", async () => {
+    const app = createApp();
+    const res = await app.request(
+      `/jobs/${FIXED_UUID}/visualizations?mode=invalid`,
+    );
+
+    expect(res.status).toBe(400);
+  });
+
+  it("異常系: page に不正値は 400", async () => {
+    mockSend.mockResolvedValue({ Item: vizItem() });
+
+    const app = createApp();
+    const res = await app.request(
+      `/jobs/${FIXED_UUID}/visualizations?page=abc`,
+    );
+
+    expect(res.status).toBe(400);
+  });
+
+  it("異常系: page に hex 値は 400", async () => {
+    mockSend.mockResolvedValue({ Item: vizItem() });
+
+    const app = createApp();
+    const res = await app.request(
+      `/jobs/${FIXED_UUID}/visualizations?page=0xFF`,
+    );
+
+    expect(res.status).toBe(400);
+  });
+
+  it("異常系: num_pages が MAX_VIZ_PAGES (200) 超は 404", async () => {
+    mockSend.mockResolvedValue({ Item: vizItem({ num_pages: 201 }) });
+
+    const app = createApp();
+    const res = await app.request(`/jobs/${FIXED_UUID}/visualizations`);
+
+    expect(res.status).toBe(404);
+  });
+
+  it("異常系: num_pages=0 は 404", async () => {
+    mockSend.mockResolvedValue({
+      Item: vizItem({ num_pages: 0 }),
+    });
+
+    const app = createApp();
+    const res = await app.request(`/jobs/${FIXED_UUID}/visualizations`);
+
+    expect(res.status).toBe(404);
+  });
+
+  it("異常系: visualization_prefix のみ (num_pages なし) は 404", async () => {
+    mockSend.mockResolvedValue({
+      Item: makeItem({
+        status: "COMPLETED",
+        output_key: `output/test/${FIXED_UUID}/test.json`,
+        visualization_prefix: `visualizations/test/${FIXED_UUID}/`,
+      }),
+    });
+
+    const app = createApp();
+    const res = await app.request(`/jobs/${FIXED_UUID}/visualizations`);
+
+    expect(res.status).toBe(404);
+  });
+
+  it("異常系: num_pages のみ (visualization_prefix なし) は 404", async () => {
+    mockSend.mockResolvedValue({
+      Item: makeItem({
+        status: "COMPLETED",
+        output_key: `output/test/${FIXED_UUID}/test.json`,
+        num_pages: 3,
+      }),
+    });
+
+    const app = createApp();
+    const res = await app.request(`/jobs/${FIXED_UUID}/visualizations`);
+
+    expect(res.status).toBe(404);
   });
 });

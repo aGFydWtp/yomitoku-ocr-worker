@@ -92,9 +92,9 @@ curl -X POST https://<DistributionDomainName>/jobs \
 | パラメータ | 必須 | 説明 |
 |-----------|------|------|
 | `filename` | Yes | PDF ファイル名（`.pdf` で終わる必要あり） |
-| `basePath` | No | 処理単位のパスプレフィックス（例: `myProject/2026031701`） |
+| `basePath` | Yes | 処理単位のパスプレフィックス（例: `myProject/2026031701`） |
 
-`basePath` を指定すると、S3 上のファイルが `input/{basePath}/{jobId}/{filename}` に配置され、出力も `output/{basePath}/{jobId}/` 以下に生成されます。未指定時は従来通り `input/{jobId}/{filename}` です。
+S3 上のファイルは `input/{basePath}/{jobId}/{filename}` に配置され、出力も `output/{basePath}/{jobId}/` 以下に生成されます。
 
 **レスポンス (201)**:
 
@@ -139,16 +139,9 @@ curl https://<DistributionDomainName>/jobs/<jobId> \
   "updatedAt": "2026-03-04T12:15:00.000Z",
   "resultUrl": "https://s3.amazonaws.com/...?signed",
   "resultExpiresIn": 3600,
-  "processingTimeMs": 12345,
-  "visualizations": {
-    "layoutUrls": ["https://s3.amazonaws.com/...?signed", "..."],
-    "ocrUrls": ["https://s3.amazonaws.com/...?signed", "..."],
-    "expiresIn": 3600
-  }
+  "processingTimeMs": 12345
 }
 ```
-
-> `visualizations` は COMPLETED 時にレイアウト解析・OCR 結果の可視化画像が生成された場合のみ返されます。`layoutUrls` / `ocrUrls` はページごとの署名付き URL 配列です。
 
 | ステータス | 説明 |
 |-----------|------|
@@ -157,6 +150,40 @@ curl https://<DistributionDomainName>/jobs/<jobId> \
 | `COMPLETED` | 完了 — `resultUrl` から結果をダウンロード可能（有効期限 60 分） |
 | `FAILED` | 失敗 — `errorMessage` にエラー内容 |
 | `CANCELLED` | キャンセル済み |
+
+### GET /jobs/:jobId/visualizations — 可視化画像 URL 取得
+
+COMPLETED ジョブのレイアウト/OCR 可視化画像の署名付き URL を返します。
+
+```bash
+# 全画像を取得
+curl "https://<DistributionDomainName>/jobs/<jobId>/visualizations" \
+  -H "x-api-key: YOUR_API_KEY"
+
+# layout のページ 0,1 のみ取得
+curl "https://<DistributionDomainName>/jobs/<jobId>/visualizations?mode=layout&page=0,1" \
+  -H "x-api-key: YOUR_API_KEY"
+```
+
+| パラメータ | 必須 | 説明 |
+|-----------|------|------|
+| `mode` | No | `layout` \| `ocr`。省略時は両方 |
+| `page` | No | カンマ区切りの 0-indexed ページ番号。省略時は全ページ |
+
+**レスポンス (200)**:
+
+```json
+{
+  "items": [
+    { "mode": "layout", "page": 0, "url": "https://s3.amazonaws.com/...?signed" },
+    { "mode": "ocr", "page": 0, "url": "https://s3.amazonaws.com/...?signed" }
+  ],
+  "numPages": 5,
+  "expiresIn": 3600
+}
+```
+
+> 可視化データが存在しない場合（未完了ジョブ、画像未生成）は 404 を返します。
 
 ### GET /jobs — ジョブ一覧取得
 
@@ -250,31 +277,45 @@ curl https://<DistributionDomainName>/status \
 ## 使い方（完全なフロー例）
 
 ```bash
-# 0. エンドポイント状態を確認（IDLE なら POST /jobs で自動起動される）
-curl -s https://<DistributionDomainName>/status \
-  -H "x-api-key: YOUR_API_KEY" | jq .
+BASE_URL="https://<DistributionDomainName>"
+API_KEY="YOUR_API_KEY"
 
-# 1. ジョブ作成 → 署名付き URL を取得（basePath はオプション）
-RESPONSE=$(curl -s -X POST https://<DistributionDomainName>/jobs \
-  -H "x-api-key: YOUR_API_KEY" \
+# 0. エンドポイント状態を確認
+STATE=$(curl -s "$BASE_URL/status" \
+  -H "x-api-key: $API_KEY" | jq -r '.endpointState')
+echo "Endpoint state: $STATE"
+
+# 1. IDLE / DELETING の場合は POST /up で起動を要求（IN_SERVICE なら不要）
+if [ "$STATE" != "IN_SERVICE" ]; then
+  curl -s -X POST "$BASE_URL/up" -H "x-api-key: $API_KEY" | jq .
+  echo "Waiting for endpoint to start (5-10 min)..."
+  while [ "$(curl -s "$BASE_URL/status" \
+    -H "x-api-key: $API_KEY" | jq -r '.endpointState')" != "IN_SERVICE" ]; do
+    sleep 30
+  done
+  echo "Endpoint is ready."
+fi
+
+# 2. ジョブ作成 → 署名付き URL を取得
+RESPONSE=$(curl -s -X POST "$BASE_URL/jobs" \
+  -H "x-api-key: $API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"filename": "sample.pdf", "basePath": "myProject/run001"}')
 
 JOB_ID=$(echo $RESPONSE | jq -r '.jobId')
 UPLOAD_URL=$(echo $RESPONSE | jq -r '.uploadUrl')
 
-# 2. PDF をアップロード（自動で OCR が開始される）
+# 3. PDF をアップロード（自動で OCR が開始される）
 curl -X PUT "$UPLOAD_URL" \
   -H "Content-Type: application/pdf" \
   --data-binary @sample.pdf
 
-# 3. ステータスをポーリング
-curl -s https://<DistributionDomainName>/jobs/$JOB_ID \
-  -H "x-api-key: YOUR_API_KEY" | jq .
+# 4. ステータスをポーリング
+curl -s "$BASE_URL/jobs/$JOB_ID" -H "x-api-key: $API_KEY" | jq .
 
-# 4. 完了後、結果をダウンロード
-RESULT_URL=$(curl -s https://<DistributionDomainName>/jobs/$JOB_ID \
-  -H "x-api-key: YOUR_API_KEY" | jq -r '.resultUrl')
+# 5. 完了後、結果をダウンロード
+RESULT_URL=$(curl -s "$BASE_URL/jobs/$JOB_ID" \
+  -H "x-api-key: $API_KEY" | jq -r '.resultUrl')
 
 curl -o result.json "$RESULT_URL"
 ```
