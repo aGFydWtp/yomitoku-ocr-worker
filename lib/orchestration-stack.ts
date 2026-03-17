@@ -69,7 +69,16 @@ export class OrchestrationStack extends Stack {
       {
         runtime: Runtime.PYTHON_3_12,
         handler: "index.handler",
-        code: Code.fromAsset("lambda/endpoint-control"),
+        code: Code.fromAsset("lambda/endpoint-control", {
+          exclude: [
+            ".venv",
+            "__pycache__",
+            ".pytest_cache",
+            ".coverage",
+            "tests",
+            ".gitkeep",
+          ],
+        }),
         timeout: Duration.seconds(30),
         environment: {
           ENDPOINT_NAME: endpointName,
