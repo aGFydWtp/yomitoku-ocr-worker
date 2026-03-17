@@ -9,7 +9,8 @@ Client ─→ CloudFront ─→ API Gateway (REST) ─→ Lambda (Hono)
                                                   ├→ POST /jobs      → DynamoDB + S3 presigned URL
                                                   ├→ GET  /jobs/:id  → DynamoDB (+ S3 presigned URL)
                                                   ├→ GET  /jobs      → DynamoDB (GSI)
-                                                  └→ DELETE /jobs/:id → DynamoDB + S3 削除
+                                                  ├→ DELETE /jobs/:id → DynamoDB + S3 削除
+                                                  └→ GET  /status    → DynamoDB (エンドポイント状態)
 
 S3 (input/) ─→ EventBridge Rule ─→ Step Functions (エンドポイント制御)
              ─→ SQS ─→ Lambda (処理ワーカー) ─→ SageMaker Endpoint ─→ S3 (output/)
@@ -85,15 +86,22 @@ PDF の OCR ジョブを作成し、S3 アップロード用の署名付き URL 
 curl -X POST https://<DistributionDomainName>/jobs \
   -H "x-api-key: YOUR_API_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"filename": "sample.pdf"}'
+  -d '{"filename": "sample.pdf", "basePath": "myProject/2026031701"}'
 ```
+
+| パラメータ | 必須 | 説明 |
+|-----------|------|------|
+| `filename` | Yes | PDF ファイル名（`.pdf` で終わる必要あり） |
+| `basePath` | No | 処理単位のパスプレフィックス（例: `myProject/2026031701`） |
+
+`basePath` を指定すると、S3 上のファイルが `input/{basePath}/{jobId}/{filename}` に配置され、出力も `output/{basePath}/{jobId}/` 以下に生成されます。未指定時は従来通り `input/{jobId}/{filename}` です。
 
 **レスポンス (201)**:
 
 ```json
 {
   "jobId": "550e8400-e29b-41d4-a716-446655440000",
-  "fileKey": "input/550e8400-.../sample.pdf",
+  "fileKey": "input/myProject/2026031701/550e8400-.../sample.pdf",
   "uploadUrl": "https://s3.amazonaws.com/...?signed",
   "expiresIn": 900
 }
@@ -101,6 +109,8 @@ curl -X POST https://<DistributionDomainName>/jobs \
 
 - `filename` は `.pdf` で終わる必要があります
 - `uploadUrl` の有効期限は 15 分です
+- `basePath` は英数字・日本語・ハイフン・アンダースコア・ドット・スラッシュのみ使用可能（512 バイト以内）
+- エンドポイントが起動していない場合は **503** を返し、裏でエンドポイントの起動を開始します
 
 ### ファイルアップロード
 
@@ -187,6 +197,31 @@ curl -X DELETE https://<DistributionDomainName>/jobs/<jobId> \
 
 **エラー**: 409 Conflict（PENDING 以外のステータスの場合）
 
+### GET /status — エンドポイント状態取得
+
+SageMaker エンドポイントの現在の状態を取得します。
+
+```bash
+curl https://<DistributionDomainName>/status \
+  -H "x-api-key: YOUR_API_KEY"
+```
+
+**レスポンス (200)**:
+
+```json
+{
+  "endpointState": "IN_SERVICE",
+  "updatedAt": "2026-03-17T09:18:06.668789+00:00"
+}
+```
+
+| 状態 | 説明 |
+|------|------|
+| `IDLE` | エンドポイント未起動（初期状態または削除済み） |
+| `CREATING` | エンドポイント起動中（通常 5–10 分） |
+| `IN_SERVICE` | エンドポイント稼働中 — ジョブ登録可能 |
+| `DELETING` | エンドポイント削除中 |
+
 ### エラーレスポンス
 
 すべてのエラーは以下の形式で返されます:
@@ -203,15 +238,20 @@ curl -X DELETE https://<DistributionDomainName>/jobs/<jobId> \
 | 404 | ジョブが見つからない |
 | 409 | 競合（キャンセル不可のステータス） |
 | 500 | サーバーエラー |
+| 503 | エンドポイント未起動（`endpointState` を含む。`GET /status` で状態を確認） |
 
 ## 使い方（完全なフロー例）
 
 ```bash
-# 1. ジョブ作成 → 署名付き URL を取得
+# 0. エンドポイント状態を確認（IDLE なら POST /jobs で自動起動される）
+curl -s https://<DistributionDomainName>/status \
+  -H "x-api-key: YOUR_API_KEY" | jq .
+
+# 1. ジョブ作成 → 署名付き URL を取得（basePath はオプション）
 RESPONSE=$(curl -s -X POST https://<DistributionDomainName>/jobs \
   -H "x-api-key: YOUR_API_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"filename": "sample.pdf"}')
+  -d '{"filename": "sample.pdf", "basePath": "myProject/run001"}')
 
 JOB_ID=$(echo $RESPONSE | jq -r '.jobId')
 UPLOAD_URL=$(echo $RESPONSE | jq -r '.uploadUrl')
@@ -257,6 +297,7 @@ lambda/
   api/                        REST API (Hono, TypeScript)
     index.ts                  エントリポイント
     routes/jobs.ts            ジョブ CRUD ルート
+    routes/status.ts          エンドポイント状態取得ルート
     lib/                      共通ユーティリティ
 test/                         CDK スナップショットテスト
 scripts/                      結合テスト用スクリプト
