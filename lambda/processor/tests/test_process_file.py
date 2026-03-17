@@ -88,10 +88,22 @@ class TestExtractJobId:
         assert extract_job_id(f"input/{JOB_ID}/請求書.pdf") == JOB_ID
 
     def test_extracts_uuid_from_nested_path(self):
-        """パスに追加のセグメントがあっても2番目を抽出する。"""
+        """パスに追加のセグメントがあっても UUID を抽出する。"""
         from index import extract_job_id
 
         assert extract_job_id(f"input/{JOB_ID}/sub/file.pdf") == JOB_ID
+
+    def test_extracts_uuid_from_basepath_key(self):
+        """basePath 付き input/{basePath}/{uuid}/{filename} から UUID を抽出する。"""
+        from index import extract_job_id
+
+        assert extract_job_id(f"input/myProject/2026031701/{JOB_ID}/sample.pdf") == JOB_ID
+
+    def test_extracts_uuid_from_deep_basepath_key(self):
+        """深い basePath input/SMB/砦チェック済み/{uuid}/{filename} から UUID を抽出する。"""
+        from index import extract_job_id
+
+        assert extract_job_id(f"input/SMB/砦チェック済み/{JOB_ID}/sample.pdf") == JOB_ID
 
     def test_raises_on_flat_key(self):
         """スラッシュなしのキーで ValueError が発生する。"""
@@ -366,3 +378,62 @@ class TestProcessFileTmpCleanup:
 
         # 失敗後でも /tmp にファイルが残っていないこと
         assert not os.path.exists("/tmp/sample.pdf")
+
+
+BASEPATH_FILE_KEY = f"input/SMB/砦チェック済み/{JOB_ID}/sample.pdf"
+
+
+class TestProcessFileWithBasePath:
+    """basePath 付きキーでの process_file テスト。"""
+
+    @pytest.fixture(autouse=True)
+    def setup_basepath(self, aws_setup):
+        """basePath 付きキーで S3 と DynamoDB をセットアップ。"""
+        aws_setup["s3"].put_object(
+            Bucket=BUCKET_NAME, Key=BASEPATH_FILE_KEY, Body=b"%PDF-1.4 fake"
+        )
+        aws_setup["table"].put_item(
+            Item={
+                "job_id": JOB_ID,
+                "file_key": BASEPATH_FILE_KEY,
+                "status": "PENDING",
+                "created_at": "2026-01-01T00:00:00",
+                "base_path": "SMB/砦チェック済み",
+            }
+        )
+        self.aws_setup = aws_setup
+
+    @pytest.mark.asyncio
+    async def test_basepath_key_completes_successfully(self):
+        """basePath 付きキーで COMPLETED に遷移する。"""
+        from index import process_file
+
+        with (
+            patch("index.YomitokuClient") as MockClient,
+            patch("index.parse_pydantic_model") as mock_parse,
+        ):
+            mock_instance, mock_parsed = _mock_yomitoku(MockClient)
+            mock_parse.return_value = mock_parsed
+
+            await process_file(BASEPATH_FILE_KEY)
+
+        item = self.aws_setup["table"].get_item(Key={"job_id": JOB_ID})["Item"]
+        assert item["status"] == "COMPLETED"
+        assert "output_key" in item
+
+    @pytest.mark.asyncio
+    async def test_basepath_output_key_preserves_structure(self):
+        """basePath 付きキーの output_key がディレクトリ構造を保持する。"""
+        from index import process_file
+
+        with (
+            patch("index.YomitokuClient") as MockClient,
+            patch("index.parse_pydantic_model") as mock_parse,
+        ):
+            mock_instance, mock_parsed = _mock_yomitoku(MockClient)
+            mock_parse.return_value = mock_parsed
+
+            await process_file(BASEPATH_FILE_KEY)
+
+        item = self.aws_setup["table"].get_item(Key={"job_id": JOB_ID})["Item"]
+        assert item["output_key"] == f"output/SMB/砦チェック済み/{JOB_ID}/sample.json"

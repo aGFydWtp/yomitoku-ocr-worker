@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import time
 from datetime import datetime, timezone
 from urllib.parse import unquote_plus
@@ -32,12 +33,23 @@ def extract_file_key(record: dict) -> str:
     return unquote_plus(raw_key)
 
 
+_UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+
+
 def extract_job_id(file_key: str) -> str:
-    """Extract job_id (UUID) from S3 key: input/{job_id}/{filename}."""
+    """Extract job_id (UUID) from S3 key.
+
+    Supports both formats:
+      - input/{job_id}/{filename}
+      - input/{basePath...}/{job_id}/{filename}
+    """
     parts = file_key.split("/")
-    if len(parts) < 3 or parts[0] != "input" or not parts[1]:
+    if len(parts) < 3 or parts[0] != "input":
         raise ValueError(f"Unexpected S3 key format, cannot extract job_id: {file_key!r}")
-    return parts[1]
+    for part in parts[1:]:
+        if _UUID_RE.match(part):
+            return part
+    raise ValueError(f"Unexpected S3 key format, cannot extract job_id: {file_key!r}")
 
 
 def handler(event: dict, context: object) -> dict:
