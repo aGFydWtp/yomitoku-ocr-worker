@@ -111,6 +111,14 @@ export const JobDetailResponseSchema = z
       .string()
       .optional()
       .openapi({ description: "FAILED 時のみ" }),
+    visualizations: z
+      .object({
+        layoutUrls: z.array(z.string().url()),
+        ocrUrls: z.array(z.string().url()),
+        expiresIn: z.number().int(),
+      })
+      .optional()
+      .openapi({ description: "COMPLETED 時、可視化画像がある場合のみ" }),
   })
   .openapi("JobDetailResponse");
 

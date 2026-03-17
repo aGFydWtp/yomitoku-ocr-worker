@@ -235,6 +235,43 @@ jobsRoutes.openapi(getJobRoute, async (c) => {
     if (item.processing_time_ms !== undefined) {
       response.processingTimeMs = item.processing_time_ms as number;
     }
+
+    // Visualization presigned URLs
+    const MAX_VIZ_PAGES = 200;
+    if (
+      typeof item.visualization_prefix === "string" &&
+      typeof item.num_pages === "number" &&
+      item.num_pages > 0 &&
+      item.num_pages <= MAX_VIZ_PAGES
+    ) {
+      const vizPrefix = item.visualization_prefix;
+      const numPages = item.num_pages;
+      const basename =
+        (item.file_key as string)
+          .split("/")
+          .pop()
+          ?.replace(/\.pdf$/i, "") ?? "";
+
+      const layoutKeys = Array.from(
+        { length: numPages },
+        (_, i) => `${vizPrefix}${basename}_layout_page_${i}.jpg`,
+      );
+      const ocrKeys = Array.from(
+        { length: numPages },
+        (_, i) => `${vizPrefix}${basename}_ocr_page_${i}.jpg`,
+      );
+
+      const [layoutUrls, ocrUrls] = await Promise.all([
+        Promise.all(layoutKeys.map((k) => createResultUrl(bucketName, k))),
+        Promise.all(ocrKeys.map((k) => createResultUrl(bucketName, k))),
+      ]);
+
+      response.visualizations = {
+        layoutUrls,
+        ocrUrls,
+        expiresIn: RESULT_URL_EXPIRES_IN,
+      };
+    }
   }
 
   if (item.status === "FAILED" && item.error_message) {

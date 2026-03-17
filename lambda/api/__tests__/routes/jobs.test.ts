@@ -634,6 +634,94 @@ describe("GET /jobs/:jobId", () => {
     );
   });
 
+  it("正常系(COMPLETED+visualization): visualizationsにlayoutUrlsとocrUrlsが含まれる", async () => {
+    mockSend.mockResolvedValue({
+      Item: makeItem({
+        status: "COMPLETED",
+        output_key: `output/test/${FIXED_UUID}/test.json`,
+        processing_time_ms: 5000,
+        visualization_prefix: `visualizations/test/${FIXED_UUID}/`,
+        num_pages: 2,
+      }),
+    });
+    mockCreateResultUrl.mockResolvedValue("https://s3.example.com/presigned");
+
+    const app = createApp();
+    const res = await app.request(`/jobs/${FIXED_UUID}`);
+
+    expect(res.status).toBe(200);
+    const body: AnyJson = await res.json();
+    expect(body.visualizations).toBeDefined();
+    expect(body.visualizations.layoutUrls).toHaveLength(2);
+    expect(body.visualizations.ocrUrls).toHaveLength(2);
+    expect(body.visualizations.expiresIn).toBe(3600);
+
+    // result URL + 2 layout + 2 ocr = 5 calls to createResultUrl
+    expect(mockCreateResultUrl).toHaveBeenCalledTimes(5);
+    expect(mockCreateResultUrl).toHaveBeenCalledWith(
+      "test-bucket",
+      `visualizations/test/${FIXED_UUID}/test_layout_page_0.jpg`,
+    );
+    expect(mockCreateResultUrl).toHaveBeenCalledWith(
+      "test-bucket",
+      `visualizations/test/${FIXED_UUID}/test_ocr_page_1.jpg`,
+    );
+  });
+
+  it("正常系(COMPLETED without visualization): visualizationsが含まれない", async () => {
+    mockSend.mockResolvedValue({
+      Item: makeItem({
+        status: "COMPLETED",
+        output_key: `output/test/${FIXED_UUID}/test.json`,
+      }),
+    });
+    mockCreateResultUrl.mockResolvedValue("https://s3.example.com/presigned");
+
+    const app = createApp();
+    const res = await app.request(`/jobs/${FIXED_UUID}`);
+
+    expect(res.status).toBe(200);
+    const body: AnyJson = await res.json();
+    expect(body.visualizations).toBeUndefined();
+  });
+
+  it("正常系(COMPLETED+num_pages=0): visualizationsが含まれない", async () => {
+    mockSend.mockResolvedValue({
+      Item: makeItem({
+        status: "COMPLETED",
+        output_key: `output/test/${FIXED_UUID}/test.json`,
+        visualization_prefix: `visualizations/test/${FIXED_UUID}/`,
+        num_pages: 0,
+      }),
+    });
+    mockCreateResultUrl.mockResolvedValue("https://s3.example.com/presigned");
+
+    const app = createApp();
+    const res = await app.request(`/jobs/${FIXED_UUID}`);
+
+    expect(res.status).toBe(200);
+    const body: AnyJson = await res.json();
+    expect(body.visualizations).toBeUndefined();
+  });
+
+  it("正常系(COMPLETED+visualization_prefixのみ): visualizationsが含まれない", async () => {
+    mockSend.mockResolvedValue({
+      Item: makeItem({
+        status: "COMPLETED",
+        output_key: `output/test/${FIXED_UUID}/test.json`,
+        visualization_prefix: `visualizations/test/${FIXED_UUID}/`,
+      }),
+    });
+    mockCreateResultUrl.mockResolvedValue("https://s3.example.com/presigned");
+
+    const app = createApp();
+    const res = await app.request(`/jobs/${FIXED_UUID}`);
+
+    expect(res.status).toBe(200);
+    const body: AnyJson = await res.json();
+    expect(body.visualizations).toBeUndefined();
+  });
+
   it("正常系(FAILED): 200を返しerrorMessageが含まれる", async () => {
     mockSend.mockResolvedValue({
       Item: makeItem({

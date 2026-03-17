@@ -169,6 +169,8 @@ export class ProcessingStack extends Stack {
     this.bucket.grantRead(this.processorFunction, "input/*");
     // 3.5.2 S3 output/ write
     this.bucket.grantPut(this.processorFunction, "output/*");
+    // 3.5.6 S3 visualizations/ write
+    this.bucket.grantPut(this.processorFunction, "visualizations/*");
     // 3.5.3 DynamoDB status table read/write
     this.statusTable.grantReadWriteData(this.processorFunction);
     // 3.5.4 SQS consume (automatically granted by SqsEventSource)
@@ -208,6 +210,7 @@ export class ProcessingStack extends Stack {
             "Action::s3:Abort*",
             "Resource::<DataBucketE3889A50.Arn>/input/*",
             "Resource::<DataBucketE3889A50.Arn>/output/*",
+            "Resource::<DataBucketE3889A50.Arn>/visualizations/*",
             "Resource::<StatusTable0F76785B.Arn>/index/*",
           ],
         },

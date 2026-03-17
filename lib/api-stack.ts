@@ -72,6 +72,7 @@ export class ApiStack extends Stack {
     stateMachine.grantStartExecution(fn);
     bucket.grantPut(fn, "input/*");
     bucket.grantRead(fn, "output/*");
+    bucket.grantRead(fn, "visualizations/*");
     bucket.grantDelete(fn, "input/*");
 
     // --- API Gateway アカウント設定（CloudWatch ログ用） ---
@@ -217,6 +218,7 @@ export class ApiStack extends Stack {
             "Action::s3:List*",
             "Resource::<DataBucketE3889A50.Arn>/input/*",
             "Resource::<DataBucketE3889A50.Arn>/output/*",
+            "Resource::<DataBucketE3889A50.Arn>/visualizations/*",
             "Resource::<StatusTable0F76785B.Arn>/index/*",
             "Resource::<ControlTableB3A8D1BC.Arn>/index/*",
           ],

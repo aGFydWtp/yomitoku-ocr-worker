@@ -6,8 +6,10 @@ import asyncio
 import json
 import os
 import re
+import shutil
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 from urllib.parse import unquote_plus
 
 import boto3
@@ -50,6 +52,56 @@ def extract_job_id(file_key: str) -> str:
         if _UUID_RE.match(part):
             return part
     raise ValueError(f"Unexpected S3 key format, cannot extract job_id: {file_key!r}")
+
+
+def _generate_and_upload_visualizations(
+    parsed,
+    tmp_path: str,
+    file_key: str,
+    job_id: str,
+) -> tuple[str, int]:
+    """Generate layout/ocr visualization images and upload to S3.
+
+    Uses low-level DocumentResult.visualize(img, mode) per page
+    so the PDF is rendered to images only once.
+
+    Returns (visualization_prefix, num_pages).
+    """
+    import cv2
+    from yomitoku_client.models import correct_rotation_image
+    from yomitoku_client.utils import load_pdf
+
+    if not file_key.startswith("input/"):
+        raise ValueError(f"Unexpected file_key format: {file_key!r}")
+
+    images = load_pdf(tmp_path, dpi=200)
+    basename = Path(tmp_path).stem
+    viz_prefix = "visualizations/" + file_key[len("input/"):].rsplit("/", 1)[0] + "/"
+    viz_dir = f"/tmp/viz_{job_id}"
+    os.makedirs(viz_dir, exist_ok=True)
+
+    try:
+        num_pages = len(images)
+        for idx, img in enumerate(images):
+            page_result = parsed.pages[idx]
+            corrected = correct_rotation_image(
+                img, angle=page_result.preprocess.get("angle", 0)
+            )
+
+            for mode in ("layout", "ocr"):
+                vis_img = page_result.visualize(corrected, mode=mode)
+                filename = f"{basename}_{mode}_page_{idx}.jpg"
+                local_path = os.path.join(viz_dir, filename)
+                if not cv2.imwrite(local_path, vis_img):
+                    raise RuntimeError(f"cv2.imwrite failed for {local_path}")
+
+                s3_key = f"{viz_prefix}{filename}"
+                s3.upload_file(local_path, BUCKET_NAME, s3_key)
+                os.remove(local_path)
+
+        return viz_prefix, num_pages
+    finally:
+        shutil.rmtree(viz_dir, ignore_errors=True)
 
 
 def handler(event: dict, context: object) -> dict:
@@ -145,17 +197,36 @@ async def process_file(file_key: str) -> None:
             ContentType="application/json",
         )
 
+        # 4.5. Generate visualization images (best-effort)
+        viz_attrs: dict = {}
+        try:
+            viz_prefix, num_pages = _generate_and_upload_visualizations(
+                parsed, tmp_path, file_key, job_id
+            )
+            viz_attrs = {
+                ":vp": viz_prefix,
+                ":np": num_pages,
+            }
+        except Exception as viz_err:
+            print(f"[WARN] job_id={job_id} visualization failed (non-fatal): {viz_err}")
+
         # 5. Update DynamoDB: COMPLETED
+        update_expr = "SET #s = :s, updated_at = :t, output_key = :o, processing_time_ms = :p"
+        expr_values: dict = {
+            ":s": "COMPLETED",
+            ":t": datetime.now(timezone.utc).isoformat(),
+            ":o": output_key,
+            ":p": elapsed,
+        }
+        if viz_attrs:
+            update_expr += ", visualization_prefix = :vp, num_pages = :np"
+            expr_values.update(viz_attrs)
+
         table.update_item(
             Key={"job_id": job_id},
-            UpdateExpression="SET #s = :s, updated_at = :t, output_key = :o, processing_time_ms = :p",
+            UpdateExpression=update_expr,
             ExpressionAttributeNames={"#s": "status"},
-            ExpressionAttributeValues={
-                ":s": "COMPLETED",
-                ":t": datetime.now(timezone.utc).isoformat(),
-                ":o": output_key,
-                ":p": elapsed,
-            },
+            ExpressionAttributeValues=expr_values,
         )
 
     except Exception as e:

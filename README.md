@@ -139,9 +139,16 @@ curl https://<DistributionDomainName>/jobs/<jobId> \
   "updatedAt": "2026-03-04T12:15:00.000Z",
   "resultUrl": "https://s3.amazonaws.com/...?signed",
   "resultExpiresIn": 3600,
-  "processingTimeMs": 12345
+  "processingTimeMs": 12345,
+  "visualizations": {
+    "layoutUrls": ["https://s3.amazonaws.com/...?signed", "..."],
+    "ocrUrls": ["https://s3.amazonaws.com/...?signed", "..."],
+    "expiresIn": 3600
+  }
 }
 ```
+
+> `visualizations` は COMPLETED 時にレイアウト解析・OCR 結果の可視化画像が生成された場合のみ返されます。`layoutUrls` / `ocrUrls` はページごとの署名付き URL 配列です。
 
 | ステータス | 説明 |
 |-----------|------|
