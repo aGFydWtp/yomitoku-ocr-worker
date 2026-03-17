@@ -215,6 +215,206 @@ describe("POST /jobs", () => {
     expect(body.fileKey).toBe(`input/${FIXED_UUID}/請求書_2026年3月.pdf`);
   });
 
+  it("正常系: basePath指定時にfileKeyが input/{basePath}/{jobId}/{filename} になる", async () => {
+    const app = createApp();
+    const res = await app.request("/jobs", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        filename: "test.pdf",
+        basePath: "myProject/2026031701",
+      }),
+    });
+
+    expect(res.status).toBe(201);
+    const body: AnyJson = await res.json();
+    expect(body.fileKey).toBe(
+      `input/myProject/2026031701/${FIXED_UUID}/test.pdf`,
+    );
+  });
+
+  it("正常系: basePath指定時にS3 Presigned URLが正しいキーで発行される", async () => {
+    const app = createApp();
+    await app.request("/jobs", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        filename: "test.pdf",
+        basePath: "myProject/2026031701",
+      }),
+    });
+
+    expect(mockCreateUploadUrl).toHaveBeenCalledWith(
+      "test-bucket",
+      `input/myProject/2026031701/${FIXED_UUID}/test.pdf`,
+    );
+  });
+
+  it("正常系: basePath指定時にDynamoDBにbase_pathが保存される", async () => {
+    const app = createApp();
+    await app.request("/jobs", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        filename: "test.pdf",
+        basePath: "myProject/2026031701",
+      }),
+    });
+
+    const putCommand = mockSend.mock.calls[0][0];
+    expect(putCommand.input.Item.file_key).toBe(
+      `input/myProject/2026031701/${FIXED_UUID}/test.pdf`,
+    );
+    expect(putCommand.input.Item.base_path).toBe("myProject/2026031701");
+  });
+
+  it("正常系: basePath未指定時は従来通り input/{jobId}/{filename}", async () => {
+    const app = createApp();
+    const res = await app.request("/jobs", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ filename: "test.pdf" }),
+    });
+
+    expect(res.status).toBe(201);
+    const body: AnyJson = await res.json();
+    expect(body.fileKey).toBe(`input/${FIXED_UUID}/test.pdf`);
+  });
+
+  it("正常系: basePath未指定時にDynamoDBにbase_pathが保存されない", async () => {
+    const app = createApp();
+    await app.request("/jobs", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ filename: "test.pdf" }),
+    });
+
+    const putCommand = mockSend.mock.calls[0][0];
+    expect(putCommand.input.Item.base_path).toBeUndefined();
+  });
+
+  it("バリデーション: basePathが文字列でない場合は400を返す", async () => {
+    const app = createApp();
+    const res = await app.request("/jobs", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ filename: "test.pdf", basePath: 123 }),
+    });
+
+    expect(res.status).toBe(400);
+    const body: AnyJson = await res.json();
+    expect(body.error).toContain("basePath");
+  });
+
+  it("バリデーション: basePathに先頭パストラバーサル(../)が含まれる場合は400を返す", async () => {
+    const app = createApp();
+    const res = await app.request("/jobs", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ filename: "test.pdf", basePath: "../escape" }),
+    });
+
+    expect(res.status).toBe(400);
+    const body: AnyJson = await res.json();
+    expect(body.error).toBeDefined();
+  });
+
+  it("バリデーション: basePathに中間パストラバーサル(a/../b)が含まれる場合は400を返す", async () => {
+    const app = createApp();
+    const res = await app.request("/jobs", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ filename: "test.pdf", basePath: "legit/../escape" }),
+    });
+
+    expect(res.status).toBe(400);
+  });
+
+  it("バリデーション: basePathに末尾パストラバーサル(a/..)が含まれる場合は400を返す", async () => {
+    const app = createApp();
+    const res = await app.request("/jobs", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ filename: "test.pdf", basePath: "legit/subdir/.." }),
+    });
+
+    expect(res.status).toBe(400);
+  });
+
+  it("バリデーション: basePathが長すぎる場合は400を返す", async () => {
+    const app = createApp();
+    const longPath = "a".repeat(513);
+    const res = await app.request("/jobs", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ filename: "test.pdf", basePath: longPath }),
+    });
+
+    expect(res.status).toBe(400);
+    const body: AnyJson = await res.json();
+    expect(body.error).toContain("long");
+  });
+
+  it("バリデーション: basePathに制御文字が含まれる場合は400を返す", async () => {
+    const app = createApp();
+    const res = await app.request("/jobs", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ filename: "test.pdf", basePath: "path\x00name" }),
+    });
+
+    expect(res.status).toBe(400);
+    const body: AnyJson = await res.json();
+    expect(body.error).toContain("invalid");
+  });
+
+  it("正常系: basePath=nullは未指定と同じ扱いになる", async () => {
+    const app = createApp();
+    const res = await app.request("/jobs", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ filename: "test.pdf", basePath: null }),
+    });
+
+    expect(res.status).toBe(201);
+    const body: AnyJson = await res.json();
+    expect(body.fileKey).toBe(`input/${FIXED_UUID}/test.pdf`);
+  });
+
+  it("バリデーション: basePathが空文字の場合は400を返す", async () => {
+    const app = createApp();
+    const res = await app.request("/jobs", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ filename: "test.pdf", basePath: "" }),
+    });
+
+    expect(res.status).toBe(400);
+    const body: AnyJson = await res.json();
+    expect(body.error).toContain("basePath");
+  });
+
+  it("バリデーション: basePathの先頭/末尾スラッシュは正規化される", async () => {
+    const app = createApp();
+    const res = await app.request("/jobs", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        filename: "test.pdf",
+        basePath: "/myProject/2026031701/",
+      }),
+    });
+
+    expect(res.status).toBe(201);
+    const body: AnyJson = await res.json();
+    expect(body.fileKey).toBe(
+      `input/myProject/2026031701/${FIXED_UUID}/test.pdf`,
+    );
+
+    const putCommand = mockSend.mock.calls[0][0];
+    expect(putCommand.input.Item.base_path).toBe("myProject/2026031701");
+  });
+
   it("異常系: DynamoDB書き込み失敗は500を返す", async () => {
     mockSend.mockRejectedValue(new Error("DynamoDB unavailable"));
 

@@ -33,7 +33,7 @@ jobsRoutes.post("/", async (c) => {
     throw new Error("STATUS_TABLE_NAME and BUCKET_NAME must be set");
   }
 
-  let body: { filename?: unknown };
+  let body: { filename?: unknown; basePath?: unknown };
   try {
     body = await c.req.json();
   } catch {
@@ -47,24 +47,54 @@ jobsRoutes.post("/", async (c) => {
     throw new ValidationError("filename must be a string");
   }
 
+  let basePath: string | undefined;
+  if (body.basePath !== undefined && body.basePath !== null) {
+    if (typeof body.basePath !== "string") {
+      throw new ValidationError("basePath must be a string");
+    }
+    const trimmed = body.basePath.replace(/^\/+|\/+$/g, "");
+    if (!trimmed) {
+      throw new ValidationError("basePath must not be empty");
+    }
+    if (!/^[a-zA-Z0-9\u3000-\u9FFF\u{20000}-\u{2FA1F}\-_./]+$/u.test(trimmed)) {
+      throw new ValidationError(
+        "basePath contains invalid characters",
+      );
+    }
+    if (/(^|\/)\.\.($|\/)/.test(trimmed)) {
+      throw new ValidationError("basePath must not contain path traversal (..)");
+    }
+    if (Buffer.byteLength(trimmed, "utf8") > 512) {
+      throw new ValidationError("basePath is too long");
+    }
+    basePath = trimmed;
+  }
+
   const sanitized = sanitizeFilename(body.filename);
   const jobId = crypto.randomUUID();
-  const fileKey = `input/${jobId}/${sanitized}`;
+  const fileKey = basePath
+    ? `input/${basePath}/${jobId}/${sanitized}`
+    : `input/${jobId}/${sanitized}`;
   const now = new Date().toISOString();
 
   const uploadUrl = await createUploadUrl(bucketName, fileKey);
 
+  const item: Record<string, string> = {
+    job_id: jobId,
+    file_key: fileKey,
+    status: "PENDING",
+    created_at: now,
+    updated_at: now,
+    original_filename: body.filename,
+  };
+  if (basePath) {
+    item.base_path = basePath;
+  }
+
   await docClient.send(
     new PutCommand({
       TableName: tableName,
-      Item: {
-        job_id: jobId,
-        file_key: fileKey,
-        status: "PENDING",
-        created_at: now,
-        updated_at: now,
-        original_filename: body.filename,
-      },
+      Item: item,
     }),
   );
 
