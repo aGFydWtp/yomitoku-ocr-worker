@@ -34,7 +34,7 @@ const processingStack = new ProcessingStack(app, "ProcessingStack", {
   env: { region, account },
 });
 
-new OrchestrationStack(app, "OrchestrationStack", {
+const orchestrationStack = new OrchestrationStack(app, "OrchestrationStack", {
   env: { region, account },
   mainQueue: processingStack.mainQueue,
   controlTable: processingStack.controlTable,
@@ -45,6 +45,8 @@ new ApiStack(app, "ApiStack", {
   env: { region, account },
   bucket: processingStack.bucket,
   statusTable: processingStack.statusTable,
+  controlTable: processingStack.controlTable,
+  stateMachine: orchestrationStack.stateMachine,
 });
 
 new MonitoringStack(app, "MonitoringStack", {

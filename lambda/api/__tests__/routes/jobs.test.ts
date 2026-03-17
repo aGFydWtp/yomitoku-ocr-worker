@@ -20,6 +20,11 @@ vi.mock("../../lib/s3", () => ({
   RESULT_URL_EXPIRES_IN: 3600,
 }));
 
+const mockSfnSend = vi.fn();
+vi.mock("../../lib/sfn", () => ({
+  sfnClient: { send: (...args: unknown[]) => mockSfnSend(...args) },
+}));
+
 const FIXED_UUID = "550e8400-e29b-41d4-a716-446655440000";
 vi.stubGlobal("crypto", {
   randomUUID: () => FIXED_UUID,
@@ -42,8 +47,18 @@ describe("POST /jobs", () => {
     vi.clearAllMocks();
     process.env.STATUS_TABLE_NAME = "test-table";
     process.env.BUCKET_NAME = "test-bucket";
-    mockSend.mockResolvedValue({});
+    process.env.CONTROL_TABLE_NAME = "control-table";
+    process.env.STATE_MACHINE_ARN =
+      "arn:aws:states:ap-northeast-1:123456789012:stateMachine:test";
+    // 1st call: Control Table (endpoint_state check) → IN_SERVICE
+    // 2nd call: Status Table (PutCommand)
+    mockSend
+      .mockResolvedValueOnce({
+        Item: { lock_key: "endpoint_control", endpoint_state: "IN_SERVICE" },
+      })
+      .mockResolvedValue({});
     mockCreateUploadUrl.mockResolvedValue("https://s3.example.com/presigned");
+    mockSfnSend.mockResolvedValue({});
   });
 
   it("正常系: 201を返しjobId, fileKey, uploadUrl, expiresInを含む", async () => {
@@ -70,8 +85,9 @@ describe("POST /jobs", () => {
       body: JSON.stringify({ filename: "test.pdf" }),
     });
 
-    expect(mockSend).toHaveBeenCalledOnce();
-    const putCommand = mockSend.mock.calls[0][0];
+    // calls[0] = Control Table read, calls[1] = Status Table write
+    expect(mockSend).toHaveBeenCalledTimes(2);
+    const putCommand = mockSend.mock.calls[1][0];
     expect(putCommand.input).toEqual(
       expect.objectContaining({
         TableName: "test-table",
@@ -95,7 +111,8 @@ describe("POST /jobs", () => {
       body: JSON.stringify({ filename: "../../secret.pdf" }),
     });
 
-    const putCommand = mockSend.mock.calls[0][0];
+    // calls[0] = Control Table read, calls[1] = Status Table write
+    const putCommand = mockSend.mock.calls[1][0];
     expect(putCommand.input.Item.original_filename).toBe("../../secret.pdf");
     expect(putCommand.input.Item.file_key).toBe(
       `input/${FIXED_UUID}/secret.pdf`,
@@ -116,16 +133,24 @@ describe("POST /jobs", () => {
     );
   });
 
-  it("正常系: Presigned URL発行がDynamoDB書き込みより先に実行される", async () => {
+  it("正常系: Control読み取り→Presigned URL発行→DynamoDB書き込みの順で実行される", async () => {
     const callOrder: string[] = [];
     mockCreateUploadUrl.mockImplementation(async () => {
-      callOrder.push("s3");
+      callOrder.push("s3-presign");
       return "https://s3.example.com/presigned";
     });
-    mockSend.mockImplementation(async () => {
-      callOrder.push("dynamodb");
-      return {};
-    });
+    mockSend.mockReset();
+    mockSend
+      .mockImplementationOnce(async () => {
+        callOrder.push("control-read");
+        return {
+          Item: { lock_key: "endpoint_control", endpoint_state: "IN_SERVICE" },
+        };
+      })
+      .mockImplementation(async () => {
+        callOrder.push("status-write");
+        return {};
+      });
 
     const app = createApp();
     await app.request("/jobs", {
@@ -134,7 +159,7 @@ describe("POST /jobs", () => {
       body: JSON.stringify({ filename: "test.pdf" }),
     });
 
-    expect(callOrder).toEqual(["s3", "dynamodb"]);
+    expect(callOrder).toEqual(["control-read", "s3-presign", "status-write"]);
   });
 
   it("バリデーション: filename未指定は400を返す", async () => {
@@ -261,7 +286,8 @@ describe("POST /jobs", () => {
       }),
     });
 
-    const putCommand = mockSend.mock.calls[0][0];
+    // calls[0] = Control Table read, calls[1] = Status Table write
+    const putCommand = mockSend.mock.calls[1][0];
     expect(putCommand.input.Item.file_key).toBe(
       `input/myProject/2026031701/${FIXED_UUID}/test.pdf`,
     );
@@ -289,7 +315,8 @@ describe("POST /jobs", () => {
       body: JSON.stringify({ filename: "test.pdf" }),
     });
 
-    const putCommand = mockSend.mock.calls[0][0];
+    // calls[0] = Control Table read, calls[1] = Status Table write
+    const putCommand = mockSend.mock.calls[1][0];
     expect(putCommand.input.Item.base_path).toBeUndefined();
   });
 
@@ -411,12 +438,17 @@ describe("POST /jobs", () => {
       `input/myProject/2026031701/${FIXED_UUID}/test.pdf`,
     );
 
-    const putCommand = mockSend.mock.calls[0][0];
+    const putCommand = mockSend.mock.calls[1][0];
     expect(putCommand.input.Item.base_path).toBe("myProject/2026031701");
   });
 
   it("異常系: DynamoDB書き込み失敗は500を返す", async () => {
-    mockSend.mockRejectedValue(new Error("DynamoDB unavailable"));
+    mockSend.mockReset();
+    mockSend
+      .mockResolvedValueOnce({
+        Item: { lock_key: "endpoint_control", endpoint_state: "IN_SERVICE" },
+      })
+      .mockRejectedValue(new Error("DynamoDB unavailable"));
 
     const app = createApp();
     const res = await app.request("/jobs", {
@@ -426,6 +458,113 @@ describe("POST /jobs", () => {
     });
 
     expect(res.status).toBe(500);
+  });
+
+  it("異常系: エンドポイントがIN_SERVICEでない場合は503を返す", async () => {
+    mockSend.mockReset();
+    mockSend.mockResolvedValueOnce({
+      Item: { lock_key: "endpoint_control", endpoint_state: "IDLE" },
+    });
+
+    const app = createApp();
+    const res = await app.request("/jobs", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ filename: "test.pdf" }),
+    });
+
+    expect(res.status).toBe(503);
+    const body: AnyJson = await res.json();
+    expect(body.error).toContain("Endpoint");
+    expect(body.endpointState).toBe("IDLE");
+  });
+
+  it("異常系: エンドポイントがCREATING中は503を返しendpointStateを含む", async () => {
+    mockSend.mockReset();
+    mockSend.mockResolvedValueOnce({
+      Item: { lock_key: "endpoint_control", endpoint_state: "CREATING" },
+    });
+
+    const app = createApp();
+    const res = await app.request("/jobs", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ filename: "test.pdf" }),
+    });
+
+    expect(res.status).toBe(503);
+    const body: AnyJson = await res.json();
+    expect(body.endpointState).toBe("CREATING");
+  });
+
+  it("正常系: エンドポイントIDLE時にStep Functionsが起動される", async () => {
+    mockSend.mockReset();
+    mockSend.mockResolvedValueOnce({
+      Item: { lock_key: "endpoint_control", endpoint_state: "IDLE" },
+    });
+
+    const app = createApp();
+    await app.request("/jobs", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ filename: "test.pdf" }),
+    });
+
+    expect(mockSfnSend).toHaveBeenCalledOnce();
+    const startCommand = mockSfnSend.mock.calls[0][0];
+    expect(startCommand.input.stateMachineArn).toBe(
+      "arn:aws:states:ap-northeast-1:123456789012:stateMachine:test",
+    );
+  });
+
+  it("正常系: エンドポイントCREATING中はStep Functionsを起動しない", async () => {
+    mockSend.mockReset();
+    mockSend.mockResolvedValueOnce({
+      Item: { lock_key: "endpoint_control", endpoint_state: "CREATING" },
+    });
+
+    const app = createApp();
+    await app.request("/jobs", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ filename: "test.pdf" }),
+    });
+
+    expect(mockSfnSend).not.toHaveBeenCalled();
+  });
+
+  it("正常系: Control Tableにレコードがない場合はIDLE扱いで503を返しStep Functionsを起動", async () => {
+    mockSend.mockReset();
+    mockSend.mockResolvedValueOnce({});
+
+    const app = createApp();
+    const res = await app.request("/jobs", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ filename: "test.pdf" }),
+    });
+
+    expect(res.status).toBe(503);
+    const body: AnyJson = await res.json();
+    expect(body.endpointState).toBe("IDLE");
+    expect(mockSfnSend).toHaveBeenCalledOnce();
+  });
+
+  it("正常系: Step Functions起動失敗でも503レスポンスは返る", async () => {
+    mockSend.mockReset();
+    mockSend.mockResolvedValueOnce({
+      Item: { lock_key: "endpoint_control", endpoint_state: "IDLE" },
+    });
+    mockSfnSend.mockRejectedValue(new Error("SFN unavailable"));
+
+    const app = createApp();
+    const res = await app.request("/jobs", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ filename: "test.pdf" }),
+    });
+
+    expect(res.status).toBe(503);
   });
 });
 

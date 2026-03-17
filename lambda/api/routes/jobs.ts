@@ -1,3 +1,4 @@
+import { StartExecutionCommand } from "@aws-sdk/client-sfn";
 import {
   GetCommand,
   PutCommand,
@@ -6,7 +7,12 @@ import {
 } from "@aws-sdk/lib-dynamodb";
 import { Hono } from "hono";
 import { docClient } from "../lib/dynamodb";
-import { ConflictError, NotFoundError, ValidationError } from "../lib/errors";
+import {
+  ConflictError,
+  NotFoundError,
+  ServiceUnavailableError,
+  ValidationError,
+} from "../lib/errors";
 import {
   createResultUrl,
   createUploadUrl,
@@ -15,6 +21,7 @@ import {
   UPLOAD_URL_EXPIRES_IN,
 } from "../lib/s3";
 import { sanitizeFilename } from "../lib/sanitize";
+import { sfnClient } from "../lib/sfn";
 
 const VALID_STATUSES = [
   "PENDING",
@@ -29,8 +36,53 @@ export const jobsRoutes = new Hono();
 jobsRoutes.post("/", async (c) => {
   const tableName = process.env.STATUS_TABLE_NAME;
   const bucketName = process.env.BUCKET_NAME;
-  if (!tableName || !bucketName) {
-    throw new Error("STATUS_TABLE_NAME and BUCKET_NAME must be set");
+  const controlTableName = process.env.CONTROL_TABLE_NAME;
+  const stateMachineArn = process.env.STATE_MACHINE_ARN;
+  if (!tableName || !bucketName || !controlTableName || !stateMachineArn) {
+    throw new Error(
+      "STATUS_TABLE_NAME, BUCKET_NAME, CONTROL_TABLE_NAME, and STATE_MACHINE_ARN must be set",
+    );
+  }
+  if (
+    !/^arn:aws[\w-]*:states:[a-z0-9-]+:\d{12}:stateMachine:.+$/.test(
+      stateMachineArn,
+    )
+  ) {
+    throw new Error(`Invalid STATE_MACHINE_ARN format: ${stateMachineArn}`);
+  }
+
+  // エンドポイント状態チェック
+  // NOTE: TOCTOU リスク — チェックとジョブ書き込みの間にステートが変わる可能性があるが、
+  // Step Functions の 15 分クールダウンにより実際のレース窓は極めて小さい。
+  // 万一ジョブが残った場合は、エンドポイント再起動時に SQS 経由で処理される。
+  const controlResult = await docClient.send(
+    new GetCommand({
+      TableName: controlTableName,
+      Key: { lock_key: "endpoint_control" },
+      ConsistentRead: true,
+    }),
+  );
+  const endpointState =
+    (controlResult.Item?.endpoint_state as string) ?? "IDLE";
+
+  if (endpointState !== "IN_SERVICE") {
+    // IDLE または DELETING の場合は Step Functions を起動
+    if (endpointState === "IDLE" || endpointState === "DELETING") {
+      try {
+        await sfnClient.send(
+          new StartExecutionCommand({
+            stateMachineArn,
+            input: JSON.stringify({ trigger: "api_request" }),
+          }),
+        );
+      } catch {
+        // best-effort: Step Functions 起動失敗は無視
+      }
+    }
+    throw new ServiceUnavailableError(
+      "Endpoint is not available. Please try again later.",
+      { endpointState },
+    );
   }
 
   let body: { filename?: unknown; basePath?: unknown };

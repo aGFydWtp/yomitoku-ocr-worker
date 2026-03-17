@@ -1,6 +1,11 @@
 import { Match, Template } from "aws-cdk-lib/assertions";
 import { AttributeType, BillingMode, Table } from "aws-cdk-lib/aws-dynamodb";
 import { Bucket } from "aws-cdk-lib/aws-s3";
+import {
+  DefinitionBody,
+  Pass,
+  StateMachine,
+} from "aws-cdk-lib/aws-stepfunctions";
 import { App, Stack } from "aws-cdk-lib/core";
 import { ApiStack } from "../lib/api-stack";
 
@@ -22,11 +27,20 @@ function createStack(): {
     partitionKey: { name: "job_id", type: AttributeType.STRING },
     billingMode: BillingMode.PAY_PER_REQUEST,
   });
+  const controlTable = new Table(depStack, "TestControlTable", {
+    partitionKey: { name: "lock_key", type: AttributeType.STRING },
+    billingMode: BillingMode.PAY_PER_REQUEST,
+  });
+  const stateMachine = new StateMachine(depStack, "TestStateMachine", {
+    definitionBody: DefinitionBody.fromChainable(new Pass(depStack, "Start")),
+  });
 
   const stack = new ApiStack(app, "TestApiStack", {
     env: { region: TEST_REGION, account: TEST_ACCOUNT },
     bucket,
     statusTable,
+    controlTable,
+    stateMachine,
   });
 
   const template = Template.fromStack(stack);
@@ -57,13 +71,15 @@ describe("ApiStack", () => {
       });
     });
 
-    it("環境変数に STATUS_TABLE_NAME と BUCKET_NAME が設定されている", () => {
+    it("環境変数に STATUS_TABLE_NAME, BUCKET_NAME, CONTROL_TABLE_NAME, STATE_MACHINE_ARN が設定されている", () => {
       const { template } = createStack();
       template.hasResourceProperties("AWS::Lambda::Function", {
         Environment: {
           Variables: {
             STATUS_TABLE_NAME: Match.anyValue(),
             BUCKET_NAME: Match.anyValue(),
+            CONTROL_TABLE_NAME: Match.anyValue(),
+            STATE_MACHINE_ARN: Match.anyValue(),
           },
         },
       });
