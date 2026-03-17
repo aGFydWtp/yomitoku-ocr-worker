@@ -42,13 +42,19 @@ statusRoutes.openapi(getStatusRoute, async (c) => {
     }),
   );
 
+  const VALID_STATES = ["IDLE", "CREATING", "IN_SERVICE", "DELETING"] as const;
+  type EndpointState = (typeof VALID_STATES)[number];
+
   const item = result.Item;
+  const raw = (item?.endpoint_state as string) ?? "IDLE";
+  const endpointState: EndpointState = (
+    VALID_STATES as readonly string[]
+  ).includes(raw)
+    ? (raw as EndpointState)
+    : "IDLE";
+
   return c.json({
-    endpointState: ((item?.endpoint_state as string) ?? "IDLE") as
-      | "IDLE"
-      | "CREATING"
-      | "IN_SERVICE"
-      | "DELETING",
+    endpointState,
     updatedAt: (item?.updated_at as string) ?? null,
   });
 });

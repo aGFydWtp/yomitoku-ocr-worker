@@ -51,13 +51,15 @@ export function handleError(err: unknown, c: Context) {
       503,
     );
   }
-  if (
-    err instanceof HTTPException ||
-    (err instanceof Error && "status" in err && "getResponse" in err)
-  ) {
-    const status = (err as HTTPException).status ?? 500;
-    return c.json({ error: err.message }, status as 400);
+  if (err instanceof HTTPException) {
+    const status = err.status;
+    const message = status >= 500 ? "Internal server error" : err.message;
+    return c.json({ error: message }, status as 400);
   }
-  console.error("Unexpected error:", err);
+  const message = err instanceof Error ? err.message : String(err);
+  console.error("Unexpected error:", {
+    name: err instanceof Error ? err.name : "UnknownError",
+    message,
+  });
   return c.json({ error: "Internal server error" }, 500);
 }

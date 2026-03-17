@@ -244,6 +244,8 @@ jobsRoutes.openapi(listJobsRoute, async (c) => {
 
   const { status, limit, cursor: cursorParam } = c.req.valid("query");
 
+  const ALLOWED_CURSOR_KEYS = new Set(["job_id", "status", "created_at"]);
+
   let exclusiveStartKey: Record<string, unknown> | undefined;
   if (cursorParam) {
     try {
@@ -256,6 +258,10 @@ jobsRoutes.openapi(listJobsRoute, async (c) => {
         Array.isArray(decoded)
       ) {
         throw new Error("not an object");
+      }
+      const keys = Object.keys(decoded as Record<string, unknown>);
+      if (keys.length === 0 || keys.some((k) => !ALLOWED_CURSOR_KEYS.has(k))) {
+        throw new Error("invalid keys");
       }
       exclusiveStartKey = decoded as Record<string, unknown>;
     } catch {
