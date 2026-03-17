@@ -4,11 +4,13 @@ import { handle } from "hono/aws-lambda";
 import { handleError } from "./lib/errors";
 import { jobsRoutes } from "./routes/jobs";
 import { statusRoutes } from "./routes/status";
+import { upRoutes } from "./routes/up";
 
 const app = new OpenAPIHono();
 
 app.route("/jobs", jobsRoutes);
 app.route("/status", statusRoutes);
+app.route("/up", upRoutes);
 
 app.doc("/doc", {
   openapi: "3.0.3",

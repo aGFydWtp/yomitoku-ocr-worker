@@ -1,7 +1,9 @@
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
 import { createRoute, OpenAPIHono } from "@hono/zod-openapi";
 import { docClient } from "../lib/dynamodb";
-import { EndpointStatusResponseSchema } from "../schemas";
+import { handleError } from "../lib/errors";
+import type { EndpointState } from "../schemas";
+import { ENDPOINT_STATES, EndpointStatusResponseSchema } from "../schemas";
 
 export const statusRoutes = new OpenAPIHono({
   defaultHook: (result, c) => {
@@ -12,6 +14,8 @@ export const statusRoutes = new OpenAPIHono({
     return undefined;
   },
 });
+
+statusRoutes.onError(handleError);
 
 const getStatusRoute = createRoute({
   method: "get",
@@ -42,13 +46,10 @@ statusRoutes.openapi(getStatusRoute, async (c) => {
     }),
   );
 
-  const VALID_STATES = ["IDLE", "CREATING", "IN_SERVICE", "DELETING"] as const;
-  type EndpointState = (typeof VALID_STATES)[number];
-
   const item = result.Item;
   const raw = (item?.endpoint_state as string) ?? "IDLE";
   const endpointState: EndpointState = (
-    VALID_STATES as readonly string[]
+    ENDPOINT_STATES as readonly string[]
   ).includes(raw)
     ? (raw as EndpointState)
     : "IDLE";

@@ -23,7 +23,11 @@ import {
 } from "../lib/s3";
 import { sanitizeFilename } from "../lib/sanitize";
 import { sfnClient } from "../lib/sfn";
-import { decodeCursor, validateBasePath } from "../lib/validate";
+import {
+  assertValidStateMachineArn,
+  decodeCursor,
+  validateBasePath,
+} from "../lib/validate";
 import type { JobDetailResponseSchema, JobStatus } from "../schemas";
 import {
   cancelJobRoute,
@@ -56,13 +60,7 @@ jobsRoutes.openapi(createJobRoute, async (c) => {
       "STATUS_TABLE_NAME, BUCKET_NAME, CONTROL_TABLE_NAME, and STATE_MACHINE_ARN must be set",
     );
   }
-  if (
-    !/^arn:aws[\w-]*:states:[a-z0-9-]+:\d{12}:stateMachine:.+$/.test(
-      stateMachineArn,
-    )
-  ) {
-    throw new Error(`Invalid STATE_MACHINE_ARN format: ${stateMachineArn}`);
-  }
+  assertValidStateMachineArn(stateMachineArn);
 
   // エンドポイント状態チェック
   // NOTE: TOCTOU リスク — チェックとジョブ書き込みの間にステートが変わる可能性があるが、

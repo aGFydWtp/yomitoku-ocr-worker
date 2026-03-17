@@ -12,6 +12,15 @@ export const JOB_STATUSES = [
 
 export type JobStatus = (typeof JOB_STATUSES)[number];
 
+export const ENDPOINT_STATES = [
+  "IDLE",
+  "CREATING",
+  "IN_SERVICE",
+  "DELETING",
+] as const;
+
+export type EndpointState = (typeof ENDPOINT_STATES)[number];
+
 export const ErrorResponseSchema = z
   .object({
     error: z.string(),
@@ -117,12 +126,23 @@ export const CancelJobResponseSchema = z
   })
   .openapi("CancelJobResponse");
 
+// --- POST /up ---
+
+export const StartEndpointResponseSchema = z
+  .object({
+    message: z.string(),
+    endpointState: z.enum(ENDPOINT_STATES).openapi({
+      description: "現在のエンドポイント状態",
+    }),
+  })
+  .openapi("StartEndpointResponse");
+
 // --- GET /status ---
 
 export const EndpointStatusResponseSchema = z
   .object({
     endpointState: z
-      .enum(["IDLE", "CREATING", "IN_SERVICE", "DELETING"])
+      .enum(ENDPOINT_STATES)
       .openapi({ description: "SageMaker エンドポイントの状態" }),
     updatedAt: z.string().datetime().nullable(),
   })

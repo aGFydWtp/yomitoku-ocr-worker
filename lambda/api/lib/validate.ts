@@ -1,5 +1,18 @@
 import { ValidationError } from "./errors";
 
+const STATE_MACHINE_ARN_RE =
+  /^arn:aws[\w-]*:states:[a-z0-9-]+:\d{12}:stateMachine:.+$/;
+
+/**
+ * STATE_MACHINE_ARN のフォーマットを検証する。
+ * 不正な場合は Error を throw する。
+ */
+export function assertValidStateMachineArn(arn: string): void {
+  if (!STATE_MACHINE_ARN_RE.test(arn)) {
+    throw new Error(`Invalid STATE_MACHINE_ARN format: ${arn}`);
+  }
+}
+
 /**
  * basePath をトリム・検証し、正規化された文字列を返す。
  * null/undefined の場合は undefined を返す。
