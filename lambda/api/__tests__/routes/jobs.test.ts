@@ -1,4 +1,3 @@
-import { Hono } from "hono";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // biome-ignore lint/suspicious/noExplicitAny: テストでDynamoDB/Honoレスポンスの動的JSONを扱うため
@@ -30,11 +29,12 @@ vi.stubGlobal("crypto", {
   randomUUID: () => FIXED_UUID,
 });
 
+import { OpenAPIHono } from "@hono/zod-openapi";
 import { handleError } from "../../lib/errors";
 import { jobsRoutes } from "../../routes/jobs";
 
 function createApp() {
-  const app = new Hono();
+  const app = new OpenAPIHono();
   app.route("/jobs", jobsRoutes);
   app.onError(handleError);
   return app;
@@ -223,8 +223,6 @@ describe("POST /jobs", () => {
     });
 
     expect(res.status).toBe(400);
-    const body: AnyJson = await res.json();
-    expect(body.error).toContain("JSON");
   });
 
   it("正常系: 日本語ファイル名が正しく処理される", async () => {
@@ -330,7 +328,7 @@ describe("POST /jobs", () => {
 
     expect(res.status).toBe(400);
     const body: AnyJson = await res.json();
-    expect(body.error).toContain("basePath");
+    expect(body.error).toContain("string");
   });
 
   it("バリデーション: basePathに先頭パストラバーサル(../)が含まれる場合は400を返す", async () => {

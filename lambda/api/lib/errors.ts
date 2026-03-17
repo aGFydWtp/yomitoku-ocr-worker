@@ -1,4 +1,5 @@
 import type { Context } from "hono";
+import { HTTPException } from "hono/http-exception";
 
 export class ValidationError extends Error {
   constructor(message: string) {
@@ -46,6 +47,10 @@ export function handleError(err: unknown, c: Context) {
   }
   if (err instanceof ServiceUnavailableError) {
     return c.json({ ...err.details, error: err.message }, 503);
+  }
+  if (err instanceof HTTPException || (err instanceof Error && "status" in err && "getResponse" in err)) {
+    const status = (err as HTTPException).status ?? 500;
+    return c.json({ error: err.message }, status as 400);
   }
   console.error("Unexpected error:", err);
   return c.json({ error: "Internal server error" }, 500);

@@ -1,4 +1,3 @@
-import { Hono } from "hono";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // biome-ignore lint/suspicious/noExplicitAny: テストでDynamoDB/Honoレスポンスの動的JSONを扱うため
@@ -9,11 +8,12 @@ vi.mock("../../lib/dynamodb", () => ({
   docClient: { send: (...args: unknown[]) => mockSend(...args) },
 }));
 
+import { OpenAPIHono } from "@hono/zod-openapi";
 import { handleError } from "../../lib/errors";
 import { statusRoutes } from "../../routes/status";
 
 function createApp() {
-  const app = new Hono();
+  const app = new OpenAPIHono();
   app.route("/status", statusRoutes);
   app.onError(handleError);
   return app;

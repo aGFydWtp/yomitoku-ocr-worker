@@ -5,13 +5,14 @@ import {
   QueryCommand,
   UpdateCommand,
 } from "@aws-sdk/lib-dynamodb";
-import { Hono } from "hono";
+import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
 import { docClient } from "../lib/dynamodb";
 import {
   ConflictError,
   NotFoundError,
   ServiceUnavailableError,
   ValidationError,
+  handleError,
 } from "../lib/errors";
 import {
   createResultUrl,
@@ -22,18 +23,58 @@ import {
 } from "../lib/s3";
 import { sanitizeFilename } from "../lib/sanitize";
 import { sfnClient } from "../lib/sfn";
+import {
+  CancelJobResponseSchema,
+  CreateJobBodySchema,
+  CreateJobResponseSchema,
+  ErrorResponseSchema,
+  JobDetailResponseSchema,
+  JobListResponseSchema,
+  ServiceUnavailableSchema,
+} from "../schemas";
 
-const VALID_STATUSES = [
-  "PENDING",
-  "PROCESSING",
-  "COMPLETED",
-  "FAILED",
-  "CANCELLED",
-] as const;
+export const jobsRoutes = new OpenAPIHono({
+  defaultHook: (result, c) => {
+    if (!result.success) {
+      const firstIssue = result.error.issues[0];
+      return c.json({ error: firstIssue.message }, 400);
+    }
+  },
+});
 
-export const jobsRoutes = new Hono();
+jobsRoutes.onError(handleError);
 
-jobsRoutes.post("/", async (c) => {
+// --- POST /jobs ---
+
+const createJobRoute = createRoute({
+  method: "post",
+  path: "/",
+  summary: "ジョブ作成",
+  description:
+    "PDF の OCR ジョブを作成し、S3 アップロード用の署名付き URL を取得します。エンドポイント未起動時は 503 を返し、裏で起動を開始します。",
+  request: {
+    body: {
+      required: true,
+      content: { "application/json": { schema: CreateJobBodySchema } },
+    },
+  },
+  responses: {
+    201: {
+      description: "ジョブ作成成功",
+      content: { "application/json": { schema: CreateJobResponseSchema } },
+    },
+    400: {
+      description: "バリデーションエラー",
+      content: { "application/json": { schema: ErrorResponseSchema } },
+    },
+    503: {
+      description: "エンドポイント未起動",
+      content: { "application/json": { schema: ServiceUnavailableSchema } },
+    },
+  },
+});
+
+jobsRoutes.openapi(createJobRoute, async (c) => {
   const tableName = process.env.STATUS_TABLE_NAME;
   const bucketName = process.env.BUCKET_NAME;
   const controlTableName = process.env.CONTROL_TABLE_NAME;
@@ -66,7 +107,6 @@ jobsRoutes.post("/", async (c) => {
     (controlResult.Item?.endpoint_state as string) ?? "IDLE";
 
   if (endpointState !== "IN_SERVICE") {
-    // IDLE または DELETING の場合は Step Functions を起動
     if (endpointState === "IDLE" || endpointState === "DELETING") {
       try {
         await sfnClient.send(
@@ -85,36 +125,23 @@ jobsRoutes.post("/", async (c) => {
     );
   }
 
-  let body: { filename?: unknown; basePath?: unknown };
-  try {
-    body = await c.req.json();
-  } catch {
-    throw new ValidationError("Request body must be valid JSON");
-  }
-
-  if (body.filename === undefined || body.filename === null) {
-    throw new ValidationError("filename is required");
-  }
-  if (typeof body.filename !== "string") {
-    throw new ValidationError("filename must be a string");
-  }
+  const { filename, basePath: rawBasePath } = c.req.valid("json");
 
   let basePath: string | undefined;
-  if (body.basePath !== undefined && body.basePath !== null) {
-    if (typeof body.basePath !== "string") {
-      throw new ValidationError("basePath must be a string");
-    }
-    const trimmed = body.basePath.replace(/^\/+|\/+$/g, "");
+  if (rawBasePath != null) {
+    const trimmed = rawBasePath.replace(/^\/+|\/+$/g, "");
     if (!trimmed) {
       throw new ValidationError("basePath must not be empty");
     }
-    if (!/^[a-zA-Z0-9\u3000-\u9FFF\u{20000}-\u{2FA1F}\-_./]+$/u.test(trimmed)) {
-      throw new ValidationError(
-        "basePath contains invalid characters",
-      );
+    if (
+      !/^[a-zA-Z0-9\u3000-\u9FFF\u{20000}-\u{2FA1F}\-_./]+$/u.test(trimmed)
+    ) {
+      throw new ValidationError("basePath contains invalid characters");
     }
     if (/(^|\/)\.\.($|\/)/.test(trimmed)) {
-      throw new ValidationError("basePath must not contain path traversal (..)");
+      throw new ValidationError(
+        "basePath must not contain path traversal (..)",
+      );
     }
     if (Buffer.byteLength(trimmed, "utf8") > 512) {
       throw new ValidationError("basePath is too long");
@@ -122,7 +149,7 @@ jobsRoutes.post("/", async (c) => {
     basePath = trimmed;
   }
 
-  const sanitized = sanitizeFilename(body.filename);
+  const sanitized = sanitizeFilename(filename);
   const jobId = crypto.randomUUID();
   const fileKey = basePath
     ? `input/${basePath}/${jobId}/${sanitized}`
@@ -137,7 +164,7 @@ jobsRoutes.post("/", async (c) => {
     status: "PENDING",
     created_at: now,
     updated_at: now,
-    original_filename: body.filename,
+    original_filename: filename,
   };
   if (basePath) {
     item.base_path = basePath;
@@ -161,30 +188,54 @@ jobsRoutes.post("/", async (c) => {
   );
 });
 
-jobsRoutes.get("/", async (c) => {
+// --- GET /jobs ---
+
+const listJobsRoute = createRoute({
+  method: "get",
+  path: "/",
+  summary: "ジョブ一覧取得",
+  description:
+    "ステータスでフィルタし、ページネーション付きでジョブを取得します。",
+  request: {
+    query: z.object({
+      status: z.enum(
+        ["PENDING", "PROCESSING", "COMPLETED", "FAILED", "CANCELLED"],
+        {
+          required_error: "status query parameter is required",
+          message: "status must be one of: PENDING, PROCESSING, COMPLETED, FAILED, CANCELLED",
+        },
+      ),
+      limit: z.coerce
+        .number({ invalid_type_error: "limit must be an integer between 1 and 100" })
+        .int("limit must be an integer between 1 and 100")
+        .min(1, "limit must be an integer between 1 and 100")
+        .max(100, "limit must be an integer between 1 and 100")
+        .default(20)
+        .optional(),
+      cursor: z.string().optional(),
+    }),
+  },
+  responses: {
+    200: {
+      description: "ジョブ一覧",
+      content: { "application/json": { schema: JobListResponseSchema } },
+    },
+    400: {
+      description: "バリデーションエラー",
+      content: { "application/json": { schema: ErrorResponseSchema } },
+    },
+  },
+});
+
+jobsRoutes.openapi(listJobsRoute, async (c) => {
   const tableName = process.env.STATUS_TABLE_NAME;
   if (!tableName) {
     throw new Error("STATUS_TABLE_NAME must be set");
   }
 
-  const status = c.req.query("status");
-  if (!status) {
-    throw new ValidationError("status query parameter is required");
-  }
-  if (!VALID_STATUSES.includes(status as (typeof VALID_STATUSES)[number])) {
-    throw new ValidationError(
-      `status must be one of: ${VALID_STATUSES.join(", ")}`,
-    );
-  }
-
-  const limitParam = c.req.query("limit");
-  const limit = limitParam ? Number(limitParam) : 20;
-  if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
-    throw new ValidationError("limit must be an integer between 1 and 100");
-  }
+  const { status, limit, cursor: cursorParam } = c.req.valid("query");
 
   let exclusiveStartKey: Record<string, unknown> | undefined;
-  const cursorParam = c.req.query("cursor");
   if (cursorParam) {
     try {
       const decoded: unknown = JSON.parse(
@@ -235,20 +286,41 @@ jobsRoutes.get("/", async (c) => {
   });
 });
 
-const UUID_RE =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+// --- GET /jobs/:jobId ---
 
-jobsRoutes.get("/:jobId", async (c) => {
+const getJobRoute = createRoute({
+  method: "get",
+  path: "/{jobId}",
+  summary: "ジョブ状態取得",
+  request: {
+    params: z.object({
+      jobId: z.string().uuid(),
+    }),
+  },
+  responses: {
+    200: {
+      description: "ジョブ詳細",
+      content: { "application/json": { schema: JobDetailResponseSchema } },
+    },
+    400: {
+      description: "不正な jobId 形式",
+      content: { "application/json": { schema: ErrorResponseSchema } },
+    },
+    404: {
+      description: "ジョブが見つからない",
+      content: { "application/json": { schema: ErrorResponseSchema } },
+    },
+  },
+});
+
+jobsRoutes.openapi(getJobRoute, async (c) => {
   const tableName = process.env.STATUS_TABLE_NAME;
   const bucketName = process.env.BUCKET_NAME;
   if (!tableName || !bucketName) {
     throw new Error("STATUS_TABLE_NAME and BUCKET_NAME must be set");
   }
 
-  const jobId = c.req.param("jobId");
-  if (!UUID_RE.test(jobId)) {
-    throw new ValidationError("jobId must be a valid UUID");
-  }
+  const { jobId } = c.req.valid("param");
 
   const result = await docClient.send(
     new GetCommand({
@@ -300,17 +372,46 @@ jobsRoutes.get("/:jobId", async (c) => {
   return c.json(response);
 });
 
-jobsRoutes.delete("/:jobId", async (c) => {
+// --- DELETE /jobs/:jobId ---
+
+const cancelJobRoute = createRoute({
+  method: "delete",
+  path: "/{jobId}",
+  summary: "ジョブキャンセル",
+  description: "PENDING 状態のジョブのみキャンセルできます。",
+  request: {
+    params: z.object({
+      jobId: z.string().uuid(),
+    }),
+  },
+  responses: {
+    200: {
+      description: "キャンセル成功",
+      content: { "application/json": { schema: CancelJobResponseSchema } },
+    },
+    400: {
+      description: "不正な jobId 形式",
+      content: { "application/json": { schema: ErrorResponseSchema } },
+    },
+    404: {
+      description: "ジョブが見つからない",
+      content: { "application/json": { schema: ErrorResponseSchema } },
+    },
+    409: {
+      description: "PENDING 以外のステータスのためキャンセル不可",
+      content: { "application/json": { schema: ErrorResponseSchema } },
+    },
+  },
+});
+
+jobsRoutes.openapi(cancelJobRoute, async (c) => {
   const tableName = process.env.STATUS_TABLE_NAME;
   const bucketName = process.env.BUCKET_NAME;
   if (!tableName || !bucketName) {
     throw new Error("STATUS_TABLE_NAME and BUCKET_NAME must be set");
   }
 
-  const jobId = c.req.param("jobId");
-  if (!UUID_RE.test(jobId)) {
-    throw new ValidationError("jobId must be a valid UUID");
-  }
+  const { jobId } = c.req.valid("param");
 
   let fileKey: string | undefined;
   let updatedStatus: string | undefined;
