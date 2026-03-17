@@ -1,0 +1,62 @@
+import { ValidationError } from "./errors";
+
+/**
+ * basePath をトリム・検証し、正規化された文字列を返す。
+ * null/undefined の場合は undefined を返す。
+ */
+export function validateBasePath(
+  rawBasePath: string | null | undefined,
+): string | undefined {
+  if (rawBasePath == null) {
+    return undefined;
+  }
+
+  const trimmed = rawBasePath.replace(/^\/+|\/+$/g, "");
+  if (!trimmed) {
+    throw new ValidationError("basePath must not be empty");
+  }
+  if (!/^[a-zA-Z0-9\u3000-\u9FFF\u{20000}-\u{2FA1F}\-_./]+$/u.test(trimmed)) {
+    throw new ValidationError("basePath contains invalid characters");
+  }
+  if (/(^|\/)\.\.($|\/)/.test(trimmed)) {
+    throw new ValidationError("basePath must not contain path traversal (..)");
+  }
+  if (Buffer.byteLength(trimmed, "utf8") > 512) {
+    throw new ValidationError("basePath is too long");
+  }
+  return trimmed;
+}
+
+const ALLOWED_CURSOR_KEYS = new Set(["job_id", "status", "created_at"]);
+
+/**
+ * base64url エンコードされた cursor をデコード・検証し、
+ * DynamoDB の ExclusiveStartKey として使えるオブジェクトを返す。
+ */
+export function decodeCursor(
+  cursorParam: string | undefined,
+): Record<string, unknown> | undefined {
+  if (!cursorParam) {
+    return undefined;
+  }
+
+  try {
+    const decoded: unknown = JSON.parse(
+      Buffer.from(cursorParam, "base64url").toString("utf8"),
+    );
+    if (
+      typeof decoded !== "object" ||
+      decoded === null ||
+      Array.isArray(decoded)
+    ) {
+      throw new Error("not an object");
+    }
+    const keys = Object.keys(decoded as Record<string, unknown>);
+    if (keys.length === 0 || keys.some((k) => !ALLOWED_CURSOR_KEYS.has(k))) {
+      throw new Error("invalid keys");
+    }
+    return decoded as Record<string, unknown>;
+  } catch {
+    throw new ValidationError("cursor is invalid");
+  }
+}

@@ -1,5 +1,23 @@
 import { z } from "@hono/zod-openapi";
 
+// --- Common ---
+
+export const JOB_STATUSES = [
+  "PENDING",
+  "PROCESSING",
+  "COMPLETED",
+  "FAILED",
+  "CANCELLED",
+] as const;
+
+export type JobStatus = (typeof JOB_STATUSES)[number];
+
+export const ErrorResponseSchema = z
+  .object({
+    error: z.string(),
+  })
+  .openapi("ErrorResponse");
+
 // --- POST /jobs ---
 
 export const CreateJobBodySchema = z
@@ -54,13 +72,7 @@ export const ServiceUnavailableSchema = z
 export const JobListItemSchema = z
   .object({
     jobId: z.string(),
-    status: z.enum([
-      "PENDING",
-      "PROCESSING",
-      "COMPLETED",
-      "FAILED",
-      "CANCELLED",
-    ]),
+    status: z.enum(JOB_STATUSES),
     createdAt: z.string().datetime(),
     updatedAt: z.string().datetime(),
     originalFilename: z.string(),
@@ -80,13 +92,7 @@ export const JobListResponseSchema = z
 export const JobDetailResponseSchema = z
   .object({
     jobId: z.string().uuid(),
-    status: z.enum([
-      "PENDING",
-      "PROCESSING",
-      "COMPLETED",
-      "FAILED",
-      "CANCELLED",
-    ]),
+    status: z.enum(JOB_STATUSES),
     createdAt: z.string().datetime(),
     updatedAt: z.string().datetime(),
     resultUrl: z
@@ -121,11 +127,3 @@ export const EndpointStatusResponseSchema = z
     updatedAt: z.string().datetime().nullable(),
   })
   .openapi("EndpointStatusResponse");
-
-// --- Common ---
-
-export const ErrorResponseSchema = z
-  .object({
-    error: z.string(),
-  })
-  .openapi("ErrorResponse");
