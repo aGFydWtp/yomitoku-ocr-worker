@@ -1,13 +1,11 @@
 import { createHash } from "node:crypto";
 import {
   AccessLogFormat,
-  ApiKeySourceType,
   CfnAccount,
   EndpointType,
   LambdaRestApi,
   LogGroupLogDestination,
   MethodLoggingLevel,
-  Period,
 } from "aws-cdk-lib/aws-apigateway";
 import {
   AllowedMethods,
@@ -96,8 +94,6 @@ export class ApiStack extends Stack {
       handler: fn,
       proxy: true,
       endpointTypes: [EndpointType.REGIONAL],
-      apiKeySourceType: ApiKeySourceType.HEADER,
-      defaultMethodOptions: { apiKeyRequired: true },
       deployOptions: {
         accessLogDestination: new LogGroupLogDestination(accessLogGroup),
         accessLogFormat: AccessLogFormat.jsonWithStandardFields(),
@@ -107,24 +103,9 @@ export class ApiStack extends Stack {
     // デプロイステージが CfnAccount（CloudWatch ロール設定）に依存
     api.deploymentStage.node.addDependency(apigwAccount);
 
-    const plan = api.addUsagePlan("UsagePlan", {
-      throttle: { rateLimit: 100, burstLimit: 200 },
-      quota: { limit: 10000, period: Period.DAY },
-    });
-
-    const apiKey = api.addApiKey("ApiKey");
-    plan.addApiKey(apiKey);
-    plan.addApiStage({ stage: api.deploymentStage });
-
     new CfnOutput(this, "ApiUrl", {
       value: api.url,
       description: "API Gateway URL",
-    });
-
-    new CfnOutput(this, "ApiKeyId", {
-      value: apiKey.keyId,
-      description:
-        "API Key ID (run: aws apigateway get-api-key --api-key <ID> --include-value)",
     });
 
     // --- CloudFront Distribution ---
@@ -255,13 +236,13 @@ export class ApiStack extends Stack {
         {
           id: "AwsSolutions-APIG4",
           reason:
-            "API Key authentication is used via apiKeyRequired: true. " +
+            "Access control is enforced by CloudFront origin verify header + WAF IP restriction. " +
             "Cognito/IAM authorizers are not required for this use case.",
         },
         {
           id: "AwsSolutions-COG4",
           reason:
-            "API Key + CloudFront origin verify header is the chosen auth strategy. " +
+            "CloudFront origin verify header + WAF is the chosen auth strategy. " +
             "Cognito user pool authorizer is not required.",
         },
       ],
