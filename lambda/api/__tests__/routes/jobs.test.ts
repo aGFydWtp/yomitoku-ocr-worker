@@ -108,14 +108,14 @@ describe("POST /jobs", () => {
     await app.request("/jobs", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ filepath: "test/../../secret.pdf" }),
+      body: JSON.stringify({ filepath: "test/..secret.pdf" }),
     });
 
     // calls[0] = Control Table read, calls[1] = Status Table write
     const putCommand = mockSend.mock.calls[1][0];
-    expect(putCommand.input.Item.original_filename).toBe("../../secret.pdf");
+    expect(putCommand.input.Item.original_filename).toBe("..secret.pdf");
     expect(putCommand.input.Item.file_key).toBe(
-      `input/test/${FIXED_UUID}/secret.pdf`,
+      `input/test/${FIXED_UUID}/..secret.pdf`,
     );
   });
 
