@@ -132,6 +132,20 @@ export class ApiStack extends Stack {
       .update(`${this.stackName}-origin-verify`)
       .digest("hex");
 
+    const wafWebAclId = this.node.tryGetContext("wafWebAclId") as
+      | string
+      | undefined;
+    if (
+      wafWebAclId &&
+      !/^arn:aws:wafv2:us-east-1:\d{12}:global\/webacl\/.+$/.test(wafWebAclId)
+    ) {
+      throw new Error(
+        `Invalid wafWebAclId format: "${wafWebAclId}". ` +
+          "Must be a WAFv2 Web ACL ARN in us-east-1 (CLOUDFRONT scope).",
+      );
+    }
+
+    // enableIpv6: false — WAF の IPv4 IP Set によるアクセス制限を確実にするため
     const distribution = new Distribution(this, "Distribution", {
       defaultBehavior: {
         origin: new RestApiOrigin(api, {
@@ -145,6 +159,8 @@ export class ApiStack extends Stack {
         allowedMethods: AllowedMethods.ALLOW_ALL,
         viewerProtocolPolicy: ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
       },
+      enableIpv6: false,
+      ...(wafWebAclId && { webAclId: wafWebAclId }),
     });
 
     // --- API Gateway リソースポリシー（CloudFront 経由のみ許可） ---
@@ -261,19 +277,23 @@ export class ApiStack extends Stack {
       },
     ]);
 
-    NagSuppressions.addResourceSuppressions(distribution, [
+    const cfDistributionSuppressions = [
       {
         id: "AwsSolutions-CFR1",
         reason:
           "Geo restrictions are not required at initial launch phase. " +
           "Will be reviewed based on usage patterns.",
       },
-      {
-        id: "AwsSolutions-CFR2",
-        reason:
-          "WAFv2 integration is deferred to a later phase. " +
-          "API Gateway resource policy provides access control.",
-      },
+      ...(!wafWebAclId
+        ? [
+            {
+              id: "AwsSolutions-CFR2",
+              reason:
+                "WAFv2 integration is deferred to a later phase. " +
+                "API Gateway resource policy provides access control.",
+            },
+          ]
+        : []),
       {
         id: "AwsSolutions-CFR3",
         reason:
@@ -286,6 +306,10 @@ export class ApiStack extends Stack {
           "Using default CloudFront viewer certificate which enforces TLSv1. " +
           "Custom domain with ACM certificate (TLSv1.2) will be added later.",
       },
-    ]);
+    ];
+    NagSuppressions.addResourceSuppressions(
+      distribution,
+      cfDistributionSuppressions,
+    );
   }
 }
