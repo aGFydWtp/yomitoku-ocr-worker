@@ -197,40 +197,38 @@ async def process_file(file_key: str) -> None:
             ContentType="application/json",
         )
 
-        # 4.5. Generate visualization images (best-effort)
-        viz_attrs: dict = {}
+        # 5. Update DynamoDB: COMPLETED (before visualization to prevent OOM stalling)
+        table.update_item(
+            Key={"job_id": job_id},
+            UpdateExpression="SET #s = :s, updated_at = :t, output_key = :o, processing_time_ms = :p",
+            ExpressionAttributeNames={"#s": "status"},
+            ExpressionAttributeValues={
+                ":s": "COMPLETED",
+                ":t": datetime.now(timezone.utc).isoformat(),
+                ":o": output_key,
+                ":p": elapsed,
+            },
+        )
+
+        # 6. Generate visualization images (best-effort, after COMPLETED)
         try:
             viz_prefix, num_pages = _generate_and_upload_visualizations(
                 parsed, tmp_path, file_key, job_id
             )
-            viz_attrs = {
-                ":vp": viz_prefix,
-                ":np": num_pages,
-            }
+            table.update_item(
+                Key={"job_id": job_id},
+                UpdateExpression="SET visualization_prefix = :vp, num_pages = :np, updated_at = :t",
+                ExpressionAttributeValues={
+                    ":vp": viz_prefix,
+                    ":np": num_pages,
+                    ":t": datetime.now(timezone.utc).isoformat(),
+                },
+            )
         except Exception as viz_err:
             print(f"[WARN] job_id={job_id} visualization failed (non-fatal): {viz_err}")
 
-        # 5. Update DynamoDB: COMPLETED
-        update_expr = "SET #s = :s, updated_at = :t, output_key = :o, processing_time_ms = :p"
-        expr_values: dict = {
-            ":s": "COMPLETED",
-            ":t": datetime.now(timezone.utc).isoformat(),
-            ":o": output_key,
-            ":p": elapsed,
-        }
-        if viz_attrs:
-            update_expr += ", visualization_prefix = :vp, num_pages = :np"
-            expr_values.update(viz_attrs)
-
-        table.update_item(
-            Key={"job_id": job_id},
-            UpdateExpression=update_expr,
-            ExpressionAttributeNames={"#s": "status"},
-            ExpressionAttributeValues=expr_values,
-        )
-
     except Exception as e:
-        # 6. Update DynamoDB: FAILED — do NOT re-raise.
+        # 7. Update DynamoDB: FAILED — do NOT re-raise.
         # The same PDF will produce the same error on retry, so SQS retry is pointless.
         # Letting the message be deleted avoids blocking the queue for up to
         # VisibilityTimeout × maxReceiveCount (potentially hours).
@@ -247,7 +245,7 @@ async def process_file(file_key: str) -> None:
         print(f"[ERROR] job_id={job_id} failed: {e}")
 
     finally:
-        # 7. Cleanup /tmp files
+        # 8. Cleanup /tmp files
         for path in [tmp_path, tmp_output]:
             if os.path.exists(path):
                 os.remove(path)
