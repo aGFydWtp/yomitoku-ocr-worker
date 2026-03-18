@@ -31,14 +31,10 @@ export const ErrorResponseSchema = z
 
 export const CreateJobBodySchema = z
   .object({
-    filename: z.string().openapi({
-      example: "sample.pdf",
-      description: "PDF ファイル名（.pdf で終わる必要あり）",
-    }),
-    basePath: z.string().min(1, "basePath must not be empty").openapi({
-      example: "myProject/2026031701",
+    filepath: z.string().min(1, "filepath must not be empty").openapi({
+      example: "myProject/2026031701/sample.pdf",
       description:
-        "処理単位のパスプレフィックス。input/{basePath}/{jobId}/{filename} に配置される",
+        "PDF ファイルパス（basePath/filename 形式）。input/{basePath}/{jobId}/{filename} に配置される",
     }),
   })
   .openapi("CreateJobBody");

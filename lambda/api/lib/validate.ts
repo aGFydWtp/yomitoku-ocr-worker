@@ -40,6 +40,30 @@ export function validateBasePath(
   return trimmed;
 }
 
+/**
+ * filepath を basePath と filename に分割する。
+ * filepath には最低1つの `/` が必要（basePath 必須）。
+ */
+export function parseFilepath(filepath: string): {
+  basePath: string;
+  filename: string;
+} {
+  const lastSlash = filepath.lastIndexOf("/");
+  if (lastSlash === -1) {
+    throw new ValidationError(
+      "filepath must contain at least one '/' (basePath/filename)",
+    );
+  }
+  const rawBasePath = filepath.slice(0, lastSlash);
+  const filename = filepath.slice(lastSlash + 1);
+  if (!filename) {
+    throw new ValidationError("filepath must end with a filename, not '/'");
+  }
+  // rawBasePath is always a string (from slice), so validateBasePath returns string or throws.
+  const basePath = validateBasePath(rawBasePath) as string;
+  return { basePath, filename };
+}
+
 const ALLOWED_CURSOR_KEYS = new Set(["job_id", "status", "created_at"]);
 
 /**

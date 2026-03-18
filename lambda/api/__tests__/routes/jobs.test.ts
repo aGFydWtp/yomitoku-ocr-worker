@@ -66,7 +66,7 @@ describe("POST /jobs", () => {
     const res = await app.request("/jobs", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ filename: "test.pdf", basePath: "test" }),
+      body: JSON.stringify({ filepath: "test/test.pdf" }),
     });
 
     expect(res.status).toBe(201);
@@ -82,7 +82,7 @@ describe("POST /jobs", () => {
     await app.request("/jobs", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ filename: "test.pdf", basePath: "test" }),
+      body: JSON.stringify({ filepath: "test/test.pdf" }),
     });
 
     // calls[0] = Control Table read, calls[1] = Status Table write
@@ -108,7 +108,7 @@ describe("POST /jobs", () => {
     await app.request("/jobs", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ filename: "../../secret.pdf", basePath: "test" }),
+      body: JSON.stringify({ filepath: "test/../../secret.pdf" }),
     });
 
     // calls[0] = Control Table read, calls[1] = Status Table write
@@ -124,7 +124,7 @@ describe("POST /jobs", () => {
     await app.request("/jobs", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ filename: "test.pdf", basePath: "test" }),
+      body: JSON.stringify({ filepath: "test/test.pdf" }),
     });
 
     expect(mockCreateUploadUrl).toHaveBeenCalledWith(
@@ -156,13 +156,13 @@ describe("POST /jobs", () => {
     await app.request("/jobs", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ filename: "test.pdf", basePath: "test" }),
+      body: JSON.stringify({ filepath: "test/test.pdf" }),
     });
 
     expect(callOrder).toEqual(["control-read", "s3-presign", "status-write"]);
   });
 
-  it("バリデーション: filename未指定は400を返す", async () => {
+  it("バリデーション: filepath未指定は400を返す", async () => {
     const app = createApp();
     const res = await app.request("/jobs", {
       method: "POST",
@@ -180,7 +180,7 @@ describe("POST /jobs", () => {
     const res = await app.request("/jobs", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ filename: "test.txt", basePath: "test" }),
+      body: JSON.stringify({ filepath: "test/test.txt" }),
     });
 
     expect(res.status).toBe(400);
@@ -188,25 +188,25 @@ describe("POST /jobs", () => {
     expect(body.error).toContain(".pdf");
   });
 
-  it("バリデーション: filenameが空文字の場合はdocument.pdfにフォールバックし201を返す", async () => {
+  it("バリデーション: filepathが末尾スラッシュの場合は400を返す", async () => {
     const app = createApp();
     const res = await app.request("/jobs", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ filename: "", basePath: "test" }),
+      body: JSON.stringify({ filepath: "test/" }),
     });
 
-    expect(res.status).toBe(201);
+    expect(res.status).toBe(400);
     const body: AnyJson = await res.json();
-    expect(body.fileKey).toBe(`input/test/${FIXED_UUID}/document.pdf`);
+    expect(body.error).toContain("filename");
   });
 
-  it("バリデーション: filenameが文字列でない場合は400を返す", async () => {
+  it("バリデーション: filepathが文字列でない場合は400を返す", async () => {
     const app = createApp();
     const res = await app.request("/jobs", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ filename: 123 }),
+      body: JSON.stringify({ filepath: 123 }),
     });
 
     expect(res.status).toBe(400);
@@ -231,8 +231,7 @@ describe("POST /jobs", () => {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        filename: "請求書_2026年3月.pdf",
-        basePath: "test",
+        filepath: "test/請求書_2026年3月.pdf",
       }),
     });
 
@@ -247,8 +246,7 @@ describe("POST /jobs", () => {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        filename: "test.pdf",
-        basePath: "myProject/2026031701",
+        filepath: "myProject/2026031701/test.pdf",
       }),
     });
 
@@ -265,8 +263,7 @@ describe("POST /jobs", () => {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        filename: "test.pdf",
-        basePath: "myProject/2026031701",
+        filepath: "myProject/2026031701/test.pdf",
       }),
     });
 
@@ -282,8 +279,7 @@ describe("POST /jobs", () => {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        filename: "test.pdf",
-        basePath: "myProject/2026031701",
+        filepath: "myProject/2026031701/test.pdf",
       }),
     });
 
@@ -300,31 +296,20 @@ describe("POST /jobs", () => {
     const res = await app.request("/jobs", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ filename: "test.pdf" }),
-    });
-
-    expect(res.status).toBe(400);
-  });
-
-  it("バリデーション: basePathが文字列でない場合は400を返す", async () => {
-    const app = createApp();
-    const res = await app.request("/jobs", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ filename: "test.pdf", basePath: 123 }),
+      body: JSON.stringify({ filepath: "test.pdf" }),
     });
 
     expect(res.status).toBe(400);
     const body: AnyJson = await res.json();
-    expect(body.error).toContain("string");
+    expect(body.error).toContain("/");
   });
 
-  it("バリデーション: basePathに先頭パストラバーサル(../)が含まれる場合は400を返す", async () => {
+  it("バリデーション: filepath内のbasePathにパストラバーサル(../)が含まれる場合は400を返す", async () => {
     const app = createApp();
     const res = await app.request("/jobs", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ filename: "test.pdf", basePath: "../escape" }),
+      body: JSON.stringify({ filepath: "../escape/test.pdf" }),
     });
 
     expect(res.status).toBe(400);
@@ -332,41 +317,35 @@ describe("POST /jobs", () => {
     expect(body.error).toBeDefined();
   });
 
-  it("バリデーション: basePathに中間パストラバーサル(a/../b)が含まれる場合は400を返す", async () => {
+  it("バリデーション: filepath内のbasePathに中間パストラバーサル(a/../b)が含まれる場合は400を返す", async () => {
     const app = createApp();
     const res = await app.request("/jobs", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        filename: "test.pdf",
-        basePath: "legit/../escape",
-      }),
+      body: JSON.stringify({ filepath: "legit/../escape/test.pdf" }),
     });
 
     expect(res.status).toBe(400);
   });
 
-  it("バリデーション: basePathに末尾パストラバーサル(a/..)が含まれる場合は400を返す", async () => {
+  it("バリデーション: filepath内のbasePathに末尾パストラバーサル(a/../file)が含まれる場合は400を返す", async () => {
     const app = createApp();
     const res = await app.request("/jobs", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        filename: "test.pdf",
-        basePath: "legit/subdir/..",
-      }),
+      body: JSON.stringify({ filepath: "legit/subdir/../test.pdf" }),
     });
 
     expect(res.status).toBe(400);
   });
 
-  it("バリデーション: basePathが長すぎる場合は400を返す", async () => {
+  it("バリデーション: filepath内のbasePathが長すぎる場合は400を返す", async () => {
     const app = createApp();
     const longPath = "a".repeat(513);
     const res = await app.request("/jobs", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ filename: "test.pdf", basePath: longPath }),
+      body: JSON.stringify({ filepath: `${longPath}/test.pdf` }),
     });
 
     expect(res.status).toBe(400);
@@ -374,12 +353,12 @@ describe("POST /jobs", () => {
     expect(body.error).toContain("long");
   });
 
-  it("バリデーション: basePathに制御文字が含まれる場合は400を返す", async () => {
+  it("バリデーション: filepath内のbasePathに制御文字が含まれる場合は400を返す", async () => {
     const app = createApp();
     const res = await app.request("/jobs", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ filename: "test.pdf", basePath: "path\x00name" }),
+      body: JSON.stringify({ filepath: "path\x00name/test.pdf" }),
     });
 
     expect(res.status).toBe(400);
@@ -387,23 +366,25 @@ describe("POST /jobs", () => {
     expect(body.error).toContain("invalid");
   });
 
-  it("バリデーション: basePath=nullは400を返す", async () => {
+  it("バリデーション: filepathにスラッシュがない場合は400を返す（basePath必須）", async () => {
     const app = createApp();
     const res = await app.request("/jobs", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ filename: "test.pdf", basePath: null }),
+      body: JSON.stringify({ filepath: "test.pdf" }),
     });
 
     expect(res.status).toBe(400);
+    const body: AnyJson = await res.json();
+    expect(body.error).toContain("/");
   });
 
-  it("バリデーション: basePathが空文字の場合は400を返す", async () => {
+  it("バリデーション: filepath=/sample.pdf（basePath空）は400を返す", async () => {
     const app = createApp();
     const res = await app.request("/jobs", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ filename: "test.pdf", basePath: "" }),
+      body: JSON.stringify({ filepath: "/sample.pdf" }),
     });
 
     expect(res.status).toBe(400);
@@ -411,15 +392,12 @@ describe("POST /jobs", () => {
     expect(body.error).toContain("basePath");
   });
 
-  it("バリデーション: basePathの先頭/末尾スラッシュは正規化される", async () => {
+  it("バリデーション: filepath内のbasePathの先頭/末尾スラッシュは正規化される", async () => {
     const app = createApp();
     const res = await app.request("/jobs", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        filename: "test.pdf",
-        basePath: "/myProject/2026031701/",
-      }),
+      body: JSON.stringify({ filepath: "/myProject/2026031701/test.pdf" }),
     });
 
     expect(res.status).toBe(201);
@@ -444,7 +422,7 @@ describe("POST /jobs", () => {
     const res = await app.request("/jobs", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ filename: "test.pdf", basePath: "test" }),
+      body: JSON.stringify({ filepath: "test/test.pdf" }),
     });
 
     expect(res.status).toBe(500);
@@ -460,7 +438,7 @@ describe("POST /jobs", () => {
     const res = await app.request("/jobs", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ filename: "test.pdf", basePath: "test" }),
+      body: JSON.stringify({ filepath: "test/test.pdf" }),
     });
 
     expect(res.status).toBe(503);
@@ -479,7 +457,7 @@ describe("POST /jobs", () => {
     const res = await app.request("/jobs", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ filename: "test.pdf", basePath: "test" }),
+      body: JSON.stringify({ filepath: "test/test.pdf" }),
     });
 
     expect(res.status).toBe(503);
@@ -497,7 +475,7 @@ describe("POST /jobs", () => {
     await app.request("/jobs", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ filename: "test.pdf", basePath: "test" }),
+      body: JSON.stringify({ filepath: "test/test.pdf" }),
     });
 
     expect(mockSfnSend).toHaveBeenCalledOnce();
@@ -517,7 +495,7 @@ describe("POST /jobs", () => {
     await app.request("/jobs", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ filename: "test.pdf", basePath: "test" }),
+      body: JSON.stringify({ filepath: "test/test.pdf" }),
     });
 
     expect(mockSfnSend).not.toHaveBeenCalled();
@@ -531,7 +509,7 @@ describe("POST /jobs", () => {
     const res = await app.request("/jobs", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ filename: "test.pdf", basePath: "test" }),
+      body: JSON.stringify({ filepath: "test/test.pdf" }),
     });
 
     expect(res.status).toBe(503);
@@ -551,7 +529,7 @@ describe("POST /jobs", () => {
     const res = await app.request("/jobs", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ filename: "test.pdf", basePath: "test" }),
+      body: JSON.stringify({ filepath: "test/test.pdf" }),
     });
 
     expect(res.status).toBe(503);

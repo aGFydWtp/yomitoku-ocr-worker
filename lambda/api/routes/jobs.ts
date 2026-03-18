@@ -26,6 +26,7 @@ import { sfnClient } from "../lib/sfn";
 import {
   assertValidStateMachineArn,
   decodeCursor,
+  parseFilepath,
   validateBasePath,
 } from "../lib/validate";
 import type { JobDetailResponseSchema, JobStatus } from "../schemas";
@@ -96,9 +97,8 @@ jobsRoutes.openapi(createJobRoute, async (c) => {
     );
   }
 
-  const { filename, basePath: rawBasePath } = c.req.valid("json");
-  // Zod スキーマで必須・min(1) を保証済み。validateBasePath はトリム・文字種・パストラバーサルチェック。
-  const basePath = validateBasePath(rawBasePath) as string;
+  const { filepath } = c.req.valid("json");
+  const { basePath, filename } = parseFilepath(filepath);
 
   const sanitized = sanitizeFilename(filename);
   const jobId = crypto.randomUUID();
