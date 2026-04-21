@@ -224,6 +224,111 @@ describe("BatchExecutionStack", () => {
       expect(keys.some((k) => /TaskDefinition/i.test(k))).toBe(true);
       expect(keys.some((k) => /Cluster/i.test(k))).toBe(true);
     });
+
+    it("StateMachine ARN を CfnOutput で公開する", () => {
+      const { template } = createStack();
+      const outputs = template.findOutputs("*");
+      const keys = Object.keys(outputs);
+      expect(keys.some((k) => /BatchStateMachine/i.test(k))).toBe(true);
+    });
+  });
+
+  describe("BatchExecutionStateMachine", () => {
+    it("Step Functions ステートマシンが 1 つ存在する", () => {
+      const { template } = createStack();
+      template.resourceCountIs("AWS::StepFunctions::StateMachine", 1);
+    });
+
+    it("stateMachine を公開プロパティとして持つ", () => {
+      const { stack } = createStack();
+      expect(stack.stateMachine).toBeDefined();
+      expect(stack.stateMachine.stateMachineArn).toBeDefined();
+    });
+
+    it("定義に主要ステート名が含まれる", () => {
+      const { template } = createStack();
+      const sm = template.findResources("AWS::StepFunctions::StateMachine");
+      const defStr = JSON.stringify(sm);
+      for (const s of [
+        "AcquireBatchLock",
+        "EnsureEndpointInService",
+        "WaitEndpoint",
+        "RunBatchTask",
+        "AggregateResults",
+        "MarkCompleted",
+        "MarkPartial",
+        "MarkFailed",
+        "ReleaseBatchLock",
+        "StopBatchTask",
+      ]) {
+        expect(defStr).toContain(s);
+      }
+    });
+
+    it("RunBatchTask が ecs:runTask.sync を利用し TimeoutSeconds=7200 で動作する", () => {
+      const { template } = createStack();
+      const sm = template.findResources("AWS::StepFunctions::StateMachine");
+      const defStr = JSON.stringify(sm);
+      // ECS RunTask の .sync integration pattern
+      expect(defStr).toMatch(/ecs:runTask\.sync/);
+      // TimeoutSeconds=7200 が SFN 定義に直列化されている
+      expect(defStr).toMatch(/\\"TimeoutSeconds\\":\s*7200/);
+    });
+
+    it("Catch: States.Timeout / States.TaskFailed が定義されている", () => {
+      const { template } = createStack();
+      const sm = template.findResources("AWS::StepFunctions::StateMachine");
+      const defStr = JSON.stringify(sm);
+      expect(defStr).toContain("States.Timeout");
+      expect(defStr).toContain("States.TaskFailed");
+      // 失敗経路で stopTask が呼ばれる
+      expect(defStr).toMatch(/ecs:stopTask|ecs:StopTask|stopTask/i);
+    });
+
+    it("AcquireBatchLock が ControlTable への putItem を ConditionExpression 付きで発行する", () => {
+      const { template } = createStack();
+      const sm = template.findResources("AWS::StepFunctions::StateMachine");
+      const defStr = JSON.stringify(sm);
+      expect(defStr).toMatch(/dynamodb:putItem/);
+      expect(defStr).toMatch(/attribute_not_exists/);
+      expect(defStr).toMatch(/BATCH_EXEC_LOCK/);
+    });
+
+    it("SFN 実行ロールが ECS RunTask と StopTask 権限を持つ", () => {
+      const { template } = createStack();
+      template.hasResourceProperties(
+        "AWS::IAM::Policy",
+        Match.objectLike({
+          PolicyDocument: Match.objectLike({
+            Statement: Match.arrayWith([
+              Match.objectLike({ Action: "ecs:RunTask" }),
+            ]),
+          }),
+        }),
+      );
+      // StopTask は describeEndpoint / stopTask 用 CallAwsService が追加するポリシーに含まれる
+      template.hasResourceProperties(
+        "AWS::IAM::Policy",
+        Match.objectLike({
+          PolicyDocument: Match.objectLike({
+            Statement: Match.arrayWith([
+              Match.objectLike({
+                Action: Match.arrayWith(["ecs:StopTask"]),
+              }),
+            ]),
+          }),
+        }),
+      );
+    });
+
+    it("SFN 実行ロールが SageMaker DescribeEndpoint 権限を持つ", () => {
+      const { template } = createStack();
+      // CallAwsService は service/action を Action 文字列にマッピングするが、
+      // 単一 Action/配列どちらで生成されるかは CDK バージョンに依存するため
+      // IAM ポリシー全体の直列化で存在確認する。
+      const policies = template.findResources("AWS::IAM::Policy");
+      expect(JSON.stringify(policies)).toContain("sagemaker:DescribeEndpoint");
+    });
   });
 
   describe("Props validation", () => {

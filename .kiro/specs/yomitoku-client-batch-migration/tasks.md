@@ -152,7 +152,7 @@
   - `cdk synth` で Fargate タスク定義と ECS クラスタが生成されることを観測可能な完了条件とする
   - _Requirements: 4.1, 4.5, 10.1, 10.5_
 
-- [ ] 4.2 `BatchExecutionStateMachine` を実装する
+- [x] 4.2 `BatchExecutionStateMachine` を実装する
   - ステート: `AcquireBatchLock` → `EnsureEndpointInService`（未起動なら `CreateEndpoint` or `WaitEndpoint` ループ）→ `RunBatchTask`（`ecs:runTask.sync`、`TimeoutSeconds=BATCH_MAX_DURATION_SEC`）→ `AggregateResults` → 終端 → `ReleaseBatchLock`
   - `Catch: States.Timeout` または `States.TaskFailed` 時は `MarkFailed` で META を `FAILED` に遷移させ、`ecs:stopTask` を呼ぶ
   - 終端状態は META に永続化済みの `totals` を読み直して `COMPLETED`/`PARTIAL`/`FAILED` の最終フラグを検証する
