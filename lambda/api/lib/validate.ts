@@ -66,6 +66,9 @@ export function parseFilepath(filepath: string): {
 
 const ALLOWED_CURSOR_KEYS = new Set(["job_id", "status", "created_at"]);
 
+/** BatchTable GSI1 クエリの LastEvaluatedKey に現れるキー */
+const BATCH_GSI1_CURSOR_KEYS = new Set(["PK", "SK", "GSI1PK", "GSI1SK"]);
+
 /**
  * base64url エンコードされた cursor をデコード・検証し、
  * DynamoDB の ExclusiveStartKey として使えるオブジェクトを返す。
@@ -96,4 +99,40 @@ export function decodeCursor(
   } catch {
     throw new ValidationError("cursor is invalid");
   }
+}
+
+/**
+ * BatchTable GSI1 クエリ用のカーソルをデコード・検証する。
+ * base64url エンコードされた JSON を DynamoDB の ExclusiveStartKey として返す。
+ */
+export function decodeBatchCursor(
+  cursorParam: string | undefined,
+): Record<string, unknown> | undefined {
+  if (!cursorParam) return undefined;
+  try {
+    const decoded: unknown = JSON.parse(
+      Buffer.from(cursorParam, "base64url").toString("utf8"),
+    );
+    if (
+      typeof decoded !== "object" ||
+      decoded === null ||
+      Array.isArray(decoded)
+    ) {
+      throw new Error("not an object");
+    }
+    const keys = Object.keys(decoded as Record<string, unknown>);
+    if (keys.length === 0 || keys.some((k) => !BATCH_GSI1_CURSOR_KEYS.has(k))) {
+      throw new Error("invalid keys");
+    }
+    return decoded as Record<string, unknown>;
+  } catch {
+    throw new ValidationError("cursor is invalid");
+  }
+}
+
+/**
+ * DynamoDB の LastEvaluatedKey を base64url エンコードしたカーソル文字列に変換する。
+ */
+export function encodeBatchCursor(key: Record<string, unknown>): string {
+  return Buffer.from(JSON.stringify(key)).toString("base64url");
 }

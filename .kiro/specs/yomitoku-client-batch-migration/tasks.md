@@ -28,7 +28,7 @@
 
 ## 2. Core: バッチ API ドメイン
 
-- [ ] 2.1 (P) バッチ系 Zod/OpenAPI スキーマを整備する
+- [x] 2.1 (P) バッチ系 Zod/OpenAPI スキーマを整備する
   - `JOB_STATUSES`・`CreateJobBody*`・`JobDetailResponse*`・`VisualizationsResponse*`・`CancelJobResponse` など旧スキーマを削除する
   - `BATCH_STATUSES = ["PENDING","PROCESSING","COMPLETED","PARTIAL","FAILED","CANCELLED"]` を定義する
   - `CreateBatchBodySchema`（basePath + files[] + extraFormats? + 上限値）・`CreateBatchResponseSchema`（batchJobId + uploads[]）・`BatchDetailSchema`・`BatchFileSchema` + 一覧／ページング用スキーマ・`ProcessLogLinkSchema`・`ReanalyzeRequestSchema` を定義する
@@ -37,7 +37,7 @@
   - _Requirements: 2.2, 2.3, 2.5, 11.2_
   - _Boundary: ApiFunction (schemas)_
 
-- [ ] 2.2 (P) `BatchStore` Single-table リポジトリを実装する
+- [x] 2.2 (P) `BatchStore` Single-table リポジトリを実装する
   - META アイテム作成と FILE アイテム一括追加を 1 つの TransactWriteItems で原子化する `putBatchWithFiles` を実装する
   - `transitionBatchStatus`（`expectedCurrent` 条件付き更新）と `updateFileResult`（`status != COMPLETED` 条件）を実装する
   - `getBatchWithFiles`（`Query(PK=BATCH#id)`）、`listBatchesByStatus`（GSI1、`STATUS#{status}#{yyyymm}` シャーディング考慮）、`listChildBatches`（GSI2）を実装する
@@ -46,7 +46,7 @@
   - _Requirements: 3.4, 5.2, 5.3, 7.1, 8.2, 9.1, 9.2_
   - _Boundary: BatchStore_
 
-- [ ] 2.3 (P) 複数ファイル署名付き URL 発行器を実装する
+- [x] 2.3 (P) 複数ファイル署名付き URL 発行器を実装する
   - `batches/{batchJobId}/input/{filename}` 形式の S3 キーを決定論的に生成する
   - ファイル単位の署名付き PUT URL を一括生成し、`expiresIn`（15 分）を応答に含める
   - 結果取得（`output/*.json`、`results/*`、`visualizations/*`、`logs/process_log.jsonl`）向け署名付き GET URL ヘルパを併設し、有効期限を 60 分に設定する
