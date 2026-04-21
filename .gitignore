@@ -18,3 +18,7 @@ pnpm-debug.log
 __pycache__/
 *.pyc
 .coverage
+
+# IDE / tool local state
+.claude/
+.serena/
