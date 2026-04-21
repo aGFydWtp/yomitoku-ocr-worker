@@ -127,7 +127,7 @@
   - _Requirements: 4.1, 4.2, 4.3, 4.4, 4.5, 5.1, 6.1, 6.2, 6.3, 6.4, 11.3_
   - _Depends: 3.1_
 
-- [ ] 3.4 `process_log.jsonl` → DDB 反映と最終集計を実装する
+- [x] 3.4 `process_log.jsonl` → DDB 反映と最終集計を実装する
   - `process_log.jsonl` を 1 行ずつ読み込み、`BatchStore.updateFileResult` 相当の条件付き更新で FILE アイテムへ反映する
   - 成功／失敗件数を集計し、全件成功 → `COMPLETED`、混在 → `PARTIAL`、全件失敗またはインフラ中断 → `FAILED` に META を遷移させる
   - 遷移は `transitionBatchStatus` で `expectedCurrent=PROCESSING` の条件付き更新を行う
@@ -135,7 +135,7 @@
   - _Requirements: 5.1, 5.2, 7.2, 7.3, 7.4_
   - _Depends: 3.3_
 
-- [ ] 3.5 `ControlTable` バッチ heartbeat と終了シグナルを実装する
+- [x] 3.5 `ControlTable` バッチ heartbeat と終了シグナルを実装する
   - 実行開始時に `ControlTable` の `lock_key=BATCH_IN_FLIGHT#{batchJobId}` に `expiresAt=now+max_duration` を書き込む
   - 進捗の節目で heartbeat を更新し、タスク終了時に heartbeat アイテムを削除する
   - `concurrentBatchCount` を GSI や Scan ではなく `ControlTable` の既定キー（例: `ACTIVE#COUNT`）で一貫して管理し、`EndpointControl` が参照可能にする
