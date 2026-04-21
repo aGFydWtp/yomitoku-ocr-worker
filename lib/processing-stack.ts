@@ -23,9 +23,9 @@ import type { Construct } from "constructs";
  *   - `controlTable` : SageMaker エンドポイント制御ロック用 DynamoDB テーブル
  *   - `batchTable`   : Single-table BatchTable (PK/SK + GSI1/GSI2 + TTL)
  *
- * 旧単一ジョブ方式で存在した `StatusTable` / `MainQueue` / `DeadLetterQueue` /
- * `ProcessorFunction` / S3→SQS 通知 / `/input`・`/output`・`/visualizations`
- * プレフィックスに紐づく IAM 付与は撤去済み (task 1.1)。
+ * 旧単一ジョブ方式の状態テーブル / SQS キュー / 処理ワーカー Lambda /
+ * S3→SQS 通知 / 単一ジョブ向けプレフィックスに紐づく IAM 付与は撤去済み
+ * (task 1.1)。
  */
 export class ProcessingStack extends Stack {
   public readonly bucket: Bucket;

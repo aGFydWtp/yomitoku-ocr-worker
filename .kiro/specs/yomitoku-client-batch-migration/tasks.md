@@ -198,7 +198,7 @@
   - _Requirements: 1.3, 1.4, 10.5_
   - _Depends: 6.1, 1.2, 4.2_
 
-- [ ] 6.3 OpenAPI / README / 設計資料をバッチ API 基準に刷新する
+- [x] 6.3 OpenAPI / README / 設計資料をバッチ API 基準に刷新する
   - `/doc`・`/ui` のメタデータから旧 `/jobs` 定義を除去し、`/batches` 系エンドポイントのパラメータ・応答・エラーコードを正準定義とする
   - `README.md` のセットアップ・利用例・運用フローを `/batches` 系に書き換える
   - `API実装検討.md` など旧 API 記述を含む設計ドキュメントを更新または archive 化する

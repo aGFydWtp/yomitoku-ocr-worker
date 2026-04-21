@@ -23,28 +23,38 @@ describe("check-legacy-refs.sh CI guard", () => {
 
   it("package.json に lint:legacy スクリプトが登録されている", () => {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const pkg = require("../package.json") as { scripts: Record<string, string> };
+    const pkg = require("../package.json") as {
+      scripts: Record<string, string>;
+    };
     expect(pkg.scripts["lint:legacy"]).toBeDefined();
     expect(pkg.scripts["lint:legacy"]).toContain("check-legacy-refs");
   });
 
-  it("旧参照が存在するリポジトリ上で非ゼロ終了する", () => {
-    // 現時点では lambda/api/routes/jobs.ts 等に旧参照が残っているため非ゼロを期待する
-    // (Task 6.1/6.3 でソースを clean にした後はゼロ終了に変わる)
+  it("クリーンなリポジトリではゼロ終了する (Task 6.3 完了条件)", () => {
+    // Task 6.3 で /jobs 系・StatusTable・MainQueue・ProcessorFunction・
+    // 旧 S3 プレフィックス参照をソースとドキュメントから除去した後は、
+    // この CI ガードが clean-exit することを保証する。
     const result = spawnSync("bash", [SCRIPT], {
       cwd: REPO_ROOT,
       encoding: "utf8",
     });
-    expect(result.status).not.toBe(0);
+    if (result.status !== 0) {
+      // 失敗時は stdout を添えて診断しやすくする
+      throw new Error(
+        `check-legacy-refs.sh exited ${result.status}.\n` +
+          `stdout:\n${result.stdout ?? ""}\n` +
+          `stderr:\n${result.stderr ?? ""}`,
+      );
+    }
+    expect(result.status).toBe(0);
   });
 
-  it("禁止語のチェック項目が stdout に出力される", () => {
+  it("クリーン時も成功メッセージが stdout に出力される", () => {
     const result = spawnSync("bash", [SCRIPT], {
       cwd: REPO_ROOT,
       encoding: "utf8",
     });
-    // 何らかの出力があることを確認（具体的な禁止語またはサマリーメッセージ）
     const output = (result.stdout ?? "") + (result.stderr ?? "");
-    expect(output.length).toBeGreaterThan(0);
+    expect(output).toContain("No legacy references found");
   });
 });
