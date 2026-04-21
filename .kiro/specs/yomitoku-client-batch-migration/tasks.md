@@ -181,7 +181,7 @@
 
 ## 6. Integration: ルーティング・ドキュメント・カットオーバー
 
-- [ ] 6.1 旧 `/jobs` ルートと関連コードを削除する
+- [x] 6.1 旧 `/jobs` ルートと関連コードを削除する
   - `lambda/api/routes/jobs.ts`・`jobs.routes.ts`・関連テストを削除する
   - `lambda/api/index.ts` から `/jobs` ルート登録と旧 OpenAPI meta を削除し、`/batches` ルーターと Batch API 用 OpenAPI meta を登録する
   - `lambda/api/lib/validate.ts` の `parseFilepath`／`validateBasePath` 等、単一 `filepath` 前提の検証関数を削除する
