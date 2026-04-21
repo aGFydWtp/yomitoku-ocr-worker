@@ -189,7 +189,7 @@
   - _Requirements: 1.1, 1.5, 12.1, 12.2_
   - _Depends: 2.4, 2.5, 2.6, 2.7, 2.8_
 
-- [ ] 6.2 API Lambda の IAM 権限・環境変数をバッチ用に再スコープする
+- [x] 6.2 API Lambda の IAM 権限・環境変数をバッチ用に再スコープする
   - `ApiStack` の grants を `batches/*` プレフィックスに限定し、旧 `input/*`/`output/*`/`visualizations/*` grants を削除する
   - `BatchTable` の必要 Action（`PutItem`、`UpdateItem`、`Query` on GSI1/GSI2、`TransactWriteItems`）を付与する
   - `BatchExecutionStateMachine` ARN を Lambda 環境変数に渡し、`StartExecution` 権限を付与する

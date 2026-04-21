@@ -27,22 +27,48 @@ function createStack(): {
     partitionKey: { name: "lock_key", type: AttributeType.STRING },
     billingMode: BillingMode.PAY_PER_REQUEST,
   });
+  const batchTable = new Table(depStack, "TestBatchTable", {
+    partitionKey: { name: "PK", type: AttributeType.STRING },
+    sortKey: { name: "SK", type: AttributeType.STRING },
+    billingMode: BillingMode.PAY_PER_REQUEST,
+  });
+  batchTable.addGlobalSecondaryIndex({
+    indexName: "GSI1",
+    partitionKey: { name: "GSI1PK", type: AttributeType.STRING },
+    sortKey: { name: "GSI1SK", type: AttributeType.STRING },
+  });
+  batchTable.addGlobalSecondaryIndex({
+    indexName: "GSI2",
+    partitionKey: { name: "GSI2PK", type: AttributeType.STRING },
+    sortKey: { name: "GSI2SK", type: AttributeType.STRING },
+  });
   const stateMachine = new StateMachine(depStack, "TestStateMachine", {
     definitionBody: DefinitionBody.fromChainable(new Pass(depStack, "Start")),
   });
+  const batchExecutionStateMachine = new StateMachine(
+    depStack,
+    "TestBatchExecutionStateMachine",
+    {
+      definitionBody: DefinitionBody.fromChainable(
+        new Pass(depStack, "BatchStart"),
+      ),
+    },
+  );
 
   const stack = new ApiStack(app, "TestApiStack", {
     env: { region: TEST_REGION, account: TEST_ACCOUNT },
     bucket,
     controlTable,
+    batchTable,
     stateMachine,
+    batchExecutionStateMachine,
   });
 
   const template = Template.fromStack(stack);
   return { app, stack, template };
 }
 
-describe("ApiStack (legacy StatusTable wiring removed)", () => {
+describe("ApiStack (batch-first IAM / env wiring, Task 6.2)", () => {
   // --- NodejsFunction ---
   describe("NodejsFunction", () => {
     it("ランタイムが Node.js 24.x である", () => {
@@ -66,14 +92,16 @@ describe("ApiStack (legacy StatusTable wiring removed)", () => {
       });
     });
 
-    it("環境変数に BUCKET_NAME / CONTROL_TABLE_NAME / STATE_MACHINE_ARN が設定されている (STATUS_TABLE_NAME は撤去)", () => {
+    it("環境変数に BUCKET_NAME / CONTROL_TABLE_NAME / BATCH_TABLE_NAME / STATE_MACHINE_ARN / BATCH_EXECUTION_STATE_MACHINE_ARN が設定されている", () => {
       const { template } = createStack();
       template.hasResourceProperties("AWS::Lambda::Function", {
         Environment: {
           Variables: {
             BUCKET_NAME: Match.anyValue(),
             CONTROL_TABLE_NAME: Match.anyValue(),
+            BATCH_TABLE_NAME: Match.anyValue(),
             STATE_MACHINE_ARN: Match.anyValue(),
+            BATCH_EXECUTION_STATE_MACHINE_ARN: Match.anyValue(),
           },
         },
       });
@@ -204,13 +232,65 @@ describe("ApiStack (legacy StatusTable wiring removed)", () => {
     });
   });
 
-  // --- IAM 権限（legacy 撤去済み） ---
-  describe("IAM Permissions", () => {
+  // --- IAM 権限（Task 6.2: batch-first 再スコープ） ---
+  describe("IAM Permissions (batch-first)", () => {
     it("StatusTable への DynamoDB 書き込み権限が存在しない (legacy)", () => {
       const { template } = createStack();
       const policies = template.findResources("AWS::IAM::Policy");
       const serialized = JSON.stringify(policies);
       expect(serialized).not.toContain("TestStatusTable");
+    });
+
+    it("旧 input/* / output/* / visualizations/* への S3 grants が存在しない (legacy)", () => {
+      const { template } = createStack();
+      const policies = template.findResources("AWS::IAM::Policy");
+      const serialized = JSON.stringify(policies);
+      expect(serialized).not.toContain("input/*");
+      expect(serialized).not.toContain("output/*");
+      expect(serialized).not.toContain("visualizations/*");
+    });
+
+    it("S3 `batches/*` プレフィックスに対する GetObject/PutObject/DeleteObject 権限を付与している", () => {
+      const { template } = createStack();
+      const policies = template.findResources("AWS::IAM::Policy");
+      const serialized = JSON.stringify(policies);
+      // S3 actions が付与されていること
+      expect(serialized).toContain("s3:GetObject");
+      expect(serialized).toContain("s3:PutObject");
+      expect(serialized).toContain("s3:DeleteObject");
+      // Resource が batches/* スコープに限定されていること
+      expect(serialized).toContain("batches/*");
+    });
+
+    it("BatchTable への PutItem / UpdateItem / GetItem / Query / TransactWriteItems 権限を付与している", () => {
+      const { template } = createStack();
+      const policies = template.findResources("AWS::IAM::Policy");
+      const serialized = JSON.stringify(policies);
+      expect(serialized).toContain("dynamodb:PutItem");
+      expect(serialized).toContain("dynamodb:UpdateItem");
+      expect(serialized).toContain("dynamodb:GetItem");
+      expect(serialized).toContain("dynamodb:Query");
+      expect(serialized).toContain("dynamodb:TransactWriteItems");
+    });
+
+    it("BatchExecutionStateMachine への StartExecution 権限を付与している", () => {
+      const { template } = createStack();
+      const policies = template.findResources("AWS::IAM::Policy");
+      const serialized = JSON.stringify(policies);
+      expect(serialized).toContain("states:StartExecution");
+      // TestBatchExecutionStateMachine 由来の識別子が含まれる
+      expect(serialized).toContain("TestBatchExecutionStateMachine");
+    });
+
+    it("ControlTable への読み取り権限と EndpointControl StateMachine への StartExecution 権限が維持されている", () => {
+      const { template } = createStack();
+      const policies = template.findResources("AWS::IAM::Policy");
+      const serialized = JSON.stringify(policies);
+      // ControlTable 読み取り (grantReadData)
+      expect(serialized).toContain("TestControlTable");
+      expect(serialized).toContain("dynamodb:GetItem");
+      // EndpointControl StateMachine への StartExecution が残っている
+      expect(serialized).toContain("TestStateMachine");
     });
   });
 

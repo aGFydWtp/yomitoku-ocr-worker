@@ -37,22 +37,34 @@ import type { Construct } from "constructs";
 /**
  * ApiStack: バッチ API のエントリポイント。
  *
- * 旧単一ジョブ方式の `StatusTable` 依存と `input/` / `output/` /
- * `visualizations/` プレフィックス専用 IAM 付与は task 1.1 で撤去済み。
- * バッチ方式用の `BatchTable` と S3 `batches/*` プレフィックスへの IAM は
- * 後続 task 1.2 / 2.* / 6.2 で再整備する。
+ * Task 6.2 で IAM / 環境変数をバッチ構成に再スコープ:
+ *   - S3 grants は `batches/*` プレフィックス限定（旧 input/output/visualizations 削除済み）
+ *   - BatchTable へ PutItem / UpdateItem / GetItem / Query（GSI1/GSI2 含む）/
+ *     TransactWriteItems を付与
+ *   - BatchExecutionStateMachine への StartExecution を付与（/batches/:id/start 用）
+ *   - EndpointControl StateMachine への StartExecution は自動起動フローのため維持
  */
 export interface ApiStackProps extends StackProps {
   bucket: Bucket;
   controlTable: ITable;
+  batchTable: ITable;
+  /** EndpointControl StateMachine — エンドポイント起動の自動トリガー用 */
   stateMachine: IStateMachine;
+  /** BatchExecutionStateMachine — /batches/:id/start 実行用 */
+  batchExecutionStateMachine: IStateMachine;
 }
 
 export class ApiStack extends Stack {
   constructor(scope: Construct, id: string, props: ApiStackProps) {
     super(scope, id, props);
 
-    const { bucket, controlTable, stateMachine } = props;
+    const {
+      bucket,
+      controlTable,
+      batchTable,
+      stateMachine,
+      batchExecutionStateMachine,
+    } = props;
 
     const fn = new NodejsFunction(this, "ApiFunction", {
       entry: "lambda/api/index.ts",
@@ -66,16 +78,56 @@ export class ApiStack extends Stack {
       environment: {
         BUCKET_NAME: bucket.bucketName,
         CONTROL_TABLE_NAME: controlTable.tableName,
+        BATCH_TABLE_NAME: batchTable.tableName,
         STATE_MACHINE_ARN: stateMachine.stateMachineArn,
+        BATCH_EXECUTION_STATE_MACHINE_ARN:
+          batchExecutionStateMachine.stateMachineArn,
       },
     });
 
-    // --- IAM 権限 ---
+    // --- IAM 権限 (Task 6.2: batch-first scope) ---
     controlTable.grantReadData(fn);
     stateMachine.grantStartExecution(fn);
-    // NOTE: S3 prefix 別 (input/* / output/* / visualizations/*) の権限は
-    //       legacy のため削除。batch 用 `batches/*` プレフィックスの IAM は
-    //       task 2.* / 6.2 で再付与する。
+    batchExecutionStateMachine.grantStartExecution(fn);
+
+    // BatchTable: META/FILE アイテムの CRUD + GSI1/GSI2 の Query + 反解析時の
+    // 原子的コピーに必要な TransactWriteItems。
+    fn.addToRolePolicy(
+      new PolicyStatement({
+        effect: Effect.ALLOW,
+        actions: [
+          "dynamodb:GetItem",
+          "dynamodb:PutItem",
+          "dynamodb:UpdateItem",
+          "dynamodb:Query",
+          "dynamodb:TransactWriteItems",
+        ],
+        resources: [batchTable.tableArn, `${batchTable.tableArn}/index/*`],
+      }),
+    );
+
+    // S3: `batches/*` プレフィックスのみ。署名付き URL 発行のため Put/Get/Delete
+    // と List（prefix 条件付き）を付与。ListBucket は bucket ルートを対象に
+    // し、`s3:prefix` 条件で batches/* に限定する。
+    fn.addToRolePolicy(
+      new PolicyStatement({
+        effect: Effect.ALLOW,
+        actions: ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"],
+        resources: [`${bucket.bucketArn}/batches/*`],
+      }),
+    );
+    fn.addToRolePolicy(
+      new PolicyStatement({
+        effect: Effect.ALLOW,
+        actions: ["s3:ListBucket"],
+        resources: [bucket.bucketArn],
+        conditions: {
+          StringLike: {
+            "s3:prefix": ["batches/*"],
+          },
+        },
+      }),
+    );
 
     // --- API Gateway アカウント設定（CloudWatch ログ用） ---
     const apiGatewayRole = new Role(this, "ApiGatewayCloudWatchRole", {
@@ -205,8 +257,11 @@ export class ApiStack extends Stack {
         {
           id: "AwsSolutions-IAM5",
           reason:
-            "DynamoDB grantReadData includes index/* for GSI access, and " +
-            "stateMachine.grantStartExecution generates minimum CDK L2 permissions.",
+            "Wildcard usages are intentional and bounded: " +
+            "(a) BatchTable index/* for GSI1/GSI2 Query access, " +
+            "(b) S3 batches/* prefix for scoped object CRUD + presign, " +
+            "(c) ListBucket is restricted via s3:prefix condition to batches/*, " +
+            "(d) stateMachine.grantStartExecution uses CDK L2 minimum permissions.",
         },
       ],
       true,

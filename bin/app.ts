@@ -62,19 +62,25 @@ const orchestrationStack = new OrchestrationStack(app, "OrchestrationStack", {
   endpointConfigName,
 });
 
-new BatchExecutionStack(app, "BatchExecutionStack", {
-  env: { region, account },
-  batchTable: processingStack.batchTable,
-  controlTable: processingStack.controlTable,
-  bucket: processingStack.bucket,
-  endpointName,
-});
+const batchExecutionStack = new BatchExecutionStack(
+  app,
+  "BatchExecutionStack",
+  {
+    env: { region, account },
+    batchTable: processingStack.batchTable,
+    controlTable: processingStack.controlTable,
+    bucket: processingStack.bucket,
+    endpointName,
+  },
+);
 
 new ApiStack(app, "ApiStack", {
   env: { region, account },
   bucket: processingStack.bucket,
   controlTable: processingStack.controlTable,
+  batchTable: processingStack.batchTable,
   stateMachine: orchestrationStack.stateMachine,
+  batchExecutionStateMachine: batchExecutionStack.stateMachine,
 });
 
 new MonitoringStack(app, "MonitoringStack", {
