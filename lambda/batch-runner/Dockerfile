@@ -19,6 +19,8 @@ COPY s3_sync.py .
 COPY runner.py .
 COPY process_log_reader.py .
 COPY ddb_client.py .
+COPY batch_store.py .
+COPY control_table.py .
 COPY main.py .
 
 # -----------------------------------------------------------------------

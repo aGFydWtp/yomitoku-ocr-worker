@@ -2,6 +2,7 @@
 import { App, Aspects } from "aws-cdk-lib/core";
 import { AwsSolutionsChecks } from "cdk-nag";
 import { ApiStack } from "../lib/api-stack";
+import { BatchExecutionStack } from "../lib/batch-execution-stack";
 import { MonitoringStack } from "../lib/monitoring-stack";
 import { OrchestrationStack } from "../lib/orchestration-stack";
 import { ProcessingStack } from "../lib/processing-stack";
@@ -36,6 +37,13 @@ const processingStack = new ProcessingStack(app, "ProcessingStack", {
 
 const orchestrationStack = new OrchestrationStack(app, "OrchestrationStack", {
   env: { region, account },
+  controlTable: processingStack.controlTable,
+  bucket: processingStack.bucket,
+});
+
+new BatchExecutionStack(app, "BatchExecutionStack", {
+  env: { region, account },
+  batchTable: processingStack.batchTable,
   controlTable: processingStack.controlTable,
   bucket: processingStack.bucket,
 });

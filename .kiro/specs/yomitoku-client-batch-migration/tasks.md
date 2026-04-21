@@ -145,7 +145,7 @@
 
 ## 4. Core: オーケストレーションとエンドポイント制御
 
-- [ ] 4.1 `BatchExecutionStack` と Fargate タスク定義を構築する
+- [x] 4.1 `BatchExecutionStack` と Fargate タスク定義を構築する
   - 新しい ECS クラスタ（既存 VPC 継承 or 新規デフォルト VPC）と Fargate タスク定義（4 vCPU / 16 GB、ログドライバ awslogs）を作成する
   - タスクロールに `BatchTable` と `ControlTable` の必要 Action、`batches/*` 配下の S3 put/get、`sagemaker:InvokeEndpoint`/`DescribeEndpoint` を付与する
   - 環境変数を `BatchTable` 名・`ControlTable` 名・`BUCKET_NAME`・`ENDPOINT_NAME` で配線する
