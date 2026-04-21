@@ -1,4 +1,11 @@
-"""YomiToku-Pro endpoint control Lambda for Step Functions."""
+"""YomiToku-Pro endpoint control Lambda for Step Functions.
+
+Task 4.3 以降は旧 SQS 深度チェック (``check_queue_status``) を廃止し、
+ControlTable の ``ACTIVE#COUNT`` カウンタを参照する
+``check_batch_in_flight`` を提供する。バッチランナー側の
+``lambda/batch-runner/control_table.py`` が ``TransactWriteItems`` で
+カウンタをアトミックに増減させているため、GetItem 単発でアイドル判定できる。
+"""
 
 from __future__ import annotations
 
@@ -9,20 +16,21 @@ import boto3
 from botocore.exceptions import ClientError
 
 sagemaker = boto3.client("sagemaker")
-sqs = boto3.client("sqs")
 dynamodb = boto3.resource("dynamodb")
 
 ENDPOINT_NAME = os.environ.get("ENDPOINT_NAME", "")
 ENDPOINT_CONFIG_NAME = os.environ.get("ENDPOINT_CONFIG_NAME", "")
-QUEUE_URL = os.environ.get("QUEUE_URL", "")
 CONTROL_TABLE_NAME = os.environ.get("CONTROL_TABLE_NAME", "")
 table = dynamodb.Table(CONTROL_TABLE_NAME)
+
+# ``lambda/batch-runner/control_table.py`` と一致する lock_key
+ACTIVE_COUNT_KEY = "ACTIVE#COUNT"
 
 ACTIONS = {
     "create_endpoint",
     "delete_endpoint",
     "check_endpoint_status",
-    "check_queue_status",
+    "check_batch_in_flight",
     "acquire_lock",
     "release_lock",
 }
@@ -71,22 +79,22 @@ def check_endpoint_status(event: dict) -> dict:
         raise
 
 
-def check_queue_status(event: dict) -> dict:
-    """Check SQS queue for pending messages."""
-    response = sqs.get_queue_attributes(
-        QueueUrl=QUEUE_URL,
-        AttributeNames=[
-            "ApproximateNumberOfMessages",
-            "ApproximateNumberOfMessagesNotVisible",
-        ],
-    )
-    attrs = response["Attributes"]
-    messages = int(attrs.get("ApproximateNumberOfMessages", "0"))
-    not_visible = int(attrs.get("ApproximateNumberOfMessagesNotVisible", "0"))
+def check_batch_in_flight(event: dict) -> dict:
+    """Check concurrent batch count via ControlTable ``ACTIVE#COUNT``.
+
+    バッチランナーが ``register_heartbeat`` / ``delete_heartbeat`` で
+    トランザクション更新しているカウンタを GetItem で参照し、
+    in-flight バッチが 0 件かどうかを返す。
+    """
+    response = table.get_item(Key={"lock_key": ACTIVE_COUNT_KEY})
+    item = response.get("Item") or {}
+    raw = item.get("count", 0)
+    # DynamoDB resource layer returns ``Decimal`` for numeric attributes;
+    # cast to ``int`` so downstream Step Functions Choices can compare directly.
+    count = int(raw) if raw is not None else 0
     return {
-        "messages": messages,
-        "messages_not_visible": not_visible,
-        "queue_empty": messages == 0 and not_visible == 0,
+        "in_flight_count": count,
+        "in_flight": count > 0,
     }
 
 

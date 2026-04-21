@@ -160,7 +160,7 @@
   - _Requirements: 3.3, 7.2, 7.3, 7.4, 10.4_
   - _Depends: 4.1, 3.4_
 
-- [ ] 4.3 `EndpointControl` を `BatchTable` / `ControlTable` heartbeat ベースに差し替える
+- [x] 4.3 `EndpointControl` を `BatchTable` / `ControlTable` heartbeat ベースに差し替える
   - `lambda/endpoint-control/index.py` の `check_queue_status`（SQS 深度）を `ControlTable` の `BATCH_IN_FLIGHT#*` 件数チェックに置換する
   - アイドル判定（`concurrentBatchCount == 0` が一定時間継続）後に `DeleteEndpoint` へ進むロジックを維持する
   - 既存 `EndpointLifecycleStateMachine` のステート定義を新信号源に整合させる

@@ -36,22 +36,6 @@ def dynamodb_setup():
 
 
 @pytest.fixture
-def sqs_setup():
-    """moto で SQS キューを作成する。"""
-    with mock_aws():
-        sqs = boto3.client("sqs", region_name=REGION)
-        response = sqs.create_queue(QueueName="test-queue")
-        queue_url = response["QueueUrl"]
-
-        import index
-
-        index.sqs = sqs
-        index.QUEUE_URL = queue_url
-
-        yield {"sqs": sqs, "queue_url": queue_url}
-
-
-@pytest.fixture
 def mock_sagemaker():
     """SageMaker クライアントをモックする。"""
     mock_client = MagicMock()
@@ -219,33 +203,50 @@ class TestCheckEndpointStatus:
             check_endpoint_status({})
 
 
-# --- check_queue_status ---
+# --- check_batch_in_flight ---
 
 
-class TestCheckQueueStatus:
-    """check_queue_status: SQS キューのメッセージ数を返す。"""
+class TestCheckBatchInFlight:
+    """check_batch_in_flight: ControlTable `ACTIVE#COUNT` を読んで in-flight 件数を返す。"""
 
-    def test_empty_queue(self, sqs_setup):
-        from index import check_queue_status
+    def test_returns_zero_when_counter_absent(self, dynamodb_setup):
+        """ACTIVE#COUNT アイテムが存在しない場合は in_flight_count=0 かつ in_flight=False。"""
+        from index import check_batch_in_flight
 
-        result = check_queue_status({})
+        result = check_batch_in_flight({})
 
-        assert result["messages"] == 0
-        assert result["messages_not_visible"] == 0
-        assert result["queue_empty"] is True
+        assert result["in_flight_count"] == 0
+        assert result["in_flight"] is False
 
-    def test_queue_with_messages(self, sqs_setup):
-        from index import check_queue_status
+    def test_returns_count_from_active_count_item(self, dynamodb_setup):
+        """ACTIVE#COUNT.count の値をそのまま in_flight_count として返す。"""
+        from index import check_batch_in_flight
 
-        # メッセージを投入
-        sqs_setup["sqs"].send_message(
-            QueueUrl=sqs_setup["queue_url"], MessageBody="test"
+        dynamodb_setup["table"].put_item(
+            Item={"lock_key": "ACTIVE#COUNT", "count": 3}
         )
 
-        result = check_queue_status({})
+        result = check_batch_in_flight({})
 
-        assert result["messages"] >= 1
-        assert result["queue_empty"] is False
+        assert result["in_flight_count"] == 3
+        assert result["in_flight"] is True
+
+    def test_routes_via_handler(self, dynamodb_setup):
+        """handler 経由で check_batch_in_flight が呼び出せる (action 登録の確認)。"""
+        from index import handler
+
+        result = handler({"action": "check_batch_in_flight"}, None)
+
+        assert "in_flight_count" in result
+        assert "in_flight" in result
+
+    def test_does_not_reference_sqs(self):
+        """モジュールが sqs client / QUEUE_URL を保持していないこと (legacy 撤去)。"""
+        import index
+
+        assert not hasattr(index, "sqs")
+        assert not hasattr(index, "QUEUE_URL")
+        assert "check_queue_status" not in index.ACTIONS
 
 
 # --- acquire_lock ---

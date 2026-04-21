@@ -126,6 +126,31 @@ describe("OrchestrationStack (legacy wiring cleaned up)", () => {
       const definition = JSON.stringify(Object.values(machines)[0]);
       expect(definition).toContain("ReleaseLock");
     });
+
+    it("ステートマシン定義に CheckBatchInFlight ステップが含まれ、DeleteEndpoint の前段で使われる (Task 4.3)", () => {
+      const { template } = createStack();
+      const machines = template.findResources(
+        "AWS::StepFunctions::StateMachine",
+      );
+      const definition = JSON.stringify(Object.values(machines)[0]);
+      // Lambda の新アクション名がペイロードに直列化されている
+      expect(definition).toContain("check_batch_in_flight");
+      // 専用ステート名 + in-flight 判定 + 待機ループ
+      expect(definition).toContain("CheckBatchInFlight");
+      expect(definition).toContain("WaitForBatches");
+      // in_flight_count のフィールドを SFN Choice が参照している
+      expect(definition).toContain("in_flight_count");
+    });
+
+    it("レガシーの check_queue_status がステートマシン定義から完全に消滅している", () => {
+      const { template } = createStack();
+      const machines = template.findResources(
+        "AWS::StepFunctions::StateMachine",
+      );
+      const definition = JSON.stringify(Object.values(machines)[0]);
+      expect(definition).not.toContain("check_queue_status");
+      expect(definition).not.toContain("queue_empty");
+    });
   });
 
   // --- IAM Permissions ---

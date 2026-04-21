@@ -34,8 +34,10 @@ import type { Construct } from "constructs";
  *   - `QUEUE_URL` 環境変数と `sqs:GetQueueAttributes` IAM を削除
  *   - S3 EventBridge Rule (legacy `input/` prefix) を削除
  *
- * バッチ API からの state machine 起動と、Fargate 実行完了を起点とした
- * アイドル判定ロジックは後続 task 4.2 / 4.3 で再実装する。
+ * Task 4.3 で `check_queue_status` (SQS 深度) を廃止し、
+ * ControlTable `ACTIVE#COUNT` を参照する `check_batch_in_flight` に置換した。
+ * `DeleteEndpoint` の直前で `CheckBatchInFlight` → `WaitForBatches` の
+ * ループを挟み、in-flight バッチが 0 になるまでエンドポイント削除を遅延させる。
  */
 export interface OrchestrationStackProps extends StackProps {
   controlTable: Table;
@@ -237,6 +239,20 @@ export class OrchestrationStack extends Stack {
       resultPath: "$.deleteResult",
     });
 
+    // Task 4.3: ControlTable `ACTIVE#COUNT` を参照して in-flight バッチが
+    // 0 件になるまで `DeleteEndpoint` を遅延させる。バッチランナーが
+    // TransactWriteItems でカウンタを更新しているため GetItem 単発で判定できる。
+    const checkBatchInFlight = new LambdaInvoke(this, "CheckBatchInFlight", {
+      lambdaFunction: controlFn,
+      payload: TaskInput.fromObject({ action: "check_batch_in_flight" }),
+      resultSelector: { "result.$": "$.Payload" },
+      resultPath: "$.batchInFlightResult",
+    });
+
+    const waitForBatches = new Wait(this, "WaitForBatches", {
+      time: WaitTime.duration(Duration.seconds(60)),
+    });
+
     const releaseLock = new LambdaInvoke(this, "ReleaseLock", {
       lambdaFunction: controlFn,
       payload: TaskInput.fromObject({ action: "release_lock" }),
@@ -277,6 +293,23 @@ export class OrchestrationStack extends Stack {
       },
     });
 
+    // Task 4.3: in-flight バッチ待機ループ用カウンタ
+    const initBatchWaitCounter = new Pass(this, "InitBatchWaitCounter", {
+      result: Result.fromObject({ value: 0 }),
+      resultPath: "$.batchWaitCount",
+    });
+
+    const incrementBatchWaitCounter = new Pass(
+      this,
+      "IncrementBatchWaitCounter",
+      {
+        resultPath: "$.batchWaitCount",
+        parameters: {
+          "value.$": "States.MathAdd($.batchWaitCount.value, 1)",
+        },
+      },
+    );
+
     // --- Flow construction (legacy queue-based checks removed) ---
 
     // [1] Acquire lock → check result
@@ -290,13 +323,15 @@ export class OrchestrationStack extends Stack {
     acquireLock.next(lockChoice);
 
     // [2] Check endpoint status → branch
+    // Task 4.3: InService のまま即 DeleteEndpoint せず、バッチの in-flight
+    // カウンタをチェックしてからエンドポイント停止する。
     const endpointStatusChoice = new Choice(this, "EndpointStatusBranch")
       .when(
         Condition.stringEquals(
           "$.endpointResult.result.endpoint_status",
           "InService",
         ),
-        deleteEndpoint,
+        initBatchWaitCounter,
       )
       .when(
         Condition.stringEquals(
@@ -329,7 +364,7 @@ export class OrchestrationStack extends Stack {
           "$.endpointResult.result.endpoint_status",
           "InService",
         ),
-        deleteEndpoint,
+        initBatchWaitCounter,
       )
       .when(
         Condition.numberGreaterThanEquals("$.waitCount.value", 20),
@@ -340,7 +375,31 @@ export class OrchestrationStack extends Stack {
     checkEndpointStatusLoop.next(waitLoopChoice);
     incrementCounter.next(waitForEndpoint);
 
-    // [5] Delete endpoint → release lock → done
+    // [5a] Batch in-flight 待機ループ: InService の状態から
+    //      ControlTable `ACTIVE#COUNT` が 0 になるまで DeleteEndpoint を遅延
+    initBatchWaitCounter.next(checkBatchInFlight);
+
+    // Choice は `in_flight_count == 0` を直接判定し、設計書の
+    // `concurrentBatchCount == 0` セマンティクスと一致させる。
+    const batchInFlightChoice = new Choice(this, "BatchInFlightChoice")
+      .when(
+        Condition.numberLessThanEquals(
+          "$.batchInFlightResult.result.in_flight_count",
+          0,
+        ),
+        deleteEndpoint,
+      )
+      .when(
+        Condition.numberGreaterThanEquals("$.batchWaitCount.value", 120),
+        releaseLockOnError,
+      )
+      .otherwise(incrementBatchWaitCounter);
+
+    checkBatchInFlight.next(batchInFlightChoice);
+    incrementBatchWaitCounter.next(waitForBatches);
+    waitForBatches.next(checkBatchInFlight);
+
+    // [5b] Delete endpoint → release lock → done
     deleteEndpoint.next(releaseLock);
     releaseLock.next(done);
 
@@ -354,6 +413,7 @@ export class OrchestrationStack extends Stack {
       checkEndpointStatus,
       createEndpoint,
       checkEndpointStatusLoop,
+      checkBatchInFlight,
       deleteEndpoint,
       releaseLock,
     ]) {
