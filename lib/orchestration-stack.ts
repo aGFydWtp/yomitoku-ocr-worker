@@ -1,6 +1,4 @@
 import type { Table } from "aws-cdk-lib/aws-dynamodb";
-import { Rule, RuleTargetInput } from "aws-cdk-lib/aws-events";
-import { SfnStateMachine } from "aws-cdk-lib/aws-events-targets";
 import { Effect, PolicyStatement } from "aws-cdk-lib/aws-iam";
 import {
   Code,
@@ -8,7 +6,6 @@ import {
   Runtime,
 } from "aws-cdk-lib/aws-lambda";
 import type { IBucket } from "aws-cdk-lib/aws-s3";
-import type { Queue } from "aws-cdk-lib/aws-sqs";
 import {
   Choice,
   Condition,
@@ -27,11 +24,22 @@ import { CfnOutput, Duration, Stack, type StackProps } from "aws-cdk-lib/core";
 import { NagSuppressions } from "cdk-nag";
 import type { Construct } from "constructs";
 
+/**
+ * OrchestrationStack: SageMaker エンドポイントのライフサイクル制御スタック。
+ *
+ * 旧実装では S3 `input/` への ObjectCreated を EventBridge で拾って
+ * 自動的に state machine を起動し、SQS のキュー深度でアイドル判定していたが
+ * 本 task 1.1 でそれらを撤去した:
+ *   - `mainQueue` props 依存を削除
+ *   - `QUEUE_URL` 環境変数と `sqs:GetQueueAttributes` IAM を削除
+ *   - S3 EventBridge Rule (legacy `input/` prefix) を削除
+ *
+ * バッチ API からの state machine 起動と、Fargate 実行完了を起点とした
+ * アイドル判定ロジックは後続 task 4.2 / 4.3 で再実装する。
+ */
 export interface OrchestrationStackProps extends StackProps {
-  /** endpoint control Lambda がキュー深度をポーリングするために使用 */
-  mainQueue: Queue;
   controlTable: Table;
-  /** EventBridge Rule のイベントソース（S3 ObjectCreated → Step Functions） */
+  /** 将来の batch 用 EventBridge wiring 向けに bucket への参照を保持する。 */
   bucket: IBucket;
 }
 
@@ -42,7 +50,7 @@ export class OrchestrationStack extends Stack {
   constructor(scope: Construct, id: string, props: OrchestrationStackProps) {
     super(scope, id, props);
 
-    const { mainQueue, controlTable, bucket } = props;
+    const { controlTable } = props;
 
     const endpointName = this.node.tryGetContext("endpointName") as
       | string
@@ -83,14 +91,12 @@ export class OrchestrationStack extends Stack {
         environment: {
           ENDPOINT_NAME: endpointName,
           ENDPOINT_CONFIG_NAME: endpointConfigName,
-          QUEUE_URL: mainQueue.queueUrl,
           CONTROL_TABLE_NAME: controlTable.tableName,
         },
       },
     );
 
-    // --- 4.4 IAM Permissions ---
-    // 4.4.1 SageMaker endpoint operations
+    // --- IAM Permissions ---
     this.endpointControlFunction.addToRolePolicy(
       new PolicyStatement({
         sid: "SageMakerEndpointControl",
@@ -107,20 +113,12 @@ export class OrchestrationStack extends Stack {
       }),
     );
 
-    // 4.4.2 DynamoDB control table read/write
     controlTable.grantReadWriteData(this.endpointControlFunction);
 
-    // 4.4.3 SQS GetQueueAttributes
-    this.endpointControlFunction.addToRolePolicy(
-      new PolicyStatement({
-        sid: "SqsGetQueueAttributes",
-        effect: Effect.ALLOW,
-        actions: ["sqs:GetQueueAttributes"],
-        resources: [mainQueue.queueArn],
-      }),
-    );
-
-    // --- 4.2 Step Functions ステートマシン ---
+    // --- Step Functions ステートマシン ---
+    // NOTE: `check_queue_status` ステップは legacy SQS 依存のまま残しているが、
+    //       トリガー (EventBridge Rule) を撤去したためこの state machine は
+    //       task 4.2 で batch 実行系に合わせて再構築されるまで未起動となる。
     const definition = this.buildStateMachineDefinition(
       this.endpointControlFunction,
     );
@@ -128,23 +126,6 @@ export class OrchestrationStack extends Stack {
     this.stateMachine = new StateMachine(this, "EndpointOrchestrator", {
       definitionBody: DefinitionBody.fromChainable(definition),
       timeout: Duration.hours(2),
-    });
-
-    // --- 4.3 EventBridge Rule (S3 → Step Functions) ---
-    new Rule(this, "S3ObjectCreatedRule", {
-      eventPattern: {
-        source: ["aws.s3"],
-        detailType: ["Object Created"],
-        detail: {
-          bucket: { name: [bucket.bucketName] },
-          object: { key: [{ prefix: "input/" }] },
-        },
-      },
-      targets: [
-        new SfnStateMachine(this.stateMachine, {
-          input: RuleTargetInput.fromObject({ trigger: "s3_event" }),
-        }),
-      ],
     });
 
     // CDK Nag suppressions
@@ -188,12 +169,12 @@ export class OrchestrationStack extends Stack {
         {
           id: "AwsSolutions-SF1",
           reason:
-            "CloudWatch Logs for Step Functions will be added in monitoring phase (Phase 5).",
+            "CloudWatch Logs for Step Functions will be added in monitoring phase (task 5.1).",
         },
         {
           id: "AwsSolutions-SF2",
           reason:
-            "X-Ray tracing for Step Functions will be evaluated in monitoring phase (Phase 5).",
+            "X-Ray tracing for Step Functions will be evaluated in monitoring phase (task 5.1).",
         },
       ],
       true,
@@ -252,24 +233,6 @@ export class OrchestrationStack extends Stack {
       },
     );
 
-    const checkQueueStatus = new LambdaInvoke(this, "CheckQueueStatus", {
-      lambdaFunction: controlFn,
-      payload: TaskInput.fromObject({ action: "check_queue_status" }),
-      resultSelector: { "result.$": "$.Payload" },
-      resultPath: "$.queueResult",
-    });
-
-    const cooldownWait = new Wait(this, "CooldownWait", {
-      time: WaitTime.duration(Duration.minutes(15)),
-    });
-
-    const recheckQueueStatus = new LambdaInvoke(this, "RecheckQueueStatus", {
-      lambdaFunction: controlFn,
-      payload: TaskInput.fromObject({ action: "check_queue_status" }),
-      resultSelector: { "result.$": "$.Payload" },
-      resultPath: "$.queueResult",
-    });
-
     const deleteEndpoint = new LambdaInvoke(this, "DeleteEndpoint", {
       lambdaFunction: controlFn,
       payload: TaskInput.fromObject({ action: "delete_endpoint" }),
@@ -317,7 +280,7 @@ export class OrchestrationStack extends Stack {
       },
     });
 
-    // --- Flow construction ---
+    // --- Flow construction (legacy queue-based checks removed) ---
 
     // [1] Acquire lock → check result
     const lockChoice = new Choice(this, "LockAcquired?")
@@ -336,7 +299,7 @@ export class OrchestrationStack extends Stack {
           "$.endpointResult.result.endpoint_status",
           "InService",
         ),
-        checkQueueStatus,
+        deleteEndpoint,
       )
       .when(
         Condition.stringEquals(
@@ -359,7 +322,7 @@ export class OrchestrationStack extends Stack {
     // [3] Create endpoint → init counter → wait loop
     createEndpoint.next(initCounter);
 
-    // [4] Wait loop: wait → check → if InService, go to queue check
+    // [4] Wait loop: wait → check → if InService, go to delete
     initCounter.next(waitForEndpoint);
     waitForEndpoint.next(checkEndpointStatusLoop);
 
@@ -369,7 +332,7 @@ export class OrchestrationStack extends Stack {
           "$.endpointResult.result.endpoint_status",
           "InService",
         ),
-        checkQueueStatus,
+        deleteEndpoint,
       )
       .when(
         Condition.numberGreaterThanEquals("$.waitCount.value", 20),
@@ -380,35 +343,7 @@ export class OrchestrationStack extends Stack {
     checkEndpointStatusLoop.next(waitLoopChoice);
     incrementCounter.next(waitForEndpoint);
 
-    // [5-6] Queue check loop
-    const waitForQueue = new Wait(this, "WaitForQueueDrain", {
-      time: WaitTime.duration(Duration.seconds(60)),
-    });
-
-    const queueChoice = new Choice(this, "QueueEmpty?")
-      .when(
-        Condition.booleanEquals("$.queueResult.result.queue_empty", true),
-        cooldownWait,
-      )
-      .otherwise(waitForQueue);
-
-    checkQueueStatus.next(queueChoice);
-    waitForQueue.next(checkQueueStatus);
-
-    // [7] Cooldown → recheck
-    cooldownWait.next(recheckQueueStatus);
-
-    // [8] Recheck queue
-    const recheckChoice = new Choice(this, "QueueStillEmpty?")
-      .when(
-        Condition.booleanEquals("$.queueResult.result.queue_empty", true),
-        deleteEndpoint,
-      )
-      .otherwise(checkQueueStatus);
-
-    recheckQueueStatus.next(recheckChoice);
-
-    // [9] Delete endpoint → release lock → done
+    // [5] Delete endpoint → release lock → done
     deleteEndpoint.next(releaseLock);
     releaseLock.next(done);
 
@@ -422,8 +357,6 @@ export class OrchestrationStack extends Stack {
       checkEndpointStatus,
       createEndpoint,
       checkEndpointStatusLoop,
-      checkQueueStatus,
-      recheckQueueStatus,
       deleteEndpoint,
       releaseLock,
     ]) {

@@ -23,10 +23,6 @@ function createStack(): {
   });
 
   const bucket = new Bucket(depStack, "TestBucket");
-  const statusTable = new Table(depStack, "TestStatusTable", {
-    partitionKey: { name: "job_id", type: AttributeType.STRING },
-    billingMode: BillingMode.PAY_PER_REQUEST,
-  });
   const controlTable = new Table(depStack, "TestControlTable", {
     partitionKey: { name: "lock_key", type: AttributeType.STRING },
     billingMode: BillingMode.PAY_PER_REQUEST,
@@ -38,7 +34,6 @@ function createStack(): {
   const stack = new ApiStack(app, "TestApiStack", {
     env: { region: TEST_REGION, account: TEST_ACCOUNT },
     bucket,
-    statusTable,
     controlTable,
     stateMachine,
   });
@@ -47,8 +42,8 @@ function createStack(): {
   return { app, stack, template };
 }
 
-describe("ApiStack", () => {
-  // --- 9.1 NodejsFunction ---
+describe("ApiStack (legacy StatusTable wiring removed)", () => {
+  // --- NodejsFunction ---
   describe("NodejsFunction", () => {
     it("ランタイムが Node.js 24.x である", () => {
       const { template } = createStack();
@@ -71,12 +66,11 @@ describe("ApiStack", () => {
       });
     });
 
-    it("環境変数に STATUS_TABLE_NAME, BUCKET_NAME, CONTROL_TABLE_NAME, STATE_MACHINE_ARN が設定されている", () => {
+    it("環境変数に BUCKET_NAME / CONTROL_TABLE_NAME / STATE_MACHINE_ARN が設定されている (STATUS_TABLE_NAME は撤去)", () => {
       const { template } = createStack();
       template.hasResourceProperties("AWS::Lambda::Function", {
         Environment: {
           Variables: {
-            STATUS_TABLE_NAME: Match.anyValue(),
             BUCKET_NAME: Match.anyValue(),
             CONTROL_TABLE_NAME: Match.anyValue(),
             STATE_MACHINE_ARN: Match.anyValue(),
@@ -84,9 +78,16 @@ describe("ApiStack", () => {
         },
       });
     });
+
+    it("STATUS_TABLE_NAME 環境変数が存在しない", () => {
+      const { template } = createStack();
+      const fns = template.findResources("AWS::Lambda::Function");
+      const serialized = JSON.stringify(fns);
+      expect(serialized).not.toContain("STATUS_TABLE_NAME");
+    });
   });
 
-  // --- 9.1 API Gateway ---
+  // --- API Gateway ---
   describe("API Gateway", () => {
     it("LambdaRestApi が REGIONAL エンドポイントで作成されている", () => {
       const { template } = createStack();
@@ -98,7 +99,7 @@ describe("ApiStack", () => {
     });
   });
 
-  // --- 9.2 API Key は不要（CloudFront + WAF で制御） ---
+  // --- API Key は不要（CloudFront + WAF で制御） ---
   describe("API Key が存在しないこと", () => {
     it("ApiKey リソースが作成されていない", () => {
       const { template } = createStack();
@@ -111,7 +112,7 @@ describe("ApiStack", () => {
     });
   });
 
-  // --- 9.3 CloudFront Distribution ---
+  // --- CloudFront Distribution ---
   describe("CloudFront Distribution", () => {
     it("CloudFront Distribution が作成されている", () => {
       const { template } = createStack();
@@ -167,7 +168,7 @@ describe("ApiStack", () => {
     });
   });
 
-  // --- 9.4 API Gateway リソースポリシー ---
+  // --- API Gateway リソースポリシー ---
   describe("API Gateway Resource Policy", () => {
     it("リソースポリシーに DENY ステートメントが含まれている（Referer 不一致時）", () => {
       const { template } = createStack();
@@ -203,73 +204,13 @@ describe("ApiStack", () => {
     });
   });
 
-  // --- 9.5 IAM 権限 ---
+  // --- IAM 権限（legacy 撤去済み） ---
   describe("IAM Permissions", () => {
-    it("DynamoDB の読み書き権限が付与されている", () => {
+    it("StatusTable への DynamoDB 書き込み権限が存在しない (legacy)", () => {
       const { template } = createStack();
-      // grantReadWriteData は単一ステートメントに全アクションを含める
-      template.hasResourceProperties("AWS::IAM::Policy", {
-        PolicyDocument: {
-          Statement: Match.arrayWith([
-            Match.objectLike({
-              Action: Match.arrayWith(["dynamodb:PutItem"]),
-              Effect: "Allow",
-            }),
-          ]),
-        },
-      });
-      template.hasResourceProperties("AWS::IAM::Policy", {
-        PolicyDocument: {
-          Statement: Match.arrayWith([
-            Match.objectLike({
-              Action: Match.arrayWith(["dynamodb:GetItem"]),
-              Effect: "Allow",
-            }),
-          ]),
-        },
-      });
-    });
-
-    it("S3 input/* への PutObject 権限が付与されている", () => {
-      const { template } = createStack();
-      template.hasResourceProperties("AWS::IAM::Policy", {
-        PolicyDocument: {
-          Statement: Match.arrayWith([
-            Match.objectLike({
-              Action: Match.arrayWith(["s3:PutObject"]),
-              Effect: "Allow",
-            }),
-          ]),
-        },
-      });
-    });
-
-    it("S3 output/* への GetObject 権限が付与されている", () => {
-      const { template } = createStack();
-      template.hasResourceProperties("AWS::IAM::Policy", {
-        PolicyDocument: {
-          Statement: Match.arrayWith([
-            Match.objectLike({
-              Action: Match.arrayWith(["s3:GetObject*"]),
-              Effect: "Allow",
-            }),
-          ]),
-        },
-      });
-    });
-
-    it("S3 input/* への DeleteObject 権限が付与されている", () => {
-      const { template } = createStack();
-      template.hasResourceProperties("AWS::IAM::Policy", {
-        PolicyDocument: {
-          Statement: Match.arrayWith([
-            Match.objectLike({
-              Action: "s3:DeleteObject*",
-              Effect: "Allow",
-            }),
-          ]),
-        },
-      });
+      const policies = template.findResources("AWS::IAM::Policy");
+      const serialized = JSON.stringify(policies);
+      expect(serialized).not.toContain("TestStatusTable");
     });
   });
 

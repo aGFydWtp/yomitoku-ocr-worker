@@ -1,8 +1,7 @@
 import { Match, Template } from "aws-cdk-lib/assertions";
 import { AttributeType, BillingMode, Table } from "aws-cdk-lib/aws-dynamodb";
 import { Bucket } from "aws-cdk-lib/aws-s3";
-import { Queue } from "aws-cdk-lib/aws-sqs";
-import { App, Duration, Stack } from "aws-cdk-lib/core";
+import { App, Stack } from "aws-cdk-lib/core";
 import { OrchestrationStack } from "../lib/orchestration-stack";
 
 const TEST_REGION = "ap-northeast-1";
@@ -26,9 +25,6 @@ function createStack(): {
   const depStack = new Stack(app, "DepStack", {
     env: { region: TEST_REGION, account: TEST_ACCOUNT },
   });
-  const mainQueue = new Queue(depStack, "MainQueue", {
-    visibilityTimeout: Duration.seconds(3600),
-  });
   const controlTable = new Table(depStack, "ControlTable", {
     partitionKey: { name: "lock_key", type: AttributeType.STRING },
     billingMode: BillingMode.PAY_PER_REQUEST,
@@ -37,7 +33,6 @@ function createStack(): {
 
   const stack = new OrchestrationStack(app, "TestOrchestrationStack", {
     env: { region: TEST_REGION, account: TEST_ACCOUNT },
-    mainQueue,
     controlTable,
     bucket,
   });
@@ -45,7 +40,7 @@ function createStack(): {
   return { app, stack, template };
 }
 
-describe("OrchestrationStack", () => {
+describe("OrchestrationStack (legacy wiring cleaned up)", () => {
   // --- エンドポイント制御 Lambda ---
   describe("Endpoint Control Lambda", () => {
     it("Python 3.12 ランタイムで定義されている", () => {
@@ -56,14 +51,13 @@ describe("OrchestrationStack", () => {
       });
     });
 
-    it("環境変数が設定されている", () => {
+    it("環境変数に ENDPOINT_NAME / ENDPOINT_CONFIG_NAME / CONTROL_TABLE_NAME が設定されている (QUEUE_URL は撤去)", () => {
       const { template } = createStack();
       template.hasResourceProperties("AWS::Lambda::Function", {
         Environment: {
           Variables: {
             ENDPOINT_NAME: TEST_ENDPOINT_NAME,
             ENDPOINT_CONFIG_NAME: TEST_ENDPOINT_CONFIG_NAME,
-            QUEUE_URL: Match.anyValue(),
             CONTROL_TABLE_NAME: Match.anyValue(),
           },
         },
@@ -127,15 +121,6 @@ describe("OrchestrationStack", () => {
       expect(definition).toContain("DeleteEndpoint");
     });
 
-    it("ステートマシン定義に CheckQueueStatus ステップが含まれる", () => {
-      const { template } = createStack();
-      const machines = template.findResources(
-        "AWS::StepFunctions::StateMachine",
-      );
-      const definition = JSON.stringify(Object.values(machines)[0]);
-      expect(definition).toContain("CheckQueueStatus");
-    });
-
     it("ステートマシン定義に ReleaseLock ステップが含まれる", () => {
       const { template } = createStack();
       const machines = template.findResources(
@@ -143,15 +128,6 @@ describe("OrchestrationStack", () => {
       );
       const definition = JSON.stringify(Object.values(machines)[0]);
       expect(definition).toContain("ReleaseLock");
-    });
-
-    it("ステートマシン定義にクールダウン Wait が含まれる", () => {
-      const { template } = createStack();
-      const machines = template.findResources(
-        "AWS::StepFunctions::StateMachine",
-      );
-      const definition = JSON.stringify(Object.values(machines)[0]);
-      expect(definition).toContain("CooldownWait");
     });
   });
 
@@ -175,73 +151,19 @@ describe("OrchestrationStack", () => {
       });
     });
 
-    it("Lambda に SQS GetQueueAttributes 権限がある", () => {
+    it("SQS GetQueueAttributes 権限が付与されていない (legacy 撤去)", () => {
       const { template } = createStack();
-      template.hasResourceProperties("AWS::IAM::Policy", {
-        PolicyDocument: {
-          Statement: Match.arrayWith([
-            Match.objectLike({
-              Action: "sqs:GetQueueAttributes",
-              Effect: "Allow",
-            }),
-          ]),
-        },
-      });
+      const policies = template.findResources("AWS::IAM::Policy");
+      const serialized = JSON.stringify(policies);
+      expect(serialized).not.toContain("sqs:GetQueueAttributes");
     });
   });
 
-  // --- EventBridge Rule ---
-  describe("EventBridge Rule", () => {
-    it("S3 Object Created ルールが 1 つ存在する", () => {
+  // --- EventBridge Rule は legacy (input/ prefix) のため撤去済み ---
+  describe("EventBridge Rule removed", () => {
+    it("S3 ObjectCreated ルールが存在しない", () => {
       const { template } = createStack();
-      template.resourceCountIs("AWS::Events::Rule", 1);
-    });
-
-    it("S3 ObjectCreated イベントパターンが設定されている", () => {
-      const { template } = createStack();
-      template.hasResourceProperties("AWS::Events::Rule", {
-        EventPattern: {
-          source: ["aws.s3"],
-          "detail-type": ["Object Created"],
-          detail: {
-            bucket: { name: Match.anyValue() },
-            object: { key: [{ prefix: "input/" }] },
-          },
-        },
-      });
-    });
-
-    it("ターゲットに Step Functions ステートマシンが設定されている", () => {
-      const { template } = createStack();
-      template.hasResourceProperties("AWS::Events::Rule", {
-        Targets: Match.arrayWith([
-          Match.objectLike({
-            Arn: { Ref: Match.stringLikeRegexp("EndpointOrchestrator.*") },
-          }),
-        ]),
-      });
-    });
-
-    it("Pipes リソースが存在しない", () => {
-      const { template } = createStack();
-      template.resourceCountIs("AWS::Pipes::Pipe", 0);
-    });
-
-    it("EventBridge Rule ターゲット用 IAM ロールに states:StartExecution 権限がある", () => {
-      const { template } = createStack();
-      template.hasResourceProperties("AWS::IAM::Role", {
-        AssumeRolePolicyDocument: {
-          Statement: Match.arrayWith([
-            Match.objectLike({
-              Action: "sts:AssumeRole",
-              Effect: "Allow",
-              Principal: {
-                Service: "events.amazonaws.com",
-              },
-            }),
-          ]),
-        },
-      });
+      template.resourceCountIs("AWS::Events::Rule", 0);
     });
   });
 

@@ -36,7 +36,6 @@ const processingStack = new ProcessingStack(app, "ProcessingStack", {
 
 const orchestrationStack = new OrchestrationStack(app, "OrchestrationStack", {
   env: { region, account },
-  mainQueue: processingStack.mainQueue,
   controlTable: processingStack.controlTable,
   bucket: processingStack.bucket,
 });
@@ -44,16 +43,12 @@ const orchestrationStack = new OrchestrationStack(app, "OrchestrationStack", {
 new ApiStack(app, "ApiStack", {
   env: { region, account },
   bucket: processingStack.bucket,
-  statusTable: processingStack.statusTable,
   controlTable: processingStack.controlTable,
   stateMachine: orchestrationStack.stateMachine,
 });
 
 new MonitoringStack(app, "MonitoringStack", {
   env: { region, account },
-  mainQueue: processingStack.mainQueue,
-  deadLetterQueue: processingStack.deadLetterQueue,
-  processorFunction: processingStack.processorFunction,
 });
 
 Aspects.of(app).add(new AwsSolutionsChecks({ verbose: true }));

@@ -15,7 +15,7 @@ import {
   ViewerProtocolPolicy,
 } from "aws-cdk-lib/aws-cloudfront";
 import { RestApiOrigin } from "aws-cdk-lib/aws-cloudfront-origins";
-import type { ITable, Table } from "aws-cdk-lib/aws-dynamodb";
+import type { ITable } from "aws-cdk-lib/aws-dynamodb";
 import {
   AnyPrincipal,
   Effect,
@@ -34,9 +34,16 @@ import { CfnOutput, Duration, Stack } from "aws-cdk-lib/core";
 import { NagSuppressions } from "cdk-nag";
 import type { Construct } from "constructs";
 
+/**
+ * ApiStack: バッチ API のエントリポイント。
+ *
+ * 旧単一ジョブ方式の `StatusTable` 依存と `input/` / `output/` /
+ * `visualizations/` プレフィックス専用 IAM 付与は task 1.1 で撤去済み。
+ * バッチ方式用の `BatchTable` と S3 `batches/*` プレフィックスへの IAM は
+ * 後続 task 1.2 / 2.* / 6.2 で再整備する。
+ */
 export interface ApiStackProps extends StackProps {
   bucket: Bucket;
-  statusTable: Table;
   controlTable: ITable;
   stateMachine: IStateMachine;
 }
@@ -45,7 +52,7 @@ export class ApiStack extends Stack {
   constructor(scope: Construct, id: string, props: ApiStackProps) {
     super(scope, id, props);
 
-    const { bucket, statusTable, controlTable, stateMachine } = props;
+    const { bucket, controlTable, stateMachine } = props;
 
     const fn = new NodejsFunction(this, "ApiFunction", {
       entry: "lambda/api/index.ts",
@@ -57,7 +64,6 @@ export class ApiStack extends Stack {
         minify: true,
       },
       environment: {
-        STATUS_TABLE_NAME: statusTable.tableName,
         BUCKET_NAME: bucket.bucketName,
         CONTROL_TABLE_NAME: controlTable.tableName,
         STATE_MACHINE_ARN: stateMachine.stateMachineArn,
@@ -65,13 +71,11 @@ export class ApiStack extends Stack {
     });
 
     // --- IAM 権限 ---
-    statusTable.grantReadWriteData(fn);
     controlTable.grantReadData(fn);
     stateMachine.grantStartExecution(fn);
-    bucket.grantPut(fn, "input/*");
-    bucket.grantRead(fn, "output/*");
-    bucket.grantRead(fn, "visualizations/*");
-    bucket.grantDelete(fn, "input/*");
+    // NOTE: S3 prefix 別 (input/* / output/* / visualizations/*) の権限は
+    //       legacy のため削除。batch 用 `batches/*` プレフィックスの IAM は
+    //       task 2.* / 6.2 で再付与する。
 
     // --- API Gateway アカウント設定（CloudWatch ログ用） ---
     const apiGatewayRole = new Role(this, "ApiGatewayCloudWatchRole", {
@@ -201,24 +205,8 @@ export class ApiStack extends Stack {
         {
           id: "AwsSolutions-IAM5",
           reason:
-            "S3 grantPut/grantRead/grantDelete use wildcard actions " +
-            "(s3:GetObject*, s3:GetBucket*, s3:List*, s3:Abort*, s3:DeleteObject*) " +
-            "scoped to specific prefixes (input/*, output/*). " +
-            "DynamoDB grantReadWriteData includes index/* for GSI access. " +
-            "controlTable.grantReadData and stateMachine.grantStartExecution " +
-            "generate minimum CDK L2 grant permissions.",
-          appliesTo: [
-            "Action::s3:Abort*",
-            "Action::s3:DeleteObject*",
-            "Action::s3:GetBucket*",
-            "Action::s3:GetObject*",
-            "Action::s3:List*",
-            "Resource::<DataBucketE3889A50.Arn>/input/*",
-            "Resource::<DataBucketE3889A50.Arn>/output/*",
-            "Resource::<DataBucketE3889A50.Arn>/visualizations/*",
-            "Resource::<StatusTable0F76785B.Arn>/index/*",
-            "Resource::<ControlTableB3A8D1BC.Arn>/index/*",
-          ],
+            "DynamoDB grantReadData includes index/* for GSI access, and " +
+            "stateMachine.grantStartExecution generates minimum CDK L2 permissions.",
         },
       ],
       true,
