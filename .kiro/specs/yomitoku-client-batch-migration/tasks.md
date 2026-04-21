@@ -102,7 +102,7 @@
 
 ## 3. Core: Fargate バッチランナー
 
-- [ ] 3.1 `lambda/batch-runner` コンテナと設定層を整備する
+- [x] 3.1 `lambda/batch-runner` コンテナと設定層を整備する
   - `lambda/processor/Dockerfile` をベースに Python 3.12 + `yomitoku-client==0.2.0` をインストールする Dockerfile を配置する
   - `settings.py` で環境変数（`BATCH_JOB_ID`、`BUCKET_NAME`、`BATCH_TABLE_NAME`、`CONTROL_TABLE_NAME`、`ENDPOINT_NAME`、`MAX_FILE_CONCURRENCY`、`MAX_PAGE_CONCURRENCY`、`MAX_RETRIES`、`READ_TIMEOUT`、`CIRCUIT_THRESHOLD`、`CIRCUIT_COOLDOWN`、`BATCH_MAX_DURATION_SEC`、`EXTRA_FORMATS`）を `dataclass` 型で集約する
   - エントリポイント `main.py` を作成し、ローカルでの dry-run（モック S3 / DDB）で設定ロード成功まで到達することを観測可能な完了条件とする
