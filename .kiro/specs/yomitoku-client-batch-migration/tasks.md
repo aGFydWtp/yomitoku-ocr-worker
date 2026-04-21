@@ -11,7 +11,7 @@
   - `cdk synth` のスナップショット差分で旧リソースが全消滅していることを観測可能な完了条件とする
   - _Requirements: 1.2, 1.3, 1.4, 9.3, 9.5_
 
-- [ ] 1.2 Single-table `BatchTable` と新 S3 ライフサイクルを追加する
+- [x] 1.2 Single-table `BatchTable` と新 S3 ライフサイクルを追加する
   - `ProcessingStack` に `BatchTable`（PK=`PK`、SK=`SK`、PAY_PER_REQUEST、PITR 有効）を追加する
   - GSI1（`GSI1PK = STATUS#{status}#{yyyymm}`、`GSI1SK = createdAt`、META のみ projection）と GSI2（`GSI2PK = PARENT#{parentBatchJobId}`、`GSI2SK = createdAt`、META のみ projection）を定義する
   - PENDING アイテムの `ttl` 属性を有効化する
@@ -19,7 +19,7 @@
   - `cdk synth` で `BatchTable` と GSI 2 本が存在し、`StatusTable` が存在しないことを確認する
   - _Requirements: 9.1, 9.2, 9.4, 11.5_
 
-- [ ] 1.3 CI レガシー参照ガードを導入する
+- [x] 1.3 CI レガシー参照ガードを導入する
   - `scripts/check-legacy-refs.sh` を作成し、`/jobs`・`StatusTable`・`job_id`・`MainQueue`・`ProcessorFunction`・旧 S3 キー（`input/{`、`output/{`、`visualizations/{`）等の禁止語を `git grep` でブロックする
   - `.kiro/`・`node_modules/`・`.git/`・`cdk.out/` を除外パスに指定する
   - `package.json` に `lint:legacy` スクリプトを登録し、既存の lint タスクチェーンに組み込む

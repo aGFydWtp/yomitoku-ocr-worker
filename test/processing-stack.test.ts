@@ -53,6 +53,75 @@ describe("ProcessingStack (legacy resources removed)", () => {
     });
   });
 
+  // --- S3 ライフサイクルルール (batches/* リテンション) ---
+  describe("S3 Lifecycle Rules (batches/* retention)", () => {
+    it("logs: prefix=batches/ + tag=log で 365 日リテンションルールが存在する", () => {
+      const { template } = createStack();
+      template.hasResourceProperties("AWS::S3::Bucket", {
+        LifecycleConfiguration: {
+          Rules: Match.arrayWith([
+            Match.objectLike({
+              ExpirationInDays: 365,
+              Status: "Enabled",
+              Prefix: "batches/",
+              TagFilters: Match.arrayWith([
+                { Key: "batch-content-type", Value: "log" },
+              ]),
+            }),
+          ]),
+        },
+      });
+    });
+
+    it("visualizations: prefix=batches/ + tag=visualization で 30 日リテンションルールが存在する", () => {
+      const { template } = createStack();
+      template.hasResourceProperties("AWS::S3::Bucket", {
+        LifecycleConfiguration: {
+          Rules: Match.arrayWith([
+            Match.objectLike({
+              ExpirationInDays: 30,
+              Status: "Enabled",
+              Prefix: "batches/",
+              TagFilters: Match.arrayWith([
+                { Key: "batch-content-type", Value: "visualization" },
+              ]),
+            }),
+          ]),
+        },
+      });
+    });
+
+    it("results: prefix=batches/ + tag=result で 30 日リテンションルールが存在する", () => {
+      const { template } = createStack();
+      template.hasResourceProperties("AWS::S3::Bucket", {
+        LifecycleConfiguration: {
+          Rules: Match.arrayWith([
+            Match.objectLike({
+              ExpirationInDays: 30,
+              Status: "Enabled",
+              Prefix: "batches/",
+              TagFilters: Match.arrayWith([
+                { Key: "batch-content-type", Value: "result" },
+              ]),
+            }),
+          ]),
+        },
+      });
+    });
+
+    it("ライフサイクルルールが 3 本定義されている", () => {
+      const { template } = createStack();
+      const buckets = template.findResources("AWS::S3::Bucket");
+      const bucket = Object.values(buckets)[0] as {
+        Properties?: {
+          LifecycleConfiguration?: { Rules?: unknown[] };
+        };
+      };
+      const rules = bucket?.Properties?.LifecycleConfiguration?.Rules ?? [];
+      expect(rules).toHaveLength(3);
+    });
+  });
+
   // --- DynamoDB エンドポイント制御テーブル（batch 方式でも継続利用） ---
   describe("DynamoDB Endpoint Control Table", () => {
     it("PK が lock_key (String) である", () => {
@@ -76,10 +145,88 @@ describe("ProcessingStack (legacy resources removed)", () => {
       const { stack } = createStack();
       expect(stack.controlTable).toBeDefined();
     });
+  });
 
-    it("DynamoDB テーブルが 1 つだけ存在する (StatusTable は撤去済み)", () => {
+  // --- DynamoDB BatchTable (Single-table: PK/SK + GSI1 + GSI2 + TTL) ---
+  describe("DynamoDB BatchTable", () => {
+    it("PK が PK (String)、SK が SK (String) の複合キーである", () => {
       const { template } = createStack();
-      template.resourceCountIs("AWS::DynamoDB::Table", 1);
+      template.hasResourceProperties("AWS::DynamoDB::Table", {
+        KeySchema: [
+          { AttributeName: "PK", KeyType: "HASH" },
+          { AttributeName: "SK", KeyType: "RANGE" },
+        ],
+        AttributeDefinitions: Match.arrayWith([
+          { AttributeName: "PK", AttributeType: "S" },
+          { AttributeName: "SK", AttributeType: "S" },
+        ]),
+      });
+    });
+
+    it("GSI1 が GSI1PK (HASH) / GSI1SK (RANGE) / KEYS_ONLY projection で定義されている", () => {
+      const { template } = createStack();
+      template.hasResourceProperties("AWS::DynamoDB::Table", {
+        GlobalSecondaryIndexes: Match.arrayWith([
+          Match.objectLike({
+            IndexName: "GSI1",
+            KeySchema: [
+              { AttributeName: "GSI1PK", KeyType: "HASH" },
+              { AttributeName: "GSI1SK", KeyType: "RANGE" },
+            ],
+            Projection: { ProjectionType: "KEYS_ONLY" },
+          }),
+        ]),
+      });
+    });
+
+    it("GSI2 が GSI2PK (HASH) / GSI2SK (RANGE) / KEYS_ONLY projection で定義されている", () => {
+      const { template } = createStack();
+      template.hasResourceProperties("AWS::DynamoDB::Table", {
+        GlobalSecondaryIndexes: Match.arrayWith([
+          Match.objectLike({
+            IndexName: "GSI2",
+            KeySchema: [
+              { AttributeName: "GSI2PK", KeyType: "HASH" },
+              { AttributeName: "GSI2SK", KeyType: "RANGE" },
+            ],
+            Projection: { ProjectionType: "KEYS_ONLY" },
+          }),
+        ]),
+      });
+    });
+
+    it("TTL 属性 (ttl) が有効化されている", () => {
+      const { template } = createStack();
+      template.hasResourceProperties("AWS::DynamoDB::Table", {
+        TimeToLiveSpecification: {
+          AttributeName: "ttl",
+          Enabled: true,
+        },
+      });
+    });
+
+    it("PAY_PER_REQUEST 課金で PITR が有効化されている", () => {
+      const { template } = createStack();
+      template.hasResourceProperties("AWS::DynamoDB::Table", {
+        BillingMode: "PAY_PER_REQUEST",
+        PointInTimeRecoverySpecification: {
+          PointInTimeRecoveryEnabled: true,
+        },
+        TimeToLiveSpecification: {
+          AttributeName: "ttl",
+          Enabled: true,
+        },
+      });
+    });
+
+    it("batchTable を公開プロパティとして持つ", () => {
+      const { stack } = createStack();
+      expect(stack.batchTable).toBeDefined();
+    });
+
+    it("DynamoDB テーブルが 2 つ存在する (controlTable + batchTable)", () => {
+      const { template } = createStack();
+      template.resourceCountIs("AWS::DynamoDB::Table", 2);
     });
   });
 
@@ -147,6 +294,11 @@ describe("ProcessingStack (legacy resources removed)", () => {
     it("ControlTableName を出力する", () => {
       const { template } = createStack();
       template.hasOutput("ControlTableName", { Value: Match.anyValue() });
+    });
+
+    it("BatchTableName を出力する", () => {
+      const { template } = createStack();
+      template.hasOutput("BatchTableName", { Value: Match.anyValue() });
     });
 
     it("旧 Output (MainQueueUrl / MainQueueArn / DeadLetterQueueArn / StatusTableName / ProcessorFunctionName) が存在しない", () => {

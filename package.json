@@ -10,8 +10,9 @@
     "test": "jest",
     "test:api": "pnpm --filter yomitoku-api test",
     "cdk": "cdk",
-    "lint": "biome check .",
+    "lint": "biome check . && bash scripts/check-legacy-refs.sh",
     "lint:fix": "biome check --write .",
+    "lint:legacy": "bash scripts/check-legacy-refs.sh",
     "format": "biome format --write ."
   },
   "devDependencies": {
