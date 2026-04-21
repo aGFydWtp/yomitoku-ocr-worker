@@ -109,7 +109,7 @@
   - _Requirements: 4.2, 4.5, 10.1_
   - _Boundary: BatchRunnerTask_
 
-- [ ] 3.2 (P) S3 入出力同期層を実装する
+- [x] 3.2 (P) S3 入出力同期層を実装する
   - `batches/{batchJobId}/input/` 配下を `/tmp/input/` にダウンロードする同期ルーチンを実装する
   - ローカル `output_dir` を `batches/{batchJobId}/{output,results,visualizations,logs}/` 配下に分類アップロードするルーチンを実装する
   - `HeadObject` を用いて DDB の FILE 期待集合と S3 実在集合を照合し、欠損があれば即 `FAILED` で終了する
@@ -118,7 +118,7 @@
   - _Boundary: BatchRunnerTask (s3_sync)_
   - _Depends: 3.1_
 
-- [ ] 3.3 `analyze_batch_async` 実行と設定注入を実装する
+- [x] 3.3 `analyze_batch_async` 実行と設定注入を実装する
   - `YomitokuClient` を `CircuitConfig(threshold, cooldown_time)` と `RequestConfig(read_timeout, connect_timeout, max_retries)` 付きでインスタンス化する
   - `analyze_batch_async(input_dir, output_dir, max_file_concurrency, max_page_concurrency, extra_formats)` を呼び出し、`process_log.jsonl` が `output_dir` 直下に生成されることを確認する
   - ページ単位可視化生成は `parse_pydantic_model(result)` → `DocumentResult.visualize(img, mode)` を layout/ocr 双方で呼び出し、失敗は FILE エラーへ付記しバッチ継続する

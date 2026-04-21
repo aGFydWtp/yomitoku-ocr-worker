@@ -16,6 +16,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 # -----------------------------------------------------------------------
 COPY settings.py .
 COPY s3_sync.py .
+COPY runner.py .
 COPY process_log_reader.py .
 COPY ddb_client.py .
 COPY main.py .
