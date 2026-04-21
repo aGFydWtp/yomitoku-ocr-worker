@@ -13,7 +13,7 @@ import { BatchStore } from "../../lib/batch-store";
 const TABLE = "BatchTable";
 const BUCKET = "test-bucket";
 
-describe("BatchStore", () => {
+describe("BatchStore (write-path)", () => {
   let store: BatchStore;
 
   beforeEach(() => {
@@ -35,7 +35,6 @@ describe("BatchStore", () => {
 
       expect(mockSend).toHaveBeenCalledOnce();
       const cmd: AnyRecord = mockSend.mock.calls[0][0];
-      // TransactWriteItems のコマンド種別確認
       expect(cmd.input.TransactItems).toHaveLength(3); // 1 META + 2 FILE
     });
 
@@ -153,84 +152,7 @@ describe("BatchStore", () => {
         PK: "BATCH#batch-001",
         SK: "FILE#batches/batch-001/input/a.pdf",
       });
-      // 条件付き更新であることを確認
       expect(cmd.input.ConditionExpression).toBeDefined();
-    });
-  });
-
-  // --- getBatchWithFiles ---
-  describe("getBatchWithFiles", () => {
-    it("PK=BATCH#id で META + FILE 全件を Query する", async () => {
-      mockSend.mockResolvedValue({
-        Items: [
-          {
-            PK: "BATCH#batch-001",
-            SK: "META",
-            entityType: "BATCH",
-            batchJobId: "batch-001",
-            status: "COMPLETED",
-            totals: { total: 1, succeeded: 1, failed: 0, inProgress: 0 },
-            basePath: "project",
-            createdAt: "2026-04-22T00:00:00Z",
-            startedAt: "2026-04-22T00:01:00Z",
-            updatedAt: "2026-04-22T00:10:00Z",
-            parentBatchJobId: null,
-          },
-          {
-            PK: "BATCH#batch-001",
-            SK: "FILE#batches/batch-001/input/a.pdf",
-            entityType: "FILE",
-            batchJobId: "batch-001",
-            fileKey: "batches/batch-001/input/a.pdf",
-            filename: "a.pdf",
-            status: "COMPLETED",
-            updatedAt: "2026-04-22T00:10:00Z",
-          },
-        ],
-      });
-
-      const result = await store.getBatchWithFiles("batch-001");
-
-      expect(result).not.toBeNull();
-      expect(result?.batchJobId).toBe("batch-001");
-      expect(result?.files).toHaveLength(1);
-      expect(result?.files[0].filename).toBe("a.pdf");
-
-      const cmd: AnyRecord = mockSend.mock.calls[0][0];
-      expect(cmd.input.KeyConditionExpression).toContain("#pk");
-      expect(cmd.input.ExpressionAttributeValues[":pk"]).toBe("BATCH#batch-001");
-    });
-
-    it("存在しないバッチは null を返す", async () => {
-      mockSend.mockResolvedValue({ Items: [] });
-
-      const result = await store.getBatchWithFiles("nonexistent");
-      expect(result).toBeNull();
-    });
-  });
-
-  // --- listFailedFiles ---
-  describe("listFailedFiles", () => {
-    it("失敗した FILE アイテムのみを返す", async () => {
-      mockSend.mockResolvedValue({
-        Items: [
-          {
-            PK: "BATCH#batch-001",
-            SK: "FILE#batches/batch-001/input/fail.pdf",
-            entityType: "FILE",
-            fileKey: "batches/batch-001/input/fail.pdf",
-            filename: "fail.pdf",
-            status: "FAILED",
-            errorMessage: "OCR error",
-            updatedAt: "2026-04-22T00:10:00Z",
-          },
-        ],
-      });
-
-      const result = await store.listFailedFiles("batch-001");
-      expect(result).toHaveLength(1);
-      expect(result[0].filename).toBe("fail.pdf");
-      expect(result[0].status).toBe("FAILED");
     });
   });
 });

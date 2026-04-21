@@ -2,12 +2,14 @@ import { swaggerUI } from "@hono/swagger-ui";
 import { OpenAPIHono } from "@hono/zod-openapi";
 import { handle } from "hono/aws-lambda";
 import { handleError } from "./lib/errors";
+import { batchesRoutes } from "./routes/batches";
 import { jobsRoutes } from "./routes/jobs";
 import { statusRoutes } from "./routes/status";
 import { upRoutes } from "./routes/up";
 
 const app = new OpenAPIHono();
 
+app.route("/batches", batchesRoutes);
 app.route("/jobs", jobsRoutes);
 app.route("/status", statusRoutes);
 app.route("/up", upRoutes);

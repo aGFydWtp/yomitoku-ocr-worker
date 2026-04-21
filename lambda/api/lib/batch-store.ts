@@ -1,62 +1,26 @@
 import {
-  QueryCommand,
   TransactWriteCommand,
   UpdateCommand,
 } from "@aws-sdk/lib-dynamodb";
 import type { BatchStatus } from "../schemas";
 import { MAX_FILES_PER_BATCH } from "../schemas";
 import { docClient } from "./dynamodb";
-import { ConflictError } from "./errors"; // HIGH-2: 共通クラスを使用
-import { sanitizeFilename } from "./sanitize"; // HIGH-1: filename サニタイズ
-import {
-  decodeBatchCursor, // HIGH-3: 検証済みデコーダーを使用
-  encodeBatchCursor,
-  validateBasePath, // HIGH-1: basePath 検証
-} from "./validate";
+import { ConflictError, ValidationError } from "./errors";
+import { sanitizeFilename } from "./sanitize";
+import { validateBasePath } from "./validate";
 
 // ---------------------------------------------------------------------------
-// 定数
+// 定数（batch-query.ts と共有）
 // ---------------------------------------------------------------------------
 
 /** PENDING バッチの TTL（秒）: 24 時間 */
-const BATCH_PENDING_TTL_SECONDS = 24 * 60 * 60; // MEDIUM-3
+export const BATCH_PENDING_TTL_SECONDS = 24 * 60 * 60;
 
-/** 1 バッチあたりのアイテム上限（META 1 件 + FILE 最大 N 件）*/
-const QUERY_LIMIT = MAX_FILES_PER_BATCH + 2;
-
-// ---------------------------------------------------------------------------
-// 入力型
-// ---------------------------------------------------------------------------
-
-export interface PutBatchWithFilesInput {
-  batchJobId: string;
-  basePath: string;
-  files: ReadonlyArray<{ filename: string }>;
-  bucket: string;
-  extraFormats?: ReadonlyArray<string>;
-  parentBatchJobId?: string | null;
-}
-
-export interface TransitionBatchStatusInput {
-  batchJobId: string;
-  newStatus: BatchStatus;
-  expectedCurrent: BatchStatus;
-  /** PROCESSING 遷移時のみ必須 */
-  startedAt?: string;
-}
-
-export interface UpdateFileResultInput {
-  batchJobId: string;
-  fileKey: string;
-  status: "COMPLETED" | "FAILED";
-  dpi?: number;
-  processingTimeMs?: number;
-  resultKey?: string;
-  errorMessage?: string;
-}
+/** 1 バッチあたりのクエリ上限（META 1 件 + FILE 最大 N 件）*/
+export const QUERY_LIMIT = MAX_FILES_PER_BATCH + 2;
 
 // ---------------------------------------------------------------------------
-// 出力型
+// 共有型（batch-query.ts から再 export して使用）
 // ---------------------------------------------------------------------------
 
 export interface FileItem {
@@ -91,20 +55,51 @@ export interface BatchWithFiles extends BatchMeta {
 }
 
 // ---------------------------------------------------------------------------
+// 書き込み系入力型
+// ---------------------------------------------------------------------------
+
+export interface PutBatchWithFilesInput {
+  batchJobId: string;
+  basePath: string;
+  files: ReadonlyArray<{ filename: string }>;
+  bucket: string;
+  extraFormats?: ReadonlyArray<string>;
+  parentBatchJobId?: string | null;
+}
+
+export interface TransitionBatchStatusInput {
+  batchJobId: string;
+  newStatus: BatchStatus;
+  expectedCurrent: BatchStatus;
+  /** PROCESSING 遷移時のみ必須 */
+  startedAt?: string;
+}
+
+export interface UpdateFileResultInput {
+  batchJobId: string;
+  fileKey: string;
+  status: "COMPLETED" | "FAILED";
+  dpi?: number;
+  processingTimeMs?: number;
+  resultKey?: string;
+  errorMessage?: string;
+}
+
+// ---------------------------------------------------------------------------
 // プライベートヘルパー
 // ---------------------------------------------------------------------------
 
-function gsi1pk(status: BatchStatus, now: Date): string {
+export function gsi1pk(status: BatchStatus, now: Date): string {
   const yyyymm = `${now.getUTCFullYear()}${String(now.getUTCMonth() + 1).padStart(2, "0")}`;
   return `STATUS#${status}#${yyyymm}`;
 }
 
-function buildFileKey(batchJobId: string, safeFilename: string): string {
+export function buildFileKey(batchJobId: string, safeFilename: string): string {
   return `batches/${batchJobId}/input/${safeFilename}`;
 }
 
 // ---------------------------------------------------------------------------
-// BatchStore クラス
+// BatchStore — 書き込み専用クラス
 // ---------------------------------------------------------------------------
 
 export class BatchStore {
@@ -122,8 +117,12 @@ export class BatchStore {
       parentBatchJobId = null,
     } = input;
 
-    // HIGH-1: basePath 検証（パストラバーサル・無効文字を弾く）
-    const safeBasePath = validateBasePath(basePath) ?? basePath;
+    // basePath 検証（パストラバーサル・無効文字を弾く）
+    // validateBasePath は null/undefined のみ undefined を返す。string 入力では trimmed string か例外
+    const safeBasePath = validateBasePath(basePath);
+    if (safeBasePath === undefined) {
+      throw new ValidationError("basePath must not be empty");
+    }
 
     const now = new Date();
     const iso = now.toISOString();
@@ -156,7 +155,6 @@ export class BatchStore {
     }
 
     const fileItems = files.map((f) => {
-      // HIGH-1: filename サニタイズ（パストラバーサル除去）
       const safeFilename = sanitizeFilename(f.filename);
       const fk = buildFileKey(batchJobId, safeFilename);
       return {
@@ -211,7 +209,6 @@ export class BatchStore {
       eavMap[":startedAt"] = startedAt;
     }
 
-    // PENDING 以外では TTL を削除
     if (newStatus !== "PENDING") {
       updateExpr += " REMOVE #ttl";
     }
@@ -302,159 +299,5 @@ export class BatchStore {
         ExpressionAttributeValues: eav,
       }),
     );
-  }
-
-  // -------------------------------------------------------------------------
-  // getBatchWithFiles — Query(PK=BATCH#id) で META + FILE を取得
-  // -------------------------------------------------------------------------
-  async getBatchWithFiles(batchJobId: string): Promise<BatchWithFiles | null> {
-    const res = await docClient.send(
-      new QueryCommand({
-        TableName: this.tableName,
-        KeyConditionExpression: "#pk = :pk",
-        ExpressionAttributeNames: { "#pk": "PK" },
-        ExpressionAttributeValues: { ":pk": `BATCH#${batchJobId}` },
-        Limit: QUERY_LIMIT, // MEDIUM-1: 無制限スキャンを防止
-      }),
-    );
-
-    const items = res.Items ?? [];
-    const meta = items.find(
-      (i) => i.entityType === "BATCH",
-    ) as Record<string, unknown> | undefined;
-
-    if (!meta) return null;
-
-    const files: FileItem[] = items
-      .filter((i) => i.entityType === "FILE")
-      .map((i) => ({
-        fileKey: i.fileKey as string,
-        filename: i.filename as string,
-        status: i.status as FileItem["status"],
-        dpi: i.dpi as number | undefined,
-        processingTimeMs: i.processingTimeMs as number | undefined,
-        resultKey: i.resultKey as string | undefined,
-        errorMessage: i.errorMessage as string | undefined,
-        updatedAt: i.updatedAt as string,
-      }));
-
-    return {
-      batchJobId: meta.batchJobId as string,
-      status: meta.status as BatchStatus,
-      totals: meta.totals as BatchMeta["totals"],
-      basePath: meta.basePath as string,
-      createdAt: meta.createdAt as string,
-      startedAt: (meta.startedAt as string | null) ?? null,
-      updatedAt: meta.updatedAt as string,
-      parentBatchJobId: (meta.parentBatchJobId as string | null) ?? null,
-      files,
-    };
-  }
-
-  // -------------------------------------------------------------------------
-  // listFailedFiles — FILE アイテムのうち status=FAILED を返す
-  // -------------------------------------------------------------------------
-  async listFailedFiles(batchJobId: string): Promise<ReadonlyArray<FileItem>> {
-    const res = await docClient.send(
-      new QueryCommand({
-        TableName: this.tableName,
-        KeyConditionExpression: "#pk = :pk AND begins_with(#sk, :prefix)",
-        FilterExpression: "#status = :failed",
-        ExpressionAttributeNames: {
-          "#pk": "PK",
-          "#sk": "SK",
-          "#status": "status",
-        },
-        ExpressionAttributeValues: {
-          ":pk": `BATCH#${batchJobId}`,
-          ":prefix": "FILE#",
-          ":failed": "FAILED",
-        },
-        Limit: QUERY_LIMIT, // MEDIUM-1: FilterExpression はサーバー側適用後の数ではなく読取数に作用する点に注意
-      }),
-    );
-
-    return (res.Items ?? []).map((i) => ({
-      fileKey: i.fileKey as string,
-      filename: i.filename as string,
-      status: "FAILED" as const,
-      errorMessage: i.errorMessage as string | undefined,
-      updatedAt: i.updatedAt as string,
-    }));
-  }
-
-  // -------------------------------------------------------------------------
-  // listBatchesByStatus — GSI1 を使ったページング
-  // -------------------------------------------------------------------------
-  async listBatchesByStatus(
-    status: BatchStatus,
-    month: string,
-    cursor?: string,
-  ): Promise<{ items: BatchMeta[]; cursor: string | null }> {
-    const gsi1pkVal = `STATUS#${status}#${month}`;
-
-    // HIGH-3: 検証済みデコーダーを使用（base64url + キー許可リスト）
-    const exclusiveStartKey = decodeBatchCursor(cursor);
-
-    const res = await docClient.send(
-      new QueryCommand({
-        TableName: this.tableName,
-        IndexName: "GSI1",
-        KeyConditionExpression: "#gsi1pk = :gsi1pk",
-        ExpressionAttributeNames: { "#gsi1pk": "GSI1PK" },
-        ExpressionAttributeValues: { ":gsi1pk": gsi1pkVal },
-        Limit: 50,
-        ...(exclusiveStartKey ? { ExclusiveStartKey: exclusiveStartKey } : {}),
-      }),
-    );
-
-    const items: BatchMeta[] = (res.Items ?? []).map((i) => ({
-      batchJobId: i.batchJobId as string,
-      status: i.status as BatchStatus,
-      totals: i.totals as BatchMeta["totals"],
-      basePath: i.basePath as string,
-      createdAt: i.createdAt as string,
-      startedAt: (i.startedAt as string | null) ?? null,
-      updatedAt: i.updatedAt as string,
-      parentBatchJobId: (i.parentBatchJobId as string | null) ?? null,
-    }));
-
-    // HIGH-3: base64url エンコードで返す
-    const nextCursor = res.LastEvaluatedKey
-      ? encodeBatchCursor(res.LastEvaluatedKey as Record<string, unknown>)
-      : null;
-
-    return { items, cursor: nextCursor };
-  }
-
-  // -------------------------------------------------------------------------
-  // listChildBatches — GSI2 を使った親子参照
-  // -------------------------------------------------------------------------
-  async listChildBatches(
-    parentBatchJobId: string,
-  ): Promise<ReadonlyArray<BatchMeta>> {
-    const res = await docClient.send(
-      new QueryCommand({
-        TableName: this.tableName,
-        IndexName: "GSI2",
-        KeyConditionExpression: "#gsi2pk = :gsi2pk",
-        ExpressionAttributeNames: { "#gsi2pk": "GSI2PK" },
-        ExpressionAttributeValues: {
-          ":gsi2pk": `PARENT#${parentBatchJobId}`,
-        },
-        Limit: 50, // MEDIUM-1: 再解析回数は有限と想定（最大 50 世代）
-      }),
-    );
-
-    return (res.Items ?? []).map((i) => ({
-      batchJobId: i.batchJobId as string,
-      status: i.status as BatchStatus,
-      totals: i.totals as BatchMeta["totals"],
-      basePath: i.basePath as string,
-      createdAt: i.createdAt as string,
-      startedAt: (i.startedAt as string | null) ?? null,
-      updatedAt: i.updatedAt as string,
-      parentBatchJobId: parentBatchJobId,
-    }));
   }
 }

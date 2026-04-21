@@ -80,7 +80,12 @@ export const CreateBatchBodySchema = z
               }),
             )
             .openapi({ example: "document.pdf" }),
-          contentType: z.string().optional(),
+          contentType: z
+            .enum(["application/pdf", "application/octet-stream"])
+            .optional()
+            .openapi({
+              description: "Content-Type（省略時は application/pdf）",
+            }),
         }),
       )
       .min(1, "files must not be empty")

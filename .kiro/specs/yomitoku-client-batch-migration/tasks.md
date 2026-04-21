@@ -54,7 +54,7 @@
   - _Requirements: 2.1, 2.5, 5.4, 6.5_
   - _Boundary: BatchPresign_
 
-- [ ] 2.4 `POST /batches` ルートを実装する
+- [x] 2.4 `POST /batches` ルートを実装する
   - CloudFront `x-origin-verify` ヘッダ検証を既存ミドルウェアから継承する
   - 入力検証（拡張子・ファイル数・合計サイズ）を Zod で実施する
   - エンドポイント状態が `IN_SERVICE` でない場合は `503` を返しつつ `POST /up` 相当のキックを発火する
