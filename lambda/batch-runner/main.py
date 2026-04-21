@@ -30,19 +30,27 @@ def dry_run() -> None:
 
     ローカル検証や CI での smoke-test として使用する。
     例外が送出されなければ設定ロード成功とみなす。
+
+    INFO には識別子 (batch_job_id) のみを出力し、
+    インフラ識別子 (bucket/table 名など) は DEBUG レベルでのみ出力する。
     """
     settings = BatchRunnerSettings.from_env()
     logger.info(
         "dry_run: settings loaded successfully",
-        extra={
-            "batch_job_id": settings.batch_job_id,
-            "bucket_name": settings.bucket_name,
-            "batch_table_name": settings.batch_table_name,
-            "max_file_concurrency": settings.max_file_concurrency,
-            "max_page_concurrency": settings.max_page_concurrency,
-            "extra_formats": settings.extra_formats,
-        },
+        extra={"batch_job_id": settings.batch_job_id},
     )
+    if logger.isEnabledFor(logging.DEBUG):
+        logger.debug(
+            "dry_run settings detail",
+            extra={
+                "batch_job_id": settings.batch_job_id,
+                "bucket_name": settings.bucket_name,
+                "batch_table_name": settings.batch_table_name,
+                "max_file_concurrency": settings.max_file_concurrency,
+                "max_page_concurrency": settings.max_page_concurrency,
+                "extra_formats": settings.extra_formats,
+            },
+        )
 
 
 def run(settings: BatchRunnerSettings) -> None:

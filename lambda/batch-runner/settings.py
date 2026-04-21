@@ -86,11 +86,25 @@ class BatchRunnerSettings:
 
         def _int(key: str, default: int) -> int:
             val = os.environ.get(key)
-            return int(val) if val else default
+            if not val:
+                return default
+            try:
+                return int(val)
+            except ValueError as exc:
+                raise ValueError(
+                    f"Environment variable {key}={val!r} is not a valid integer"
+                ) from exc
 
         def _float(key: str, default: float) -> float:
             val = os.environ.get(key)
-            return float(val) if val else default
+            if not val:
+                return default
+            try:
+                return float(val)
+            except ValueError as exc:
+                raise ValueError(
+                    f"Environment variable {key}={val!r} is not a valid float"
+                ) from exc
 
         def _list(key: str) -> list[str]:
             val = os.environ.get(key, "").strip()

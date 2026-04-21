@@ -146,6 +146,32 @@ class TestBatchRunnerSettings:
         assert s.max_retries == 5
         assert s.batch_max_duration_sec == 3600
 
+    def test_invalid_int_raises_descriptive_value_error(self):
+        """無効な整数環境変数が識別可能な ValueError を送出する。"""
+        os.environ["MAX_FILE_CONCURRENCY"] = "abc"
+        import sys
+        sys.path.insert(0, str(pytest.importorskip("pathlib").Path(__file__).parent.parent))
+        import importlib
+        sys.modules.pop("settings", None)
+        import settings
+        importlib.reload(settings)
+
+        with pytest.raises(ValueError, match="MAX_FILE_CONCURRENCY"):
+            settings.BatchRunnerSettings.from_env()
+
+    def test_invalid_float_raises_descriptive_value_error(self):
+        """無効な浮動小数環境変数が識別可能な ValueError を送出する。"""
+        os.environ["READ_TIMEOUT"] = "not-a-number"
+        import sys
+        sys.path.insert(0, str(pytest.importorskip("pathlib").Path(__file__).parent.parent))
+        import importlib
+        sys.modules.pop("settings", None)
+        import settings
+        importlib.reload(settings)
+
+        with pytest.raises(ValueError, match="READ_TIMEOUT"):
+            settings.BatchRunnerSettings.from_env()
+
     def test_is_dataclass(self):
         """BatchRunnerSettings が dataclass である。"""
         import sys
