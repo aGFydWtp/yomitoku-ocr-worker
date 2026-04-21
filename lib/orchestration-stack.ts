@@ -41,6 +41,10 @@ export interface OrchestrationStackProps extends StackProps {
   controlTable: Table;
   /** 将来の batch 用 EventBridge wiring 向けに bucket への参照を保持する。 */
   bucket: IBucket;
+  /** SageMaker エンドポイント名 (呼び出し側で context から解決して渡す)。 */
+  endpointName: string;
+  /** SageMaker エンドポイント設定名 (呼び出し側で context から解決して渡す)。 */
+  endpointConfigName: string;
 }
 
 export class OrchestrationStack extends Stack {
@@ -50,23 +54,16 @@ export class OrchestrationStack extends Stack {
   constructor(scope: Construct, id: string, props: OrchestrationStackProps) {
     super(scope, id, props);
 
-    const { controlTable } = props;
+    const { controlTable, endpointName, endpointConfigName } = props;
 
-    const endpointName = this.node.tryGetContext("endpointName") as
-      | string
-      | undefined;
     if (!endpointName) {
       throw new Error(
-        "endpointName must be set in cdk.json context or via --context",
+        "endpointName must be provided via OrchestrationStackProps",
       );
     }
-
-    const endpointConfigName = this.node.tryGetContext("endpointConfigName") as
-      | string
-      | undefined;
     if (!endpointConfigName) {
       throw new Error(
-        "endpointConfigName must be set in cdk.json context or via --context",
+        "endpointConfigName must be provided via OrchestrationStackProps",
       );
     }
 

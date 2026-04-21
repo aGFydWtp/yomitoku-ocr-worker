@@ -14,12 +14,7 @@ function createStack(): {
   stack: OrchestrationStack;
   template: Template;
 } {
-  const app = new App({
-    context: {
-      endpointName: TEST_ENDPOINT_NAME,
-      endpointConfigName: TEST_ENDPOINT_CONFIG_NAME,
-    },
-  });
+  const app = new App();
 
   // 依存リソースのダミースタック
   const depStack = new Stack(app, "DepStack", {
@@ -35,6 +30,8 @@ function createStack(): {
     env: { region: TEST_REGION, account: TEST_ACCOUNT },
     controlTable,
     bucket,
+    endpointName: TEST_ENDPOINT_NAME,
+    endpointConfigName: TEST_ENDPOINT_CONFIG_NAME,
   });
   const template = Template.fromStack(stack);
   return { app, stack, template };

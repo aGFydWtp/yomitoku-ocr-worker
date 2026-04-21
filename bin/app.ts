@@ -27,6 +27,25 @@ if (account && !AWS_ACCOUNT_PATTERN.test(account)) {
   throw new Error(`Invalid AWS account ID format: "${account}"`);
 }
 
+// SageMaker エンドポイント関連の context は orchestration / batch 両スタックで
+// 使用するため、app レベルで 1 度だけ解決し、各スタックに typed prop で渡す。
+const endpointName = app.node.tryGetContext("endpointName") as
+  | string
+  | undefined;
+if (!endpointName) {
+  throw new Error(
+    "endpointName must be set in cdk.json context or via --context",
+  );
+}
+const endpointConfigName = app.node.tryGetContext("endpointConfigName") as
+  | string
+  | undefined;
+if (!endpointConfigName) {
+  throw new Error(
+    "endpointConfigName must be set in cdk.json context or via --context",
+  );
+}
+
 new SagemakerStack(app, "SagemakerStack", {
   env: { region, account },
 });
@@ -39,6 +58,8 @@ const orchestrationStack = new OrchestrationStack(app, "OrchestrationStack", {
   env: { region, account },
   controlTable: processingStack.controlTable,
   bucket: processingStack.bucket,
+  endpointName,
+  endpointConfigName,
 });
 
 new BatchExecutionStack(app, "BatchExecutionStack", {
@@ -46,6 +67,7 @@ new BatchExecutionStack(app, "BatchExecutionStack", {
   batchTable: processingStack.batchTable,
   controlTable: processingStack.controlTable,
   bucket: processingStack.bucket,
+  endpointName,
 });
 
 new ApiStack(app, "ApiStack", {

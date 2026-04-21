@@ -14,11 +14,7 @@ function createStack(): {
   stack: BatchExecutionStack;
   template: Template;
 } {
-  const app = new App({
-    context: {
-      endpointName: TEST_ENDPOINT_NAME,
-    },
-  });
+  const app = new App();
 
   const depStack = new Stack(app, "DepStack", {
     env: { region: TEST_REGION, account: TEST_ACCOUNT },
@@ -39,6 +35,7 @@ function createStack(): {
     batchTable,
     controlTable,
     bucket,
+    endpointName: TEST_ENDPOINT_NAME,
     // テスト用にプレースホルダイメージを注入（Docker ビルドを避ける）
     containerImage: ContainerImage.fromRegistry("placeholder:latest"),
   });
@@ -143,23 +140,53 @@ describe("BatchExecutionStack", () => {
       );
     });
 
-    it("Task Role が S3 batches/* prefix への put/get Action を持つ", () => {
+    it("Task Role が S3 batches/* prefix への Get/Put/Delete/AbortMultipartUpload を持つ", () => {
       const { template } = createStack();
-      // Match.arrayWith は subsequence セマンティクスなので CDK 生成順
-      // (AbortMultipartUpload → DeleteObject → GetObject → PutObject) に合わせる
+      // Match.arrayWith は subsequence セマンティクスなので、CDK が生成する
+      // 宣言順 (GetObject → PutObject → DeleteObject → AbortMultipartUpload) に合わせる。
       template.hasResourceProperties(
         "AWS::IAM::Policy",
         Match.objectLike({
           PolicyDocument: Match.objectLike({
             Statement: Match.arrayWith([
               Match.objectLike({
-                Action: Match.arrayWith(["s3:GetObject", "s3:PutObject"]),
+                Action: Match.arrayWith([
+                  "s3:GetObject",
+                  "s3:PutObject",
+                  "s3:DeleteObject",
+                  "s3:AbortMultipartUpload",
+                ]),
                 Effect: "Allow",
+                Sid: "BatchS3Access",
                 // batches/* prefix 付きリソース (Fn::Join 生成)
                 Resource: Match.objectLike({
                   "Fn::Join": Match.arrayWith([
                     Match.arrayWith([Match.stringLikeRegexp("/batches/\\*")]),
                   ]),
+                }),
+              }),
+            ]),
+          }),
+        }),
+      );
+    });
+
+    it("Task Role が S3 ListBucket を batches/* prefix 条件付きで持つ", () => {
+      const { template } = createStack();
+      // ListBucket はバケット全体 ARN が対象のため、prefix 条件による絞り込みが必須。
+      template.hasResourceProperties(
+        "AWS::IAM::Policy",
+        Match.objectLike({
+          PolicyDocument: Match.objectLike({
+            Statement: Match.arrayWith([
+              Match.objectLike({
+                Action: "s3:ListBucket",
+                Effect: "Allow",
+                Sid: "BatchS3List",
+                Condition: Match.objectLike({
+                  StringLike: Match.objectLike({
+                    "s3:prefix": ["batches/*"],
+                  }),
                 }),
               }),
             ]),
@@ -199,8 +226,8 @@ describe("BatchExecutionStack", () => {
     });
   });
 
-  describe("Context validation", () => {
-    it("endpointName が未設定の場合エラーになる", () => {
+  describe("Props validation", () => {
+    it("endpointName が空文字 / 未指定の場合エラーになる", () => {
       const app = new App();
       const depStack = new Stack(app, "DepStack", {
         env: { region: TEST_REGION, account: TEST_ACCOUNT },
@@ -221,6 +248,7 @@ describe("BatchExecutionStack", () => {
           batchTable,
           controlTable,
           bucket,
+          endpointName: "",
           containerImage: ContainerImage.fromRegistry("placeholder:latest"),
         });
       }).toThrow(/endpointName/);

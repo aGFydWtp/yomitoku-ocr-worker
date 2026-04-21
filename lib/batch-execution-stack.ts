@@ -39,6 +39,11 @@ export interface BatchExecutionStackProps extends StackProps {
   controlTable: ITable;
   bucket: IBucket;
   /**
+   * SageMaker エンドポイント名。呼び出し側 (bin/app.ts) で context から
+   * 明示的に読み出して渡すことで、cdk.json への暗黙結合を避ける。
+   */
+  endpointName: string;
+  /**
    * テスト時の Docker ビルド回避用にコンテナイメージを注入可能にする。
    * 本番 (bin/app.ts) では省略し、Dockerfile を `ContainerImage.fromAsset` でビルドする。
    */
@@ -53,14 +58,12 @@ export class BatchExecutionStack extends Stack {
   constructor(scope: Construct, id: string, props: BatchExecutionStackProps) {
     super(scope, id, props);
 
-    const { batchTable, controlTable, bucket, containerImage } = props;
+    const { batchTable, controlTable, bucket, endpointName, containerImage } =
+      props;
 
-    const endpointName = this.node.tryGetContext("endpointName") as
-      | string
-      | undefined;
     if (!endpointName) {
       throw new Error(
-        "endpointName must be set in cdk.json context or via --context",
+        "endpointName must be provided via BatchExecutionStackProps",
       );
     }
 
@@ -81,9 +84,10 @@ export class BatchExecutionStack extends Stack {
     this.cluster = new Cluster(this, "BatchCluster", { vpc });
 
     // --- CloudWatch Logs ---
+    // バッチ実行ログは監査 / トラブルシュート用途で保持するため `cdk destroy` でも残す。
     const logGroup = new LogGroup(this, "BatchLogGroup", {
       retention: RetentionDays.ONE_MONTH,
-      removalPolicy: RemovalPolicy.DESTROY,
+      removalPolicy: RemovalPolicy.RETAIN,
     });
 
     // --- Fargate Task Definition (4 vCPU / 16 GB) ---
