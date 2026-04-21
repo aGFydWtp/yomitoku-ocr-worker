@@ -170,7 +170,7 @@
 
 ## 5. Core: 可観測性とリテンション
 
-- [ ] 5.1 バッチ向け CloudWatch メトリクスとアラームを整備する
+- [x] 5.1 バッチ向け CloudWatch メトリクスとアラームを整備する
   - `MonitoringStack` を更新し `YomiToku/Batch` namespace の `BatchInFlight`・`FilesSucceededTotal`・`FilesFailedTotal`・`PagesProcessedTotal`・`CircuitBreakerOpened`・`BatchDurationSeconds` を発行する
   - `BatchRunnerTask` から EMF 形式もしくは `PutMetricData` で上記メトリクスを出力する
   - `FilesFailedTotal > threshold` と `BatchDurationSeconds > BATCH_MAX_DURATION_SEC` のアラームを SNS Topic に配線する

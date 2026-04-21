@@ -18,7 +18,7 @@ function createStack(): {
   return { app, stack, template };
 }
 
-describe("MonitoringStack (legacy alarms removed)", () => {
+describe("MonitoringStack (batch observability, Task 5.1)", () => {
   // --- SNS トピック ---
   describe("SNS Topic", () => {
     it("SNS トピックが 1 つ存在する", () => {
@@ -32,11 +32,44 @@ describe("MonitoringStack (legacy alarms removed)", () => {
     });
   });
 
-  // --- 旧アラームが存在しないこと（batch 向けは task 5.1 で再追加） ---
-  describe("Legacy alarms removed", () => {
-    it("CloudWatch Alarm が存在しない", () => {
+  // --- バッチ向け CloudWatch アラーム (Task 5.1) ---
+  describe("Batch CloudWatch Alarms", () => {
+    it("FilesFailedTotal と BatchDurationSeconds の 2 アラームを持つ", () => {
       const { template } = createStack();
-      template.resourceCountIs("AWS::CloudWatch::Alarm", 0);
+      template.resourceCountIs("AWS::CloudWatch::Alarm", 2);
+    });
+
+    it("FilesFailedTotal アラームが YomiToku/Batch namespace で定義されている", () => {
+      const { template } = createStack();
+      template.hasResourceProperties("AWS::CloudWatch::Alarm", {
+        Namespace: "YomiToku/Batch",
+        MetricName: "FilesFailedTotal",
+        Statistic: "Sum",
+        ComparisonOperator: "GreaterThanOrEqualToThreshold",
+      });
+    });
+
+    it("BatchDurationSeconds アラームが BATCH_MAX_DURATION_SEC(=7200) を閾値とする", () => {
+      const { template } = createStack();
+      template.hasResourceProperties("AWS::CloudWatch::Alarm", {
+        Namespace: "YomiToku/Batch",
+        MetricName: "BatchDurationSeconds",
+        Threshold: 7200,
+        ComparisonOperator: "GreaterThanThreshold",
+      });
+    });
+
+    it("両アラームが SNS Topic にアクションを配線している", () => {
+      const { template } = createStack();
+      const alarms = template.findResources("AWS::CloudWatch::Alarm");
+      const values = Object.values(alarms);
+      expect(values.length).toBe(2);
+      for (const alarm of values) {
+        const actions = (alarm as { Properties: { AlarmActions?: unknown[] } })
+          .Properties.AlarmActions;
+        expect(Array.isArray(actions)).toBe(true);
+        expect((actions ?? []).length).toBeGreaterThanOrEqual(1);
+      }
     });
   });
 
@@ -45,6 +78,19 @@ describe("MonitoringStack (legacy alarms removed)", () => {
     it("AlarmTopicArn を出力する", () => {
       const { template } = createStack();
       template.hasOutput("AlarmTopicArn", { Value: Match.anyValue() });
+    });
+  });
+
+  // --- 旧メトリクス/アラームが混在しないこと ---
+  describe("Legacy metrics absent", () => {
+    it("SQS / ApproximateAgeOfOldestMessage / QueueDepth などの旧メトリクス名を参照していない", () => {
+      const { template } = createStack();
+      const alarms = template.findResources("AWS::CloudWatch::Alarm");
+      const serialized = JSON.stringify(alarms);
+      expect(serialized).not.toContain("ApproximateAgeOfOldestMessage");
+      expect(serialized).not.toContain("ApproximateNumberOfMessagesVisible");
+      expect(serialized).not.toContain("AWS/SQS");
+      expect(serialized).not.toContain("AWS/Lambda");
     });
   });
 });
