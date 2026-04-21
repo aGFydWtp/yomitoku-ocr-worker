@@ -1,6 +1,7 @@
 import {
   DeleteObjectCommand,
   GetObjectCommand,
+  HeadObjectCommand,
   PutObjectCommand,
   S3Client,
 } from "@aws-sdk/client-s3";
@@ -41,4 +42,19 @@ export async function deleteObject(bucket: string, key: string): Promise<void> {
       Key: key,
     }),
   );
+}
+
+/**
+ * S3 オブジェクトの存在確認。存在すれば true、存在しなければ false を返す。
+ */
+export async function headObject(
+  bucket: string,
+  key: string,
+): Promise<boolean> {
+  try {
+    await s3Client.send(new HeadObjectCommand({ Bucket: bucket, Key: key }));
+    return true;
+  } catch {
+    return false;
+  }
 }

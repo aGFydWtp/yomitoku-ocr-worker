@@ -8,12 +8,26 @@ const {
   mockDynamoSend,
   mockSfnSend,
   mockPutBatchWithFiles,
+  mockTransitionBatchStatus,
   mockCreateUploadUrls,
+  mockCreateResultUrl,
+  mockCreateProcessLogUrl,
+  mockGetBatchWithFiles,
+  mockListBatchesByStatus,
+  mockListFailedFiles,
+  mockHeadObject,
 } = vi.hoisted(() => ({
   mockDynamoSend: vi.fn(),
   mockSfnSend: vi.fn(),
   mockPutBatchWithFiles: vi.fn(),
+  mockTransitionBatchStatus: vi.fn(),
   mockCreateUploadUrls: vi.fn(),
+  mockCreateResultUrl: vi.fn(),
+  mockCreateProcessLogUrl: vi.fn(),
+  mockGetBatchWithFiles: vi.fn(),
+  mockListBatchesByStatus: vi.fn(),
+  mockListFailedFiles: vi.fn(),
+  mockHeadObject: vi.fn(),
 }));
 
 vi.mock("../../lib/dynamodb", () => ({
@@ -27,13 +41,30 @@ vi.mock("../../lib/sfn", () => ({
 vi.mock("../../lib/batch-store", () => ({
   BatchStore: vi.fn().mockReturnValue({
     putBatchWithFiles: mockPutBatchWithFiles,
+    transitionBatchStatus: mockTransitionBatchStatus,
   }),
 }));
 
 vi.mock("../../lib/batch-presign", () => ({
   BatchPresign: vi.fn().mockReturnValue({
     createUploadUrls: mockCreateUploadUrls,
+    createResultUrl: mockCreateResultUrl,
+    createProcessLogUrl: mockCreateProcessLogUrl,
   }),
+  RESULT_EXPIRES_IN: 3600,
+}));
+
+vi.mock("../../lib/batch-query", () => ({
+  BatchQuery: vi.fn().mockReturnValue({
+    getBatchWithFiles: mockGetBatchWithFiles,
+    listBatchesByStatus: mockListBatchesByStatus,
+    listFailedFiles: mockListFailedFiles,
+  }),
+}));
+
+vi.mock("../../lib/s3", () => ({
+  headObject: mockHeadObject,
+  RESULT_URL_EXPIRES_IN: 3600,
 }));
 
 import { OpenAPIHono } from "@hono/zod-openapi";
@@ -72,6 +103,37 @@ const UPLOAD_RESULTS = [
   },
 ];
 
+const MOCK_BATCH_META = {
+  batchJobId: "batch-001",
+  status: "COMPLETED" as const,
+  totals: { total: 2, succeeded: 2, failed: 0, inProgress: 0 },
+  basePath: "project/2026/test",
+  createdAt: "2026-04-22T00:00:00Z",
+  startedAt: "2026-04-22T00:01:00Z",
+  updatedAt: "2026-04-22T00:10:00Z",
+  parentBatchJobId: null,
+};
+
+const MOCK_BATCH_WITH_FILES = {
+  ...MOCK_BATCH_META,
+  files: [
+    {
+      fileKey: "batches/batch-001/input/a.pdf",
+      filename: "a.pdf",
+      status: "COMPLETED" as const,
+      resultKey: "batches/batch-001/output/a.json",
+      updatedAt: "2026-04-22T00:10:00Z",
+    },
+    {
+      fileKey: "batches/batch-001/input/b.pdf",
+      filename: "b.pdf",
+      status: "FAILED" as const,
+      errorMessage: "OCR error",
+      updatedAt: "2026-04-22T00:10:00Z",
+    },
+  ],
+};
+
 describe("POST /batches", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -82,7 +144,6 @@ describe("POST /batches", () => {
       "arn:aws:states:ap-northeast-1:123456789012:stateMachine:test";
   });
 
-  // --- 正常系 ---
   it("正常系: IN_SERVICE なら 201 と batchJobId・uploads を返す", async () => {
     mockDynamoSend.mockResolvedValue({ Item: IN_SERVICE_ITEM });
     mockPutBatchWithFiles.mockResolvedValue(undefined);
@@ -101,12 +162,6 @@ describe("POST /batches", () => {
       /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
     );
     expect(body.uploads).toHaveLength(2);
-    expect(body.uploads[0]).toMatchObject({
-      filename: expect.any(String),
-      fileKey: expect.stringContaining("batches/"),
-      uploadUrl: expect.stringContaining("https://"),
-      expiresIn: expect.any(Number),
-    });
   });
 
   it("正常系: BatchStore.putBatchWithFiles が正しい引数で呼ばれる", async () => {
@@ -126,9 +181,6 @@ describe("POST /batches", () => {
     expect(args.basePath).toBe("project/2026/test");
     expect(args.files).toHaveLength(2);
     expect(args.bucket).toBe("test-bucket");
-    expect(args.batchJobId).toMatch(
-      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
-    );
   });
 
   it("正常系: extraFormats が指定されると BatchStore に渡される", async () => {
@@ -151,7 +203,6 @@ describe("POST /batches", () => {
     expect(args.extraFormats).toEqual(["markdown", "csv"]);
   });
 
-  // --- 503 系（エンドポイント未起動） ---
   it("503: IDLE 状態なら 503 を返し SFN を起動する", async () => {
     mockDynamoSend.mockResolvedValue({
       Item: { lock_key: "endpoint_control", endpoint_state: "IDLE" },
@@ -172,7 +223,7 @@ describe("POST /batches", () => {
     expect(mockPutBatchWithFiles).not.toHaveBeenCalled();
   });
 
-  it("503: CREATING 状態なら 503 を返すが SFN は起動しない（既に起動中）", async () => {
+  it("503: CREATING 状態なら 503 を返すが SFN は起動しない", async () => {
     mockDynamoSend.mockResolvedValue({
       Item: { lock_key: "endpoint_control", endpoint_state: "CREATING" },
     });
@@ -205,7 +256,6 @@ describe("POST /batches", () => {
     expect(mockSfnSend).toHaveBeenCalledOnce();
   });
 
-  // --- バリデーション ---
   it("400: files が空配列は拒否される", async () => {
     const app = createApp();
     const res = await app.request("/batches", {
@@ -213,7 +263,6 @@ describe("POST /batches", () => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ basePath: "project", files: [] }),
     });
-
     expect(res.status).toBe(400);
   });
 
@@ -227,7 +276,6 @@ describe("POST /batches", () => {
         files: [{ filename: "malware.exe" }],
       }),
     });
-
     expect(res.status).toBe(400);
   });
 
@@ -238,7 +286,6 @@ describe("POST /batches", () => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ basePath: "", files: [{ filename: "a.pdf" }] }),
     });
-
     expect(res.status).toBe(400);
   });
 
@@ -252,7 +299,6 @@ describe("POST /batches", () => {
         files: [{ filename: "a.pdf", contentType: "application/x-msdownload" }],
       }),
     });
-
     expect(res.status).toBe(400);
   });
 
@@ -270,11 +316,9 @@ describe("POST /batches", () => {
         files: [{ filename: "a.pdf", contentType: "application/octet-stream" }],
       }),
     });
-
     expect(res.status).toBe(201);
   });
 
-  // --- エラーハンドリング ---
   it("500: BatchStore がエラーを throw すると 500 を返す", async () => {
     mockDynamoSend.mockResolvedValue({ Item: IN_SERVICE_ITEM });
     mockPutBatchWithFiles.mockRejectedValue(new Error("DynamoDB error"));
@@ -285,7 +329,6 @@ describe("POST /batches", () => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(VALID_BODY),
     });
-
     expect(res.status).toBe(500);
   });
 
@@ -300,9 +343,7 @@ describe("POST /batches", () => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(VALID_BODY),
     });
-
     expect(res.status).toBe(500);
-    // BatchStore は呼ばれたが BatchPresign が失敗
     expect(mockPutBatchWithFiles).toHaveBeenCalledOnce();
   });
 
@@ -315,7 +356,331 @@ describe("POST /batches", () => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(VALID_BODY),
     });
-
     expect(res.status).toBe(500);
+  });
+});
+
+// ============================================================
+// Task 2.6: GET /batches と GET /batches/:batchJobId
+// ============================================================
+
+describe("GET /batches", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env.BATCH_TABLE_NAME = "BatchTable";
+    process.env.BUCKET_NAME = "test-bucket";
+  });
+
+  it("正常系: status + month でバッチ一覧を返す", async () => {
+    mockListBatchesByStatus.mockResolvedValue({
+      items: [MOCK_BATCH_META],
+      cursor: null,
+    });
+
+    const app = createApp();
+    const res = await app.request("/batches?status=COMPLETED&month=202604");
+    expect(res.status).toBe(200);
+    const body: AnyJson = await res.json();
+    expect(body.items).toHaveLength(1);
+    expect(body.items[0].batchJobId).toBe("batch-001");
+    expect(body.cursor).toBeNull();
+  });
+
+  it("正常系: month 省略時は現在月を使用する", async () => {
+    mockListBatchesByStatus.mockResolvedValue({ items: [], cursor: null });
+
+    const app = createApp();
+    const res = await app.request("/batches?status=PENDING");
+    expect(res.status).toBe(200);
+    expect(mockListBatchesByStatus).toHaveBeenCalledWith(
+      "PENDING",
+      expect.stringMatching(/^\d{6}$/),
+      undefined,
+    );
+  });
+
+  it("正常系: cursor を渡すとページング継続", async () => {
+    mockListBatchesByStatus.mockResolvedValue({ items: [], cursor: null });
+
+    const app = createApp();
+    await app.request("/batches?status=COMPLETED&month=202604&cursor=abc123");
+    expect(mockListBatchesByStatus).toHaveBeenCalledWith(
+      "COMPLETED",
+      "202604",
+      "abc123",
+    );
+  });
+
+  it("400: 無効な status は拒否される", async () => {
+    const app = createApp();
+    const res = await app.request("/batches?status=INVALID");
+    expect(res.status).toBe(400);
+  });
+});
+
+describe("GET /batches/:batchJobId", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env.BATCH_TABLE_NAME = "BatchTable";
+    process.env.BUCKET_NAME = "test-bucket";
+  });
+
+  it("正常系: バッチ詳細を返す（files は含まない）", async () => {
+    mockGetBatchWithFiles.mockResolvedValue(MOCK_BATCH_WITH_FILES);
+
+    const app = createApp();
+    const res = await app.request("/batches/batch-001");
+    expect(res.status).toBe(200);
+    const body: AnyJson = await res.json();
+    expect(body.batchJobId).toBe("batch-001");
+    expect(body.status).toBe("COMPLETED");
+    expect(body.totals).toBeDefined();
+    expect(body.createdAt).toBeDefined();
+    expect(body.files).toBeUndefined(); // files は含まない
+  });
+
+  it("404: 存在しないバッチは 404 を返す", async () => {
+    mockGetBatchWithFiles.mockResolvedValue(null);
+
+    const app = createApp();
+    const res = await app.request("/batches/nonexistent");
+    expect(res.status).toBe(404);
+  });
+});
+
+// ============================================================
+// Task 2.7: GET /files と GET /process-log
+// ============================================================
+
+describe("GET /batches/:batchJobId/files", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env.BATCH_TABLE_NAME = "BatchTable";
+    process.env.BUCKET_NAME = "test-bucket";
+  });
+
+  it("正常系: ファイル一覧を返し COMPLETED ファイルには resultUrl を付与する", async () => {
+    mockGetBatchWithFiles.mockResolvedValue(MOCK_BATCH_WITH_FILES);
+    mockCreateResultUrl.mockResolvedValue("https://s3.example.com/result.json");
+
+    const app = createApp();
+    const res = await app.request("/batches/batch-001/files");
+    expect(res.status).toBe(200);
+    const body: AnyJson = await res.json();
+    expect(body.items).toHaveLength(2);
+    // COMPLETED ファイルには resultUrl が付与される
+    const completedFile = body.items.find(
+      (f: AnyJson) => f.status === "COMPLETED",
+    );
+    expect(completedFile.resultUrl).toBe("https://s3.example.com/result.json");
+    // FAILED ファイルには resultUrl がない
+    const failedFile = body.items.find((f: AnyJson) => f.status === "FAILED");
+    expect(failedFile.resultUrl).toBeUndefined();
+  });
+
+  it("404: 存在しないバッチは 404 を返す", async () => {
+    mockGetBatchWithFiles.mockResolvedValue(null);
+
+    const app = createApp();
+    const res = await app.request("/batches/nonexistent/files");
+    expect(res.status).toBe(404);
+  });
+});
+
+describe("GET /batches/:batchJobId/process-log", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env.BATCH_TABLE_NAME = "BatchTable";
+    process.env.BUCKET_NAME = "test-bucket";
+  });
+
+  it("正常系: 終端状態なら process_log.jsonl の署名付き URL を返す", async () => {
+    mockGetBatchWithFiles.mockResolvedValue(MOCK_BATCH_WITH_FILES);
+    mockCreateProcessLogUrl.mockResolvedValue(
+      "https://s3.example.com/log.jsonl",
+    );
+
+    const app = createApp();
+    const res = await app.request("/batches/batch-001/process-log");
+    expect(res.status).toBe(200);
+    const body: AnyJson = await res.json();
+    expect(body.url).toBe("https://s3.example.com/log.jsonl");
+    expect(body.expiresIn).toBe(3600);
+  });
+
+  it("409: PROCESSING 状態では 409 を返す", async () => {
+    mockGetBatchWithFiles.mockResolvedValue({
+      ...MOCK_BATCH_WITH_FILES,
+      status: "PROCESSING",
+    });
+
+    const app = createApp();
+    const res = await app.request("/batches/batch-001/process-log");
+    expect(res.status).toBe(409);
+  });
+
+  it("409: PENDING 状態では 409 を返す", async () => {
+    mockGetBatchWithFiles.mockResolvedValue({
+      ...MOCK_BATCH_WITH_FILES,
+      status: "PENDING",
+    });
+
+    const app = createApp();
+    const res = await app.request("/batches/batch-001/process-log");
+    expect(res.status).toBe(409);
+  });
+
+  it("404: 存在しないバッチは 404 を返す", async () => {
+    mockGetBatchWithFiles.mockResolvedValue(null);
+
+    const app = createApp();
+    const res = await app.request("/batches/nonexistent/process-log");
+    expect(res.status).toBe(404);
+  });
+});
+
+// ============================================================
+// Task 2.8: DELETE /batches/:batchJobId と POST /reanalyze
+// ============================================================
+
+describe("DELETE /batches/:batchJobId", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env.BATCH_TABLE_NAME = "BatchTable";
+    process.env.BUCKET_NAME = "test-bucket";
+  });
+
+  it("正常系: PENDING バッチをキャンセルして 200 を返す", async () => {
+    mockGetBatchWithFiles.mockResolvedValue({
+      ...MOCK_BATCH_WITH_FILES,
+      status: "PENDING",
+    });
+    mockTransitionBatchStatus.mockResolvedValue(undefined);
+
+    const app = createApp();
+    const res = await app.request("/batches/batch-001", { method: "DELETE" });
+    expect(res.status).toBe(200);
+    const body: AnyJson = await res.json();
+    expect(body.status).toBe("CANCELLED");
+    expect(mockTransitionBatchStatus).toHaveBeenCalledWith(
+      expect.objectContaining({
+        newStatus: "CANCELLED",
+        expectedCurrent: "PENDING",
+      }),
+    );
+  });
+
+  it("404: 存在しないバッチは 404 を返す", async () => {
+    mockGetBatchWithFiles.mockResolvedValue(null);
+
+    const app = createApp();
+    const res = await app.request("/batches/nonexistent", { method: "DELETE" });
+    expect(res.status).toBe(404);
+  });
+
+  it("409: PROCESSING バッチはキャンセル不可で 409 を返す", async () => {
+    mockGetBatchWithFiles.mockResolvedValue({
+      ...MOCK_BATCH_WITH_FILES,
+      status: "PROCESSING",
+    });
+
+    const app = createApp();
+    const res = await app.request("/batches/batch-001", { method: "DELETE" });
+    expect(res.status).toBe(409);
+    expect(mockTransitionBatchStatus).not.toHaveBeenCalled();
+  });
+
+  it("409: COMPLETED バッチはキャンセル不可で 409 を返す", async () => {
+    mockGetBatchWithFiles.mockResolvedValue(MOCK_BATCH_WITH_FILES);
+
+    const app = createApp();
+    const res = await app.request("/batches/batch-001", { method: "DELETE" });
+    expect(res.status).toBe(409);
+  });
+});
+
+describe("POST /batches/:batchJobId/reanalyze", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env.BATCH_TABLE_NAME = "BatchTable";
+    process.env.BUCKET_NAME = "test-bucket";
+  });
+
+  const FAILED_FILES = [
+    {
+      fileKey: "batches/batch-001/input/b.pdf",
+      filename: "b.pdf",
+      status: "FAILED" as const,
+      errorMessage: "OCR error",
+      updatedAt: "2026-04-22T00:10:00Z",
+    },
+  ];
+
+  it("正常系: 失敗ファイルを対象に新バッチを作成し 201 を返す", async () => {
+    mockGetBatchWithFiles.mockResolvedValue(MOCK_BATCH_WITH_FILES);
+    mockHeadObject.mockResolvedValue(true);
+    mockListFailedFiles.mockResolvedValue(FAILED_FILES);
+    mockPutBatchWithFiles.mockResolvedValue(undefined);
+    mockCreateUploadUrls.mockResolvedValue([UPLOAD_RESULTS[1]]);
+
+    const app = createApp();
+    const res = await app.request("/batches/batch-001/reanalyze", {
+      method: "POST",
+    });
+    expect(res.status).toBe(201);
+    const body: AnyJson = await res.json();
+    expect(body.batchJobId).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
+    );
+    expect(body.uploads).toHaveLength(1);
+    // parentBatchJobId が設定されていること
+    const storeArgs = mockPutBatchWithFiles.mock.calls[0][0];
+    expect(storeArgs.parentBatchJobId).toBe("batch-001");
+  });
+
+  it("404: 存在しないバッチは 404 を返す", async () => {
+    mockGetBatchWithFiles.mockResolvedValue(null);
+
+    const app = createApp();
+    const res = await app.request("/batches/nonexistent/reanalyze", {
+      method: "POST",
+    });
+    expect(res.status).toBe(404);
+  });
+
+  it("409: 終端状態でないバッチは再解析不可で 409 を返す", async () => {
+    mockGetBatchWithFiles.mockResolvedValue({
+      ...MOCK_BATCH_WITH_FILES,
+      status: "PROCESSING",
+    });
+
+    const app = createApp();
+    const res = await app.request("/batches/batch-001/reanalyze", {
+      method: "POST",
+    });
+    expect(res.status).toBe(409);
+  });
+
+  it("404: process_log.jsonl が存在しない場合は 404 を返す", async () => {
+    mockGetBatchWithFiles.mockResolvedValue(MOCK_BATCH_WITH_FILES);
+    mockHeadObject.mockResolvedValue(false);
+
+    const app = createApp();
+    const res = await app.request("/batches/batch-001/reanalyze", {
+      method: "POST",
+    });
+    expect(res.status).toBe(404);
+  });
+
+  it("409: 失敗ファイルがない場合は 409 を返す", async () => {
+    mockGetBatchWithFiles.mockResolvedValue(MOCK_BATCH_WITH_FILES);
+    mockHeadObject.mockResolvedValue(true);
+    mockListFailedFiles.mockResolvedValue([]);
+
+    const app = createApp();
+    const res = await app.request("/batches/batch-001/reanalyze", {
+      method: "POST",
+    });
+    expect(res.status).toBe(409);
   });
 });

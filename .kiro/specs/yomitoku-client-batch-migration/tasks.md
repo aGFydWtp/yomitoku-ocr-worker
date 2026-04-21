@@ -72,7 +72,7 @@
   - _Requirements: 3.1, 3.2, 3.4, 10.5_
   - _Depends: 2.2, 4.1_
 
-- [ ] 2.6 (P) `GET /batches` と `GET /batches/:batchJobId` ルートを実装する
+- [x] 2.6 (P) `GET /batches` と `GET /batches/:batchJobId` ルートを実装する
   - 一覧は GSI1 を用い `status` + `yyyymm` フィルタとカーソルページングを提供する
   - 詳細は `BatchStore.getBatchWithFiles` 結果から META と集計値 (`totals`) を整形して返す
   - 存在しない `batchJobId` は `404` を返す
@@ -81,7 +81,7 @@
   - _Boundary: ApiFunction (read)_
   - _Depends: 2.2_
 
-- [ ] 2.7 (P) ファイル一覧・`process_log` 取得ルートを実装する
+- [x] 2.7 (P) ファイル一覧・`process_log` 取得ルートを実装する
   - `GET /batches/:batchJobId/files` は FILE アイテムをページングで返し、完了ファイルには `BatchPresign` で `output/*.json` と `visualizations/*` の署名付き URL を付与する
   - `GET /batches/:batchJobId/process-log` は `PENDING`/`PROCESSING` では `409`、存在しない場合は `404`、終端状態のみ `logs/process_log.jsonl` の署名付き URL を返す
   - 再解析親子（`parentBatchJobId`）がある場合は子側の最新成功結果を優先する overlay ロジックを `GET /batches/:id/files` に適用する
@@ -90,7 +90,7 @@
   - _Boundary: ApiFunction (read)_
   - _Depends: 2.2, 2.3_
 
-- [ ] 2.8 (P) キャンセル・再解析ルートを実装する
+- [x] 2.8 (P) キャンセル・再解析ルートを実装する
   - `DELETE /batches/:batchJobId` は META `status=PENDING` を条件に `CANCELLED` へ遷移させ、それ以外は `409`、未存在は `404` を返す
   - `POST /batches/:batchJobId/reanalyze` は元バッチが終端状態であること・`process_log.jsonl` が存在することを確認し、`success=false` の FILE のみを対象とする新バッチを `BatchStore` に作成する
   - 新バッチは元の `batchJobId` を `parentBatchJobId` に記録し、GSI2 で親子参照が可能であることを確認する
