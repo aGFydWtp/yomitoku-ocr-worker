@@ -135,8 +135,10 @@ describe("BatchQuery", () => {
       const result = await query.listBatchesByStatus("PENDING", "202604");
       expect(result.cursor).not.toBeNull();
       // base64url でデコードできること
+      const cursor = result.cursor;
+      if (cursor === null) throw new Error("cursor should not be null");
       expect(() =>
-        JSON.parse(Buffer.from(result.cursor!, "base64url").toString()),
+        JSON.parse(Buffer.from(cursor, "base64url").toString()),
       ).not.toThrow();
     });
   });
