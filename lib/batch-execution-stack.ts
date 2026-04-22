@@ -1,5 +1,5 @@
 import type { ITable } from "aws-cdk-lib/aws-dynamodb";
-import { Vpc } from "aws-cdk-lib/aws-ec2";
+import { SubnetType, Vpc } from "aws-cdk-lib/aws-ec2";
 import {
   Cluster,
   ContainerImage,
@@ -392,10 +392,17 @@ export class BatchExecutionStack extends Stack {
         `Container definition '${this.containerName}' not found in task definition`,
       );
     }
+    // Public subnet + assignPublicIp=true で起動する。
+    // 本スタックは NAT Gateway を持たないデフォルト VPC でも動作する必要があり、
+    // EcsRunTask のデフォルト (PRIVATE_WITH_EGRESS) では subnet が見つからず
+    // synth が失敗する。タスク ENI は public IP を持つが、task security group の
+    // inbound は全拒否 (CDK デフォルト) のため、実質的な露出は outbound のみ。
     const runBatchTask = new EcsRunTask(this, "RunBatchTask", {
       cluster: this.cluster,
       taskDefinition: this.taskDefinition,
       launchTarget: new EcsFargateLaunchTarget(),
+      assignPublicIp: true,
+      subnets: { subnetType: SubnetType.PUBLIC },
       integrationPattern: IntegrationPattern.RUN_JOB,
       taskTimeout: Timeout.duration(
         Duration.seconds(BATCH_TASK_TIMEOUT_SECONDS),

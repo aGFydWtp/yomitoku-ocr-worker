@@ -316,6 +316,15 @@ describe("BatchExecutionStack", () => {
       expect(defStr).toMatch(/\\"TimeoutSeconds\\":\s*7200/);
     });
 
+    it("RunBatchTask が Public subnet + AssignPublicIp=ENABLED で起動する", () => {
+      const { template } = createStack();
+      const sm = template.findResources("AWS::StepFunctions::StateMachine");
+      const defStr = JSON.stringify(sm);
+      // EcsRunTask の NetworkConfiguration / AwsvpcConfiguration が
+      // AssignPublicIp=ENABLED で直列化されていること
+      expect(defStr).toMatch(/\\"AssignPublicIp\\":\\"ENABLED\\"/);
+    });
+
     it("Catch: States.Timeout / States.TaskFailed が定義されている", () => {
       const { template } = createStack();
       const sm = template.findResources("AWS::StepFunctions::StateMachine");
