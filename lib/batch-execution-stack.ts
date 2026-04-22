@@ -166,7 +166,22 @@ export class BatchExecutionStack extends Stack {
 
     // --- Task Role IAM permissions ---
     batchTable.grantReadWriteData(this.taskDefinition.taskRole);
-    controlTable.grantReadWriteData(this.taskDefinition.taskRole);
+    // ControlTable は heartbeat (Put/Update/Delete) のみ利用。
+    // GetItem/Scan は不要なので `grantReadWriteData` の広範な権限は付けず、
+    // 必要最小限のアクションに絞る。
+    this.taskDefinition.addToTaskRolePolicy(
+      new PolicyStatement({
+        sid: "BatchControlTableHeartbeat",
+        effect: Effect.ALLOW,
+        actions: [
+          "dynamodb:PutItem",
+          "dynamodb:UpdateItem",
+          "dynamodb:DeleteItem",
+          "dynamodb:ConditionCheckItem",
+        ],
+        resources: [controlTable.tableArn],
+      }),
+    );
 
     // S3: batches/* prefix 配下への Get/Put/Delete/List
     this.taskDefinition.addToTaskRolePolicy(

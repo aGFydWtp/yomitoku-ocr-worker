@@ -5,10 +5,14 @@ import {
   TreatMissingData,
 } from "aws-cdk-lib/aws-cloudwatch";
 import { SnsAction } from "aws-cdk-lib/aws-cloudwatch-actions";
+import { Alias } from "aws-cdk-lib/aws-kms";
 import { Topic } from "aws-cdk-lib/aws-sns";
 import { CfnOutput, Duration, Stack, type StackProps } from "aws-cdk-lib/core";
 import { NagSuppressions } from "cdk-nag";
 import type { Construct } from "constructs";
+// M6: BatchExecutionStack の RunBatchTask 側タイムアウトと常に一致させるため
+// 定数を一箇所 (batch-execution-stack) に正とする。
+import { BATCH_TASK_TIMEOUT_SECONDS } from "./batch-execution-stack";
 
 /**
  * MonitoringStack: バッチ運用アラーム通知用の SNS トピックと CloudWatch
@@ -31,7 +35,7 @@ export interface MonitoringStackProps extends StackProps {
 
 const METRIC_NAMESPACE = "YomiToku/Batch";
 const DEFAULT_FILES_FAILED_THRESHOLD = 10;
-const DEFAULT_BATCH_MAX_DURATION_SEC = 7200;
+const DEFAULT_BATCH_MAX_DURATION_SEC = BATCH_TASK_TIMEOUT_SECONDS;
 
 export class MonitoringStack extends Stack {
   public readonly alarmTopic: Topic;
@@ -39,17 +43,19 @@ export class MonitoringStack extends Stack {
   constructor(scope: Construct, id: string, props: MonitoringStackProps = {}) {
     super(scope, id, props);
 
+    // M3: SNS トピックを AWS 管理 KMS キー (alias/aws/sns) で保管時暗号化する。
+    // 監視通知のペイロードにはバッチ ID や失敗件数が含まれるため、
+    // CloudWatch Alarm → SNS 経路で保管時暗号化を行い最小限の機密保護を確保する。
     this.alarmTopic = new Topic(this, "AlarmTopic", {
       displayName: "YomiToku OCR Worker Alarms",
+      masterKey: Alias.fromAliasName(
+        this,
+        "AlarmTopicKmsAlias",
+        "alias/aws/sns",
+      ),
     });
 
     NagSuppressions.addResourceSuppressions(this.alarmTopic, [
-      {
-        id: "AwsSolutions-SNS2",
-        reason:
-          "SNS topic encryption is not required for alarm notifications. " +
-          "Messages contain alarm metadata only, no sensitive data.",
-      },
       {
         id: "AwsSolutions-SNS3",
         reason:

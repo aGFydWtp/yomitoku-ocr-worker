@@ -325,10 +325,11 @@ class TestReleaseLock:
             Item={
                 "lock_key": "endpoint_control",
                 "endpoint_state": "IN_SERVICE",
+                "execution_id": "exec-rel-001",
             }
         )
 
-        result = release_lock({})
+        result = release_lock({"execution_id": "exec-rel-001"})
 
         assert result["lock_released"] is True
         item = dynamodb_setup["table"].get_item(
@@ -336,3 +337,25 @@ class TestReleaseLock:
         )["Item"]
         assert item["endpoint_state"] == "IDLE"
         assert "updated_at" in item
+
+    def test_ignores_lock_held_by_other_execution(self, dynamodb_setup):
+        """M5: 別実行が保持しているロックを誤解放しない。"""
+        from index import release_lock
+
+        dynamodb_setup["table"].put_item(
+            Item={
+                "lock_key": "endpoint_control",
+                "endpoint_state": "IN_SERVICE",
+                "execution_id": "exec-owner",
+            }
+        )
+
+        result = release_lock({"execution_id": "exec-other"})
+
+        assert result["lock_released"] is False
+        # 状態が書き換えられていないことを確認
+        item = dynamodb_setup["table"].get_item(
+            Key={"lock_key": "endpoint_control"}
+        )["Item"]
+        assert item["endpoint_state"] == "IN_SERVICE"
+        assert item["execution_id"] == "exec-owner"

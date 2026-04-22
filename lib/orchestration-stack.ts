@@ -5,7 +5,6 @@ import {
   Function as LambdaFunction,
   Runtime,
 } from "aws-cdk-lib/aws-lambda";
-import type { IBucket } from "aws-cdk-lib/aws-s3";
 import {
   Choice,
   Condition,
@@ -41,8 +40,6 @@ import type { Construct } from "constructs";
  */
 export interface OrchestrationStackProps extends StackProps {
   controlTable: Table;
-  /** 将来の batch 用 EventBridge wiring 向けに bucket への参照を保持する。 */
-  bucket: IBucket;
   /** SageMaker エンドポイント名 (呼び出し側で context から解決して渡す)。 */
   endpointName: string;
   /** SageMaker エンドポイント設定名 (呼び出し側で context から解決して渡す)。 */
@@ -253,16 +250,24 @@ export class OrchestrationStack extends Stack {
       time: WaitTime.duration(Duration.seconds(60)),
     });
 
+    // M5: release_lock 側で execution_id が一致するロックのみ解放するよう
+    // ConditionExpression を追加したため、acquire_lock と同じ実行 ID を必ず渡す。
     const releaseLock = new LambdaInvoke(this, "ReleaseLock", {
       lambdaFunction: controlFn,
-      payload: TaskInput.fromObject({ action: "release_lock" }),
+      payload: TaskInput.fromObject({
+        action: "release_lock",
+        "execution_id.$": "$$.Execution.Id",
+      }),
       resultSelector: { "result.$": "$.Payload" },
       resultPath: "$.releaseResult",
     });
 
     const releaseLockOnError = new LambdaInvoke(this, "ReleaseLockOnError", {
       lambdaFunction: controlFn,
-      payload: TaskInput.fromObject({ action: "release_lock" }),
+      payload: TaskInput.fromObject({
+        action: "release_lock",
+        "execution_id.$": "$$.Execution.Id",
+      }),
       resultSelector: { "result.$": "$.Payload" },
       resultPath: "$.releaseResult",
     });

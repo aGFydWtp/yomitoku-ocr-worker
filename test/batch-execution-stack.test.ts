@@ -114,10 +114,10 @@ describe("BatchExecutionStack", () => {
   });
 
   describe("Task Role IAM", () => {
-    it("Task Role が BatchTable と ControlTable の DDB 更新系 Action を持つ", () => {
+    it("Task Role が BatchTable への DDB 更新系 Action (grantReadWriteData) を持つ", () => {
       const { template } = createStack();
-      // DDB grantReadWriteData は Query/GetItem/PutItem/UpdateItem/DeleteItem を含むポリシーを生成する。
-      // Match.arrayWith は subsequence セマンティクスなので CDK 生成順 (Query→GetItem→...→PutItem→...→DeleteItem) に合わせる。
+      // BatchTable は grantReadWriteData のままなので
+      // Query/GetItem/PutItem/UpdateItem/DeleteItem を含むステートメントが存在する。
       const requiredActions = [
         "dynamodb:Query",
         "dynamodb:GetItem",
@@ -133,6 +133,31 @@ describe("BatchExecutionStack", () => {
               Match.objectLike({
                 Action: Match.arrayWith(requiredActions),
                 Effect: "Allow",
+              }),
+            ]),
+          }),
+        }),
+      );
+    });
+
+    it("Task Role が ControlTable の heartbeat 用アクションのみを持ち、GetItem/Query を含まない (M1)", () => {
+      const { template } = createStack();
+      // ControlTable は heartbeat の Put/Update/Delete のみ使用するため
+      // `grantReadWriteData` より狭い PolicyStatement(BatchControlTableHeartbeat) で付与している。
+      template.hasResourceProperties(
+        "AWS::IAM::Policy",
+        Match.objectLike({
+          PolicyDocument: Match.objectLike({
+            Statement: Match.arrayWith([
+              Match.objectLike({
+                Sid: "BatchControlTableHeartbeat",
+                Effect: "Allow",
+                Action: [
+                  "dynamodb:PutItem",
+                  "dynamodb:UpdateItem",
+                  "dynamodb:DeleteItem",
+                  "dynamodb:ConditionCheckItem",
+                ],
               }),
             ]),
           }),

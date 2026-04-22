@@ -47,6 +47,10 @@ export async function deleteObject(bucket: string, key: string): Promise<void> {
 
 /**
  * S3 オブジェクトの存在確認。存在すれば true、存在しなければ false を返す。
+ *
+ * M7: NotFound / NoSuchKey 以外のエラー (AccessDenied・スロットリング・
+ * ネットワーク失敗等) を吸い込んで "存在しない" と誤判定しないよう、
+ * それ以外の例外はそのまま throw する。
  */
 export async function headObject(
   bucket: string,
@@ -55,9 +59,25 @@ export async function headObject(
   try {
     await s3Client.send(new HeadObjectCommand({ Bucket: bucket, Key: key }));
     return true;
-  } catch {
-    return false;
+  } catch (err) {
+    if (isS3NotFoundError(err)) {
+      return false;
+    }
+    throw err;
   }
+}
+
+function isS3NotFoundError(err: unknown): boolean {
+  if (typeof err !== "object" || err === null) return false;
+  const e = err as {
+    name?: string;
+    Code?: string;
+    $metadata?: { httpStatusCode?: number };
+  };
+  if (e.name === "NotFound" || e.name === "NoSuchKey") return true;
+  if (e.Code === "NotFound" || e.Code === "NoSuchKey") return true;
+  if (e.$metadata?.httpStatusCode === 404) return true;
+  return false;
 }
 
 /**

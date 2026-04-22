@@ -30,6 +30,22 @@ describe("MonitoringStack (batch observability, Task 5.1)", () => {
       const { stack } = createStack();
       expect(stack.alarmTopic).toBeDefined();
     });
+
+    it("SNS トピックが KMS で保管時暗号化される (M3)", () => {
+      const { template } = createStack();
+      // Alias.fromAliasName("alias/aws/sns") は KmsMasterKeyId を
+      // `Fn::Join` で "arn:<partition>:kms:<region>:<account>:alias/aws/sns" に展開する。
+      template.hasResourceProperties(
+        "AWS::SNS::Topic",
+        Match.objectLike({
+          KmsMasterKeyId: Match.objectLike({
+            "Fn::Join": Match.arrayWith([
+              Match.arrayWith([Match.stringLikeRegexp("alias/aws/sns")]),
+            ]),
+          }),
+        }),
+      );
+    });
   });
 
   // --- バッチ向け CloudWatch アラーム (Task 5.1) ---

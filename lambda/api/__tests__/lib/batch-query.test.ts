@@ -60,7 +60,9 @@ describe("BatchQuery", () => {
 
       const cmd: AnyRecord = mockSend.mock.calls[0][0];
       expect(cmd.input.KeyConditionExpression).toContain("#pk");
-      expect(cmd.input.ExpressionAttributeValues[":pk"]).toBe("BATCH#batch-001");
+      expect(cmd.input.ExpressionAttributeValues[":pk"]).toBe(
+        "BATCH#batch-001",
+      );
     });
 
     it("存在しないバッチは null を返す", async () => {

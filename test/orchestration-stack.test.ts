@@ -1,6 +1,5 @@
 import { Match, Template } from "aws-cdk-lib/assertions";
 import { AttributeType, BillingMode, Table } from "aws-cdk-lib/aws-dynamodb";
-import { Bucket } from "aws-cdk-lib/aws-s3";
 import { App, Stack } from "aws-cdk-lib/core";
 import { OrchestrationStack } from "../lib/orchestration-stack";
 
@@ -24,12 +23,10 @@ function createStack(): {
     partitionKey: { name: "lock_key", type: AttributeType.STRING },
     billingMode: BillingMode.PAY_PER_REQUEST,
   });
-  const bucket = new Bucket(depStack, "DataBucket");
 
   const stack = new OrchestrationStack(app, "TestOrchestrationStack", {
     env: { region: TEST_REGION, account: TEST_ACCOUNT },
     controlTable,
-    bucket,
     endpointName: TEST_ENDPOINT_NAME,
     endpointConfigName: TEST_ENDPOINT_CONFIG_NAME,
   });

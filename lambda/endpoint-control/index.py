@@ -129,17 +129,31 @@ def acquire_lock(event: dict) -> dict:
 
 
 def release_lock(event: dict) -> dict:
-    """Release exclusive lock for endpoint control."""
+    """Release exclusive lock for endpoint control.
+
+    M5: 自分が取得したロックのみを解放するため ``ConditionExpression`` で
+    ``execution_id`` の一致を確認する。別の実行が割り込んだロックや、既に
+    IDLE へ戻されたロックを誤って再設定することを防ぐ。
+    """
+    execution_id = event.get("execution_id", "")
     now = datetime.now(timezone.utc).isoformat()
-    table.update_item(
-        Key={"lock_key": "endpoint_control"},
-        UpdateExpression="SET endpoint_state = :idle, updated_at = :t",
-        ExpressionAttributeValues={
-            ":idle": "IDLE",
-            ":t": now,
-        },
-    )
-    return {"lock_released": True}
+    try:
+        table.update_item(
+            Key={"lock_key": "endpoint_control"},
+            UpdateExpression="SET endpoint_state = :idle, updated_at = :t",
+            ConditionExpression="execution_id = :e",
+            ExpressionAttributeValues={
+                ":idle": "IDLE",
+                ":t": now,
+                ":e": execution_id,
+            },
+        )
+        return {"lock_released": True}
+    except ClientError as e:
+        if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            # 別実行が保持中、または既に解放済み: 冪等的に成功扱い。
+            return {"lock_released": False}
+        raise
 
 
 def _update_endpoint_state(state: str) -> None:

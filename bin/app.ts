@@ -57,7 +57,6 @@ const processingStack = new ProcessingStack(app, "ProcessingStack", {
 const orchestrationStack = new OrchestrationStack(app, "OrchestrationStack", {
   env: { region, account },
   controlTable: processingStack.controlTable,
-  bucket: processingStack.bucket,
   endpointName,
   endpointConfigName,
 });

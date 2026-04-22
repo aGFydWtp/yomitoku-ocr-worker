@@ -1,12 +1,9 @@
 import { QueryCommand } from "@aws-sdk/lib-dynamodb";
 import type { BatchStatus } from "../schemas";
-import { docClient } from "./dynamodb";
-import {
-  decodeBatchCursor,
-  encodeBatchCursor,
-} from "./validate";
 import type { BatchMeta, BatchWithFiles, FileItem } from "./batch-store";
 import { QUERY_LIMIT } from "./batch-store";
+import { docClient } from "./dynamodb";
+import { decodeBatchCursor, encodeBatchCursor } from "./validate";
 
 // ---------------------------------------------------------------------------
 // BatchQuery — 読み取り専用クラス
@@ -32,9 +29,9 @@ export class BatchQuery {
     );
 
     const items = res.Items ?? [];
-    const meta = items.find(
-      (i) => i.entityType === "BATCH",
-    ) as Record<string, unknown> | undefined;
+    const meta = items.find((i) => i.entityType === "BATCH") as
+      | Record<string, unknown>
+      | undefined;
 
     if (!meta) return null;
 

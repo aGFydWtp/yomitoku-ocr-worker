@@ -1,7 +1,4 @@
-import {
-  TransactWriteCommand,
-  UpdateCommand,
-} from "@aws-sdk/lib-dynamodb";
+import { TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import type { BatchStatus } from "../schemas";
 import { MAX_FILES_PER_BATCH } from "../schemas";
 import { docClient } from "./dynamodb";
