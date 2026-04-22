@@ -63,7 +63,7 @@
   - _Requirements: 2.1, 2.2, 2.3, 2.4, 2.5, 10.5_
   - _Depends: 2.1, 2.2, 2.3_
 
-- [ ] 2.5 `POST /batches/:batchJobId/start` ルートを実装する
+- [x] 2.5 `POST /batches/:batchJobId/start` ルートを実装する
   - META の `status=PENDING` を条件に `PROCESSING` へ遷移させ、`startedAt` を記録する
   - `ListObjectsV2` で `batches/{id}/input/` を走査し、DDB の FILE 期待集合との差分で欠損ファイルを判定する
   - 欠損がある場合は `400` で拒否し、状態遷移を行わない
