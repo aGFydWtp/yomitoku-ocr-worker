@@ -151,6 +151,33 @@ describe("OrchestrationStack (legacy wiring cleaned up)", () => {
       expect(definition).not.toContain("check_queue_status");
       expect(definition).not.toContain("queue_empty");
     });
+
+    it("BatchInFlightChoice のタイムアウト経路が ReleaseLockOnError 経由で ExecutionFailed に到達する (H4)", () => {
+      const { template } = createStack();
+      const machines = template.findResources(
+        "AWS::StepFunctions::StateMachine",
+      );
+      const resource = Object.values(machines)[0] as {
+        Properties: { DefinitionString: unknown };
+      };
+      const defString = resource.Properties.DefinitionString as {
+        "Fn::Join": [string, unknown[]];
+      };
+      const joined = defString["Fn::Join"][1]
+        .filter((chunk): chunk is string => typeof chunk === "string")
+        .join("");
+      // Choice と分岐先が定義されている
+      expect(joined).toContain("BatchInFlightChoice");
+      expect(joined).toMatch(
+        /"NumericGreaterThanEquals":\s*120[^}]*"Next":\s*"ReleaseLockOnError"/,
+      );
+      // ReleaseLockOnError ステートが存在し、Next が ExecutionFailed (Fail state) である
+      expect(joined).toMatch(
+        /"ReleaseLockOnError":\s*\{[^}]*"Next":\s*"ExecutionFailed"/,
+      );
+      // ExecutionFailed が Fail type として終端に存在する
+      expect(joined).toMatch(/"ExecutionFailed":\s*\{[^}]*"Type":\s*"Fail"/);
+    });
   });
 
   // --- IAM Permissions ---

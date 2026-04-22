@@ -381,6 +381,10 @@ export class OrchestrationStack extends Stack {
 
     // Choice は `in_flight_count == 0` を直接判定し、設計書の
     // `concurrentBatchCount == 0` セマンティクスと一致させる。
+    // タイムアウト経路は `releaseLockOnError` 経由で `failState` に到達する
+    // (`releaseLockOnError.next(failState)` は waitLoopChoice 定義時に
+    // 一度設定済みの共有遷移。ここで `.next()` を再設定すると同じ遷移に
+    // 解決されるため省略し、共有済みであることをコメントで明示する)。
     const batchInFlightChoice = new Choice(this, "BatchInFlightChoice")
       .when(
         Condition.numberLessThanEquals(

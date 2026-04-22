@@ -44,6 +44,16 @@ import {
 import { NagSuppressions } from "cdk-nag";
 import type { Construct } from "constructs";
 
+/** RunBatchTask (.sync) の task timeout。BatchRunner の最大実行時間 2 時間に合わせる。 */
+export const BATCH_TASK_TIMEOUT_SECONDS = 7200;
+
+/**
+ * StateMachine 全体のタイムアウト。`BATCH_TASK_TIMEOUT_SECONDS` に
+ * Lock 獲得・エンドポイント確認・ロック解放などのオーバーヘッド (約 800 秒)
+ * を加えた値で、タスク自体のタイムアウトより必ず長くする。
+ */
+export const SFN_EXECUTION_TIMEOUT_SECONDS = BATCH_TASK_TIMEOUT_SECONDS + 800;
+
 /**
  * BatchExecutionStack: バッチ実行用 ECS Cluster / Fargate Task Definition を提供するスタック。
  *
@@ -205,10 +215,10 @@ export class BatchExecutionStack extends Stack {
       endpointName,
     );
 
-    // SFN 全体タイムアウト: RunBatchTask の .sync タイムアウト (7200s) より余裕を持たせる
+    // SFN 全体タイムアウト: RunBatchTask の taskTimeout より必ず長く設定する
     this.stateMachine = new StateMachine(this, "BatchExecutionStateMachine", {
       definitionBody: DefinitionBody.fromChainable(definition),
-      timeout: Duration.seconds(8000),
+      timeout: Duration.seconds(SFN_EXECUTION_TIMEOUT_SECONDS),
     });
 
     // --- CDK Nag suppressions ---
@@ -294,9 +304,11 @@ export class BatchExecutionStack extends Stack {
    *   EnsureEndpointInService (sagemaker:DescribeEndpoint)
    *     └─ EndpointStatus == InService → RunBatchTask
    *        それ以外                    → WaitEndpoint (60s) → EnsureEndpointInService (ループ)
-   *   RunBatchTask (ecs:runTask.sync, TimeoutSeconds=7200)
+   *   RunBatchTask (ecs:runTask.sync, taskTimeout=BATCH_TASK_TIMEOUT_SECONDS)
    *     ├─ States.Timeout / States.TaskFailed / States.ALL
-   *     │    → StopBatchTask (ecs:stopTask) → MarkFailedForced → ReleaseBatchLockOnError → Failed
+   *     │    → MarkFailedForced → ReleaseBatchLockOnError → Failed
+   *     │    (注: `.sync` (RUN_JOB) 統合では SFN がタスクを自動停止するため
+   *     │     明示的な stopTask は不要)
    *     └─ 成功 → AggregateResults
    *   AggregateResults (BatchTable META の status を読む)
    *     └─ DetermineFinalStatus
@@ -370,7 +382,9 @@ export class BatchExecutionStack extends Stack {
       taskDefinition: this.taskDefinition,
       launchTarget: new EcsFargateLaunchTarget(),
       integrationPattern: IntegrationPattern.RUN_JOB,
-      taskTimeout: Timeout.duration(Duration.seconds(7200)),
+      taskTimeout: Timeout.duration(
+        Duration.seconds(BATCH_TASK_TIMEOUT_SECONDS),
+      ),
       containerOverrides: [
         {
           containerDefinition,
@@ -425,23 +439,11 @@ export class BatchExecutionStack extends Stack {
       },
     );
 
-    // --- StopBatchTask (best-effort; SFN .sync auto-stops on timeout, but
-    //     we still emit an explicit stop per design spec) ---
-    const stopBatchTask = new CallAwsService(this, "StopBatchTask", {
-      service: "ecs",
-      action: "stopTask",
-      parameters: {
-        Cluster: this.cluster.clusterArn,
-        // `errorInfo.Cause` は RunTask の失敗原因 (JSON 文字列) を保持する。
-        // 正確な TaskArn 抽出は runtime 側の best-effort に留め、失敗時は
-        // addCatch で MarkFailedForced に遷移させる。
-        "Task.$": "$.errorInfo.Cause",
-      },
-      iamResources: [
-        `arn:aws:ecs:${this.region}:${this.account}:task/${this.cluster.clusterName}/*`,
-      ],
-      resultPath: JsonPath.DISCARD,
-    });
+    // StopBatchTask は意図的に省略する。`EcsRunTask` の RUN_JOB (.sync) 統合は
+    // States.Timeout / States.TaskFailed 発生時に SFN ランタイムが自動的に
+    // `ecs:StopTask` を発行する仕様であり、Cause (JSON 文字列) から TaskArn を
+    // 抽出して明示的に stopTask を呼び出すことは正しく行えない (H3 コードレビュー
+    // 対応)。
 
     // --- Terminal states ---
     const done = new Succeed(this, "Done", {
@@ -468,12 +470,14 @@ export class BatchExecutionStack extends Stack {
     ensureEndpointInService.next(endpointReady);
     waitEndpoint.next(ensureEndpointInService);
 
-    runBatchTask.addCatch(stopBatchTask, {
+    // タイムアウト・タスク失敗時は SFN ランタイムが自動で stopTask を発行する。
+    // 本 StateMachine 側では MarkFailedForced に直接遷移させる。
+    runBatchTask.addCatch(markFailedForced, {
       errors: ["States.Timeout", "States.TaskFailed"],
       resultPath: "$.errorInfo",
     });
-    // 想定外エラーも stopBatchTask 経由で後始末する (States.ALL は単独で指定する必要がある)
-    runBatchTask.addCatch(stopBatchTask, {
+    // 想定外エラー (States.ALL は単独で指定する必要がある) も同様に MarkFailedForced。
+    runBatchTask.addCatch(markFailedForced, {
       errors: ["States.ALL"],
       resultPath: "$.errorInfo",
     });
@@ -496,11 +500,6 @@ export class BatchExecutionStack extends Stack {
     markFailed.next(releaseBatchLock);
     releaseBatchLock.next(done);
 
-    // StopBatchTask 自体が失敗しても MarkFailedForced 経路に落とす
-    stopBatchTask.addCatch(markFailedForced, {
-      resultPath: "$.stopError",
-    });
-    stopBatchTask.next(markFailedForced);
     markFailedForced.next(releaseBatchLockOnError);
     releaseBatchLockOnError.next(failed);
 

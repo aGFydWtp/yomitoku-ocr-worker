@@ -258,11 +258,27 @@ describe("BatchExecutionStack", () => {
         "MarkCompleted",
         "MarkPartial",
         "MarkFailed",
+        "MarkFailedForced",
         "ReleaseBatchLock",
-        "StopBatchTask",
+        "ReleaseBatchLockOnError",
       ]) {
         expect(defStr).toContain(s);
       }
+    });
+
+    it("StopBatchTask ステートは定義されない (SFN .sync が自動停止するため; H3)", () => {
+      const { template } = createStack();
+      const sm = template.findResources("AWS::StepFunctions::StateMachine");
+      const defStr = JSON.stringify(sm);
+      // 明示的な StopBatchTask ステートを削除済み
+      expect(defStr).not.toContain("StopBatchTask");
+      // 失敗経路が直接 MarkFailedForced に遷移する
+      expect(defStr).toContain(
+        '\\"ErrorEquals\\":[\\"States.Timeout\\",\\"States.TaskFailed\\"],\\"ResultPath\\":\\"$.errorInfo\\",\\"Next\\":\\"MarkFailedForced\\"',
+      );
+      expect(defStr).toContain(
+        '\\"ErrorEquals\\":[\\"States.ALL\\"],\\"ResultPath\\":\\"$.errorInfo\\",\\"Next\\":\\"MarkFailedForced\\"',
+      );
     });
 
     it("RunBatchTask が ecs:runTask.sync を利用し TimeoutSeconds=7200 で動作する", () => {
@@ -281,8 +297,8 @@ describe("BatchExecutionStack", () => {
       const defStr = JSON.stringify(sm);
       expect(defStr).toContain("States.Timeout");
       expect(defStr).toContain("States.TaskFailed");
-      // 失敗経路で stopTask が呼ばれる
-      expect(defStr).toMatch(/ecs:stopTask|ecs:StopTask|stopTask/i);
+      // SFN が .sync (RUN_JOB) で自動的にタスクを停止するため、
+      // SFN 実行ロールには ecs:StopTask が自動付与される (IAM テスト参照)
     });
 
     it("AcquireBatchLock が ControlTable への putItem を ConditionExpression 付きで発行する", () => {
