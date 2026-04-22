@@ -8,23 +8,25 @@ import { BatchStore } from "../lib/batch-store";
 import { docClient } from "../lib/dynamodb";
 import {
   ConflictError,
+  handleError,
   NotFoundError,
   ServiceUnavailableError,
-  handleError,
+  ValidationError,
 } from "../lib/errors";
-import { headObject } from "../lib/s3";
+import { headObject, listObjectKeys } from "../lib/s3";
 import { sfnClient } from "../lib/sfn";
 import { assertValidStateMachineArn } from "../lib/validate";
 import type { BatchStatus, EndpointState } from "../schemas";
-import { BATCH_STATUSES, ENDPOINT_STATES } from "../schemas";
+import { ENDPOINT_STATES } from "../schemas";
 import {
   cancelBatchRoute,
   createBatchRoute,
   getBatchRoute,
   getProcessLogRoute,
-  listBatchFilesRoute,
   listBatchesRoute,
+  listBatchFilesRoute,
   reanalyzeBatchRoute,
+  startBatchRoute,
 } from "./batches.routes";
 
 export const batchesRoutes = new OpenAPIHono({
@@ -260,7 +262,9 @@ batchesRoutes.openapi(reanalyzeBatchRoute, async (c) => {
     "PARTIAL",
     "FAILED",
   ];
-  if (!(reanalyzableStatuses as readonly string[]).includes(parentBatch.status)) {
+  if (
+    !(reanalyzableStatuses as readonly string[]).includes(parentBatch.status)
+  ) {
     throw new ConflictError(
       `Cannot reanalyze batch ${batchJobId} in status ${parentBatch.status}. Only COMPLETED/PARTIAL/FAILED batches can be reanalyzed.`,
     );
@@ -303,4 +307,72 @@ batchesRoutes.openapi(reanalyzeBatchRoute, async (c) => {
   });
 
   return c.json({ batchJobId: newBatchJobId, uploads }, 201);
+});
+
+// ---------------------------------------------------------------------------
+// POST /:batchJobId/start — バッチ実行開始 (Task 2.5 / H2)
+// ---------------------------------------------------------------------------
+batchesRoutes.openapi(startBatchRoute, async (c) => {
+  const batchTableName = requireEnv("BATCH_TABLE_NAME");
+  const bucketName = requireEnv("BUCKET_NAME");
+  const batchExecStateMachineArn = requireEnv(
+    "BATCH_EXECUTION_STATE_MACHINE_ARN",
+  );
+  assertValidStateMachineArn(batchExecStateMachineArn);
+
+  const { batchJobId } = c.req.valid("param");
+
+  const query = new BatchQuery(batchTableName);
+  const batch = await query.getBatchWithFiles(batchJobId);
+
+  if (!batch) throw new NotFoundError(`Batch ${batchJobId} not found`);
+
+  if (batch.status !== "PENDING") {
+    throw new ConflictError(
+      `Cannot start batch ${batchJobId} in status ${batch.status}. Only PENDING batches can be started.`,
+    );
+  }
+
+  // S3 に実ファイルが揃っているかを検証。DDB の FILE 期待集合 (fileKey)
+  // と ListObjectsV2 で列挙した batches/{id}/input/ 配下の実在キーを突合
+  // し、欠損があれば 400 で拒否して状態遷移も SFN 起動も行わない。
+  const expectedKeys = new Set(batch.files.map((f) => f.fileKey));
+  const actualKeys = new Set(
+    await listObjectKeys(bucketName, `batches/${batchJobId}/input/`),
+  );
+  const missing = [...expectedKeys].filter((k) => !actualKeys.has(k));
+  if (missing.length > 0) {
+    throw new ValidationError(
+      `Missing uploaded files for batch ${batchJobId}: ${missing.join(", ")}`,
+    );
+  }
+
+  // PENDING → PROCESSING を原子的に遷移。並行起動時は ConditionalCheckFailed を
+  // ConflictError にマップして 409 を返す（transitionBatchStatus 内で実装済み）。
+  const startedAt = new Date().toISOString();
+  const store = new BatchStore(batchTableName);
+  await store.transitionBatchStatus({
+    batchJobId,
+    newStatus: "PROCESSING",
+    expectedCurrent: "PENDING",
+    startedAt,
+  });
+
+  // SFN 起動。入力には batchJobId のみを渡す（BatchExecution 側で BatchTable
+  // から basePath/extraFormats/files を参照する設計）。
+  const result = await sfnClient.send(
+    new StartExecutionCommand({
+      stateMachineArn: batchExecStateMachineArn,
+      input: JSON.stringify({ batchJobId }),
+    }),
+  );
+
+  return c.json(
+    {
+      batchJobId,
+      status: "PROCESSING" as const,
+      executionArn: result.executionArn ?? "",
+    },
+    202,
+  );
 });

@@ -2,6 +2,7 @@ import {
   DeleteObjectCommand,
   GetObjectCommand,
   HeadObjectCommand,
+  ListObjectsV2Command,
   PutObjectCommand,
   S3Client,
 } from "@aws-sdk/client-s3";
@@ -57,4 +58,30 @@ export async function headObject(
   } catch {
     return false;
   }
+}
+
+/**
+ * 指定プレフィックス配下のキー一覧を取得する（ページング完結まで走査）。
+ * /batches/:id/start で欠損入力ファイルを判定するための参照系ユーティリティ。
+ */
+export async function listObjectKeys(
+  bucket: string,
+  prefix: string,
+): Promise<string[]> {
+  const keys: string[] = [];
+  let continuationToken: string | undefined;
+  do {
+    const res = await s3Client.send(
+      new ListObjectsV2Command({
+        Bucket: bucket,
+        Prefix: prefix,
+        ContinuationToken: continuationToken,
+      }),
+    );
+    for (const obj of res.Contents ?? []) {
+      if (obj.Key) keys.push(obj.Key);
+    }
+    continuationToken = res.IsTruncated ? res.NextContinuationToken : undefined;
+  } while (continuationToken);
+  return keys;
 }

@@ -10,6 +10,7 @@ import {
   ErrorResponseSchema,
   ProcessLogLinkSchema,
   ServiceUnavailableSchema,
+  StartBatchResponseSchema,
 } from "../schemas";
 
 // ---------------------------------------------------------------------------
@@ -59,7 +60,8 @@ export const listBatchesRoute = createRoute({
   method: "get",
   path: "/",
   summary: "バッチ一覧",
-  description: "status + yyyymm でフィルタしカーソルページングでバッチ一覧を返します。",
+  description:
+    "status + yyyymm でフィルタしカーソルページングでバッチ一覧を返します。",
   request: {
     query: z.object({
       status: z.enum(BATCH_STATUSES, {
@@ -138,7 +140,8 @@ export const getProcessLogRoute = createRoute({
   method: "get",
   path: "/:batchJobId/process-log",
   summary: "process_log.jsonl 取得 URL",
-  description: "終端状態（COMPLETED/PARTIAL/FAILED/CANCELLED）のバッチのみ利用可能。",
+  description:
+    "終端状態（COMPLETED/PARTIAL/FAILED/CANCELLED）のバッチのみ利用可能。",
   request: {
     params: z.object({ batchJobId: z.string() }),
   },
@@ -153,6 +156,39 @@ export const getProcessLogRoute = createRoute({
     },
     409: {
       description: "バッチが終端状態でない",
+      content: { "application/json": { schema: ErrorResponseSchema } },
+    },
+  },
+});
+
+// ---------------------------------------------------------------------------
+// POST /:batchJobId/start — バッチ実行開始 (Task 2.5)
+// ---------------------------------------------------------------------------
+export const startBatchRoute = createRoute({
+  method: "post",
+  path: "/:batchJobId/start",
+  summary: "バッチ実行開始",
+  description: [
+    "PENDING 状態のバッチを PROCESSING へ遷移させ、BatchExecutionStateMachine を起動します。",
+    "",
+    "## 制約",
+    "- PENDING 以外のステータスでは `409` を返します。",
+    "- 同一バッチに対して複数回呼び出すと、2 回目以降は `409` を返します。",
+  ].join("\n"),
+  request: {
+    params: z.object({ batchJobId: z.string() }),
+  },
+  responses: {
+    202: {
+      description: "バッチ実行受理（Step Functions 起動済）",
+      content: { "application/json": { schema: StartBatchResponseSchema } },
+    },
+    404: {
+      description: "バッチが存在しない",
+      content: { "application/json": { schema: ErrorResponseSchema } },
+    },
+    409: {
+      description: "PENDING 以外の状態、または遷移競合",
       content: { "application/json": { schema: ErrorResponseSchema } },
     },
   },
@@ -192,7 +228,8 @@ export const reanalyzeBatchRoute = createRoute({
   method: "post",
   path: "/:batchJobId/reanalyze",
   summary: "再解析バッチ作成",
-  description: "終端状態バッチの失敗ファイルのみを対象とした新バッチを作成します。",
+  description:
+    "終端状態バッチの失敗ファイルのみを対象とした新バッチを作成します。",
   request: {
     params: z.object({ batchJobId: z.string() }),
   },

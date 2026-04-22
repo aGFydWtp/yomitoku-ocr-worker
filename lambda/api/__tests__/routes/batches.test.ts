@@ -16,6 +16,7 @@ const {
   mockListBatchesByStatus,
   mockListFailedFiles,
   mockHeadObject,
+  mockListObjectKeys,
 } = vi.hoisted(() => ({
   mockDynamoSend: vi.fn(),
   mockSfnSend: vi.fn(),
@@ -28,6 +29,7 @@ const {
   mockListBatchesByStatus: vi.fn(),
   mockListFailedFiles: vi.fn(),
   mockHeadObject: vi.fn(),
+  mockListObjectKeys: vi.fn(),
 }));
 
 vi.mock("../../lib/dynamodb", () => ({
@@ -64,6 +66,7 @@ vi.mock("../../lib/batch-query", () => ({
 
 vi.mock("../../lib/s3", () => ({
   headObject: mockHeadObject,
+  listObjectKeys: mockListObjectKeys,
   RESULT_URL_EXPIRES_IN: 3600,
 }));
 
@@ -682,5 +685,230 @@ describe("POST /batches/:batchJobId/reanalyze", () => {
       method: "POST",
     });
     expect(res.status).toBe(409);
+  });
+});
+
+// ============================================================
+// Task 2.5: POST /batches/:batchJobId/start
+// ============================================================
+
+describe("POST /batches/:batchJobId/start", () => {
+  const VALID_BATCH_JOB_ID = "11111111-1111-1111-1111-111111111111";
+  const VALID_EXEC_ARN =
+    "arn:aws:states:ap-northeast-1:123456789012:execution:BatchExec:run1";
+  const VALID_BATCH_SM_ARN =
+    "arn:aws:states:ap-northeast-1:123456789012:stateMachine:BatchExec";
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env.BATCH_TABLE_NAME = "BatchTable";
+    process.env.BUCKET_NAME = "test-bucket";
+    process.env.BATCH_EXECUTION_STATE_MACHINE_ARN = VALID_BATCH_SM_ARN;
+    // デフォルトで期待入力キー 2 件をすべて S3 に存在する状態にする
+    mockListObjectKeys.mockResolvedValue([
+      `batches/${VALID_BATCH_JOB_ID}/input/a.pdf`,
+      `batches/${VALID_BATCH_JOB_ID}/input/b.pdf`,
+    ]);
+  });
+
+  it("正常系: PENDING バッチを PROCESSING へ遷移させて SFN を起動する", async () => {
+    mockGetBatchWithFiles.mockResolvedValue({
+      ...MOCK_BATCH_WITH_FILES,
+      batchJobId: VALID_BATCH_JOB_ID,
+      status: "PENDING",
+      files: [
+        {
+          fileKey: `batches/${VALID_BATCH_JOB_ID}/input/a.pdf`,
+          filename: "a.pdf",
+          status: "PENDING" as const,
+          updatedAt: "2026-04-22T00:00:00Z",
+        },
+        {
+          fileKey: `batches/${VALID_BATCH_JOB_ID}/input/b.pdf`,
+          filename: "b.pdf",
+          status: "PENDING" as const,
+          updatedAt: "2026-04-22T00:00:00Z",
+        },
+      ],
+    });
+    mockTransitionBatchStatus.mockResolvedValue(undefined);
+    mockSfnSend.mockResolvedValue({ executionArn: VALID_EXEC_ARN });
+
+    const app = createApp();
+    const res = await app.request(`/batches/${VALID_BATCH_JOB_ID}/start`, {
+      method: "POST",
+    });
+
+    expect(res.status).toBe(202);
+    const body: AnyJson = await res.json();
+    expect(body.batchJobId).toBe(VALID_BATCH_JOB_ID);
+    expect(body.status).toBe("PROCESSING");
+    expect(body.executionArn).toBe(VALID_EXEC_ARN);
+
+    expect(mockTransitionBatchStatus).toHaveBeenCalledWith(
+      expect.objectContaining({
+        batchJobId: VALID_BATCH_JOB_ID,
+        newStatus: "PROCESSING",
+        expectedCurrent: "PENDING",
+        startedAt: expect.any(String),
+      }),
+    );
+    expect(mockSfnSend).toHaveBeenCalledOnce();
+  });
+
+  it("404: 存在しないバッチは 404 を返す", async () => {
+    mockGetBatchWithFiles.mockResolvedValue(null);
+
+    const app = createApp();
+    const res = await app.request(`/batches/${VALID_BATCH_JOB_ID}/start`, {
+      method: "POST",
+    });
+    expect(res.status).toBe(404);
+    expect(mockTransitionBatchStatus).not.toHaveBeenCalled();
+    expect(mockSfnSend).not.toHaveBeenCalled();
+  });
+
+  it("409: PROCESSING バッチは起動不可で 409 を返す", async () => {
+    mockGetBatchWithFiles.mockResolvedValue({
+      ...MOCK_BATCH_WITH_FILES,
+      batchJobId: VALID_BATCH_JOB_ID,
+      status: "PROCESSING",
+    });
+
+    const app = createApp();
+    const res = await app.request(`/batches/${VALID_BATCH_JOB_ID}/start`, {
+      method: "POST",
+    });
+    expect(res.status).toBe(409);
+    expect(mockTransitionBatchStatus).not.toHaveBeenCalled();
+    expect(mockSfnSend).not.toHaveBeenCalled();
+  });
+
+  it("409: COMPLETED バッチは起動不可で 409 を返す", async () => {
+    mockGetBatchWithFiles.mockResolvedValue({
+      ...MOCK_BATCH_WITH_FILES,
+      batchJobId: VALID_BATCH_JOB_ID,
+      status: "COMPLETED",
+    });
+
+    const app = createApp();
+    const res = await app.request(`/batches/${VALID_BATCH_JOB_ID}/start`, {
+      method: "POST",
+    });
+    expect(res.status).toBe(409);
+  });
+
+  it("409: CANCELLED バッチは起動不可で 409 を返す", async () => {
+    mockGetBatchWithFiles.mockResolvedValue({
+      ...MOCK_BATCH_WITH_FILES,
+      batchJobId: VALID_BATCH_JOB_ID,
+      status: "CANCELLED",
+    });
+
+    const app = createApp();
+    const res = await app.request(`/batches/${VALID_BATCH_JOB_ID}/start`, {
+      method: "POST",
+    });
+    expect(res.status).toBe(409);
+  });
+
+  it("409: ステータス遷移競合時 (ConflictError) は 409 を返す", async () => {
+    mockGetBatchWithFiles.mockResolvedValue({
+      ...MOCK_BATCH_WITH_FILES,
+      batchJobId: VALID_BATCH_JOB_ID,
+      status: "PENDING",
+      files: [
+        {
+          fileKey: `batches/${VALID_BATCH_JOB_ID}/input/a.pdf`,
+          filename: "a.pdf",
+          status: "PENDING" as const,
+          updatedAt: "2026-04-22T00:00:00Z",
+        },
+        {
+          fileKey: `batches/${VALID_BATCH_JOB_ID}/input/b.pdf`,
+          filename: "b.pdf",
+          status: "PENDING" as const,
+          updatedAt: "2026-04-22T00:00:00Z",
+        },
+      ],
+    });
+    // transitionBatchStatus が ConflictError を投げるケース
+    const { ConflictError } = await import("../../lib/errors");
+    mockTransitionBatchStatus.mockRejectedValue(
+      new ConflictError("race condition"),
+    );
+
+    const app = createApp();
+    const res = await app.request(`/batches/${VALID_BATCH_JOB_ID}/start`, {
+      method: "POST",
+    });
+    expect(res.status).toBe(409);
+    expect(mockSfnSend).not.toHaveBeenCalled();
+  });
+
+  it("500: 必須環境変数 BATCH_EXECUTION_STATE_MACHINE_ARN が未設定なら 500 を返す", async () => {
+    delete process.env.BATCH_EXECUTION_STATE_MACHINE_ARN;
+    mockGetBatchWithFiles.mockResolvedValue({
+      ...MOCK_BATCH_WITH_FILES,
+      batchJobId: VALID_BATCH_JOB_ID,
+      status: "PENDING",
+    });
+
+    const app = createApp();
+    const res = await app.request(`/batches/${VALID_BATCH_JOB_ID}/start`, {
+      method: "POST",
+    });
+    expect(res.status).toBe(500);
+  });
+
+  it("500: 不正な ARN 形式なら 500 を返す (assertValidStateMachineArn)", async () => {
+    process.env.BATCH_EXECUTION_STATE_MACHINE_ARN = "not-a-valid-arn";
+    mockGetBatchWithFiles.mockResolvedValue({
+      ...MOCK_BATCH_WITH_FILES,
+      batchJobId: VALID_BATCH_JOB_ID,
+      status: "PENDING",
+    });
+
+    const app = createApp();
+    const res = await app.request(`/batches/${VALID_BATCH_JOB_ID}/start`, {
+      method: "POST",
+    });
+    expect(res.status).toBe(500);
+  });
+
+  it("400: 未アップロードの入力ファイルがある場合は 400 を返し状態遷移も SFN 起動もしない", async () => {
+    mockGetBatchWithFiles.mockResolvedValue({
+      ...MOCK_BATCH_WITH_FILES,
+      batchJobId: VALID_BATCH_JOB_ID,
+      status: "PENDING",
+      files: [
+        {
+          fileKey: `batches/${VALID_BATCH_JOB_ID}/input/a.pdf`,
+          filename: "a.pdf",
+          status: "PENDING" as const,
+          updatedAt: "2026-04-22T00:00:00Z",
+        },
+        {
+          fileKey: `batches/${VALID_BATCH_JOB_ID}/input/b.pdf`,
+          filename: "b.pdf",
+          status: "PENDING" as const,
+          updatedAt: "2026-04-22T00:00:00Z",
+        },
+      ],
+    });
+    // b.pdf だけ S3 に存在しない
+    mockListObjectKeys.mockResolvedValue([
+      `batches/${VALID_BATCH_JOB_ID}/input/a.pdf`,
+    ]);
+
+    const app = createApp();
+    const res = await app.request(`/batches/${VALID_BATCH_JOB_ID}/start`, {
+      method: "POST",
+    });
+    expect(res.status).toBe(400);
+    const body: AnyJson = await res.json();
+    expect(body.error).toMatch(/missing|欠損|upload/i);
+    expect(mockTransitionBatchStatus).not.toHaveBeenCalled();
+    expect(mockSfnSend).not.toHaveBeenCalled();
   });
 });
