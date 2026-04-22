@@ -207,7 +207,7 @@
   - _Requirements: 12.1, 12.2, 12.3_
   - _Depends: 1.3, 6.1_
 
-- [ ] 6.4 `StatusTable` カットオーバー削除手順を IaC に反映する
+- [x] 6.4 `StatusTable` カットオーバー削除手順を IaC に反映する
   - `StatusTable` の `removalPolicy` を一時的に `DESTROY` へ変更する CDK 差分、またはデプロイ直前に手動で `aws dynamodb delete-table` を実行する Runbook を `docs/runbooks/` に整備する
   - カットオーバー手順（1. 事前通知、2. `scripts/check-legacy-refs.sh`、3. `cdk deploy --all`、4. 旧 DDB 確認、5. ロールバック制約の確認）を明文化する
   - Runbook を手動実行した staging 環境で旧 `StatusTable` が消滅することを観測可能な完了条件とする

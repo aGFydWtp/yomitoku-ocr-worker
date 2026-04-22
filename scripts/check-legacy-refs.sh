@@ -32,8 +32,9 @@ FORBIDDEN_PATTERNS=(
 
 # 除外 pathspec（git grep の ':!' 構文）
 # README.md は migration 経緯・旧 API 言及を履歴として残す可能性があるため除外。
-# 実コードに旧参照が残存していないことを保証するのが本スクリプトの目的であり、
-# 人間向けドキュメントの表記ゆれまで CI で止める必要はない (L5)。
+# docs/runbooks/ はカットオーバー手順書で旧リソース名 (StatusTable 等) を明示的に
+# 参照するため除外（Task 6.4）。実コードに旧参照が残存していないことを保証するのが
+# 本スクリプトの目的であり、人間向けドキュメントの表記ゆれまで CI で止める必要はない (L5)。
 EXCLUDES=(
   ':!.kiro/'
   ':!node_modules/'
@@ -42,6 +43,7 @@ EXCLUDES=(
   ':!scripts/check-legacy-refs.sh'
   ':!test/'
   ':!docs/archive/'
+  ':!docs/runbooks/'
   ':!README.md'
   ':!**/README.md'
 )
