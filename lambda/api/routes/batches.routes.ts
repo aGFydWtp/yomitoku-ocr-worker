@@ -95,7 +95,7 @@ export const getBatchRoute = createRoute({
   path: "/:batchJobId",
   summary: "バッチ詳細",
   request: {
-    params: z.object({ batchJobId: z.string() }),
+    params: z.object({ batchJobId: z.string().uuid() }),
   },
   responses: {
     200: {
@@ -118,7 +118,7 @@ export const listBatchFilesRoute = createRoute({
   summary: "バッチファイル一覧",
   description: "完了ファイルには署名付き GET URL（60 分）を付与します。",
   request: {
-    params: z.object({ batchJobId: z.string() }),
+    params: z.object({ batchJobId: z.string().uuid() }),
     query: z.object({ cursor: z.string().optional() }),
   },
   responses: {
@@ -143,7 +143,7 @@ export const getProcessLogRoute = createRoute({
   description:
     "終端状態（COMPLETED/PARTIAL/FAILED/CANCELLED）のバッチのみ利用可能。",
   request: {
-    params: z.object({ batchJobId: z.string() }),
+    params: z.object({ batchJobId: z.string().uuid() }),
   },
   responses: {
     200: {
@@ -176,7 +176,7 @@ export const startBatchRoute = createRoute({
     "- 同一バッチに対して複数回呼び出すと、2 回目以降は `409` を返します。",
   ].join("\n"),
   request: {
-    params: z.object({ batchJobId: z.string() }),
+    params: z.object({ batchJobId: z.string().uuid() }),
   },
   responses: {
     202: {
@@ -203,7 +203,7 @@ export const cancelBatchRoute = createRoute({
   summary: "バッチキャンセル",
   description: "PENDING 状態のバッチのみキャンセル可能。",
   request: {
-    params: z.object({ batchJobId: z.string() }),
+    params: z.object({ batchJobId: z.string().uuid() }),
   },
   responses: {
     200: {
@@ -231,7 +231,7 @@ export const reanalyzeBatchRoute = createRoute({
   description:
     "終端状態バッチの失敗ファイルのみを対象とした新バッチを作成します。",
   request: {
-    params: z.object({ batchJobId: z.string() }),
+    params: z.object({ batchJobId: z.string().uuid() }),
   },
   responses: {
     201: {

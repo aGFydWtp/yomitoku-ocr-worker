@@ -16,6 +16,12 @@ export const BATCH_PENDING_TTL_SECONDS = 24 * 60 * 60;
 /** 1 バッチあたりのクエリ上限（META 1 件 + FILE 最大 N 件）*/
 export const QUERY_LIMIT = MAX_FILES_PER_BATCH + 2;
 
+/**
+ * GSI1 (status+月) / GSI2 (親バッチ参照) 経由のバッチ一覧 API 上限。
+ * ページサイズ兼 1 回あたりの DynamoDB Query Limit として使う (L4)。
+ */
+export const BATCH_LIST_LIMIT = 50;
+
 // ---------------------------------------------------------------------------
 // 共有型（batch-query.ts から再 export して使用）
 // ---------------------------------------------------------------------------

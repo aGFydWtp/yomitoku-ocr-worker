@@ -53,6 +53,14 @@ describe("sanitizeFilename", () => {
     expect(sanitizeFilename("path\u2215to\u2215file.pdf")).toBe("file.pdf");
   });
 
+  it("全角スラッシュ U+FF0F をパス区切り文字として除去する (L2)", () => {
+    expect(sanitizeFilename("path\uFF0Fto\uFF0Ffile.pdf")).toBe("file.pdf");
+  });
+
+  it("全角逆スラッシュ U+FF3C をパス区切り文字として除去する (L2)", () => {
+    expect(sanitizeFilename("path\uFF3Cto\uFF3Cfile.pdf")).toBe("file.pdf");
+  });
+
   it("255バイトを超えるファイル名はValidationErrorを投げる", () => {
     const longName = `${"a".repeat(252)}.pdf`;
     expect(() => sanitizeFilename(longName)).toThrow(

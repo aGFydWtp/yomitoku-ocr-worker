@@ -107,7 +107,7 @@ const UPLOAD_RESULTS = [
 ];
 
 const MOCK_BATCH_META = {
-  batchJobId: "batch-001",
+  batchJobId: "00000000-0000-4000-8000-000000000001",
   status: "COMPLETED" as const,
   totals: { total: 2, succeeded: 2, failed: 0, inProgress: 0 },
   basePath: "project/2026/test",
@@ -121,14 +121,14 @@ const MOCK_BATCH_WITH_FILES = {
   ...MOCK_BATCH_META,
   files: [
     {
-      fileKey: "batches/batch-001/input/a.pdf",
+      fileKey: "batches/00000000-0000-4000-8000-000000000001/input/a.pdf",
       filename: "a.pdf",
       status: "COMPLETED" as const,
-      resultKey: "batches/batch-001/output/a.json",
+      resultKey: "batches/00000000-0000-4000-8000-000000000001/output/a.json",
       updatedAt: "2026-04-22T00:10:00Z",
     },
     {
-      fileKey: "batches/batch-001/input/b.pdf",
+      fileKey: "batches/00000000-0000-4000-8000-000000000001/input/b.pdf",
       filename: "b.pdf",
       status: "FAILED" as const,
       errorMessage: "OCR error",
@@ -385,7 +385,9 @@ describe("GET /batches", () => {
     expect(res.status).toBe(200);
     const body: AnyJson = await res.json();
     expect(body.items).toHaveLength(1);
-    expect(body.items[0].batchJobId).toBe("batch-001");
+    expect(body.items[0].batchJobId).toBe(
+      "00000000-0000-4000-8000-000000000001",
+    );
     expect(body.cursor).toBeNull();
   });
 
@@ -432,10 +434,12 @@ describe("GET /batches/:batchJobId", () => {
     mockGetBatchWithFiles.mockResolvedValue(MOCK_BATCH_WITH_FILES);
 
     const app = createApp();
-    const res = await app.request("/batches/batch-001");
+    const res = await app.request(
+      "/batches/00000000-0000-4000-8000-000000000001",
+    );
     expect(res.status).toBe(200);
     const body: AnyJson = await res.json();
-    expect(body.batchJobId).toBe("batch-001");
+    expect(body.batchJobId).toBe("00000000-0000-4000-8000-000000000001");
     expect(body.status).toBe("COMPLETED");
     expect(body.totals).toBeDefined();
     expect(body.createdAt).toBeDefined();
@@ -446,7 +450,9 @@ describe("GET /batches/:batchJobId", () => {
     mockGetBatchWithFiles.mockResolvedValue(null);
 
     const app = createApp();
-    const res = await app.request("/batches/nonexistent");
+    const res = await app.request(
+      "/batches/00000000-0000-4000-8000-000000000999",
+    );
     expect(res.status).toBe(404);
   });
 });
@@ -467,7 +473,9 @@ describe("GET /batches/:batchJobId/files", () => {
     mockCreateResultUrl.mockResolvedValue("https://s3.example.com/result.json");
 
     const app = createApp();
-    const res = await app.request("/batches/batch-001/files");
+    const res = await app.request(
+      "/batches/00000000-0000-4000-8000-000000000001/files",
+    );
     expect(res.status).toBe(200);
     const body: AnyJson = await res.json();
     expect(body.items).toHaveLength(2);
@@ -485,7 +493,9 @@ describe("GET /batches/:batchJobId/files", () => {
     mockGetBatchWithFiles.mockResolvedValue(null);
 
     const app = createApp();
-    const res = await app.request("/batches/nonexistent/files");
+    const res = await app.request(
+      "/batches/00000000-0000-4000-8000-000000000999/files",
+    );
     expect(res.status).toBe(404);
   });
 });
@@ -504,7 +514,9 @@ describe("GET /batches/:batchJobId/process-log", () => {
     );
 
     const app = createApp();
-    const res = await app.request("/batches/batch-001/process-log");
+    const res = await app.request(
+      "/batches/00000000-0000-4000-8000-000000000001/process-log",
+    );
     expect(res.status).toBe(200);
     const body: AnyJson = await res.json();
     expect(body.url).toBe("https://s3.example.com/log.jsonl");
@@ -518,7 +530,9 @@ describe("GET /batches/:batchJobId/process-log", () => {
     });
 
     const app = createApp();
-    const res = await app.request("/batches/batch-001/process-log");
+    const res = await app.request(
+      "/batches/00000000-0000-4000-8000-000000000001/process-log",
+    );
     expect(res.status).toBe(409);
   });
 
@@ -529,7 +543,9 @@ describe("GET /batches/:batchJobId/process-log", () => {
     });
 
     const app = createApp();
-    const res = await app.request("/batches/batch-001/process-log");
+    const res = await app.request(
+      "/batches/00000000-0000-4000-8000-000000000001/process-log",
+    );
     expect(res.status).toBe(409);
   });
 
@@ -537,7 +553,9 @@ describe("GET /batches/:batchJobId/process-log", () => {
     mockGetBatchWithFiles.mockResolvedValue(null);
 
     const app = createApp();
-    const res = await app.request("/batches/nonexistent/process-log");
+    const res = await app.request(
+      "/batches/00000000-0000-4000-8000-000000000999/process-log",
+    );
     expect(res.status).toBe(404);
   });
 });
@@ -561,7 +579,10 @@ describe("DELETE /batches/:batchJobId", () => {
     mockTransitionBatchStatus.mockResolvedValue(undefined);
 
     const app = createApp();
-    const res = await app.request("/batches/batch-001", { method: "DELETE" });
+    const res = await app.request(
+      "/batches/00000000-0000-4000-8000-000000000001",
+      { method: "DELETE" },
+    );
     expect(res.status).toBe(200);
     const body: AnyJson = await res.json();
     expect(body.status).toBe("CANCELLED");
@@ -577,7 +598,10 @@ describe("DELETE /batches/:batchJobId", () => {
     mockGetBatchWithFiles.mockResolvedValue(null);
 
     const app = createApp();
-    const res = await app.request("/batches/nonexistent", { method: "DELETE" });
+    const res = await app.request(
+      "/batches/00000000-0000-4000-8000-000000000999",
+      { method: "DELETE" },
+    );
     expect(res.status).toBe(404);
   });
 
@@ -588,7 +612,10 @@ describe("DELETE /batches/:batchJobId", () => {
     });
 
     const app = createApp();
-    const res = await app.request("/batches/batch-001", { method: "DELETE" });
+    const res = await app.request(
+      "/batches/00000000-0000-4000-8000-000000000001",
+      { method: "DELETE" },
+    );
     expect(res.status).toBe(409);
     expect(mockTransitionBatchStatus).not.toHaveBeenCalled();
   });
@@ -597,7 +624,10 @@ describe("DELETE /batches/:batchJobId", () => {
     mockGetBatchWithFiles.mockResolvedValue(MOCK_BATCH_WITH_FILES);
 
     const app = createApp();
-    const res = await app.request("/batches/batch-001", { method: "DELETE" });
+    const res = await app.request(
+      "/batches/00000000-0000-4000-8000-000000000001",
+      { method: "DELETE" },
+    );
     expect(res.status).toBe(409);
   });
 });
@@ -611,7 +641,7 @@ describe("POST /batches/:batchJobId/reanalyze", () => {
 
   const FAILED_FILES = [
     {
-      fileKey: "batches/batch-001/input/b.pdf",
+      fileKey: "batches/00000000-0000-4000-8000-000000000001/input/b.pdf",
       filename: "b.pdf",
       status: "FAILED" as const,
       errorMessage: "OCR error",
@@ -627,9 +657,12 @@ describe("POST /batches/:batchJobId/reanalyze", () => {
     mockCreateUploadUrls.mockResolvedValue([UPLOAD_RESULTS[1]]);
 
     const app = createApp();
-    const res = await app.request("/batches/batch-001/reanalyze", {
-      method: "POST",
-    });
+    const res = await app.request(
+      "/batches/00000000-0000-4000-8000-000000000001/reanalyze",
+      {
+        method: "POST",
+      },
+    );
     expect(res.status).toBe(201);
     const body: AnyJson = await res.json();
     expect(body.batchJobId).toMatch(
@@ -638,16 +671,21 @@ describe("POST /batches/:batchJobId/reanalyze", () => {
     expect(body.uploads).toHaveLength(1);
     // parentBatchJobId が設定されていること
     const storeArgs = mockPutBatchWithFiles.mock.calls[0][0];
-    expect(storeArgs.parentBatchJobId).toBe("batch-001");
+    expect(storeArgs.parentBatchJobId).toBe(
+      "00000000-0000-4000-8000-000000000001",
+    );
   });
 
   it("404: 存在しないバッチは 404 を返す", async () => {
     mockGetBatchWithFiles.mockResolvedValue(null);
 
     const app = createApp();
-    const res = await app.request("/batches/nonexistent/reanalyze", {
-      method: "POST",
-    });
+    const res = await app.request(
+      "/batches/00000000-0000-4000-8000-000000000999/reanalyze",
+      {
+        method: "POST",
+      },
+    );
     expect(res.status).toBe(404);
   });
 
@@ -658,9 +696,12 @@ describe("POST /batches/:batchJobId/reanalyze", () => {
     });
 
     const app = createApp();
-    const res = await app.request("/batches/batch-001/reanalyze", {
-      method: "POST",
-    });
+    const res = await app.request(
+      "/batches/00000000-0000-4000-8000-000000000001/reanalyze",
+      {
+        method: "POST",
+      },
+    );
     expect(res.status).toBe(409);
   });
 
@@ -669,9 +710,12 @@ describe("POST /batches/:batchJobId/reanalyze", () => {
     mockHeadObject.mockResolvedValue(false);
 
     const app = createApp();
-    const res = await app.request("/batches/batch-001/reanalyze", {
-      method: "POST",
-    });
+    const res = await app.request(
+      "/batches/00000000-0000-4000-8000-000000000001/reanalyze",
+      {
+        method: "POST",
+      },
+    );
     expect(res.status).toBe(404);
   });
 
@@ -681,9 +725,12 @@ describe("POST /batches/:batchJobId/reanalyze", () => {
     mockListFailedFiles.mockResolvedValue([]);
 
     const app = createApp();
-    const res = await app.request("/batches/batch-001/reanalyze", {
-      method: "POST",
-    });
+    const res = await app.request(
+      "/batches/00000000-0000-4000-8000-000000000001/reanalyze",
+      {
+        method: "POST",
+      },
+    );
     expect(res.status).toBe(409);
   });
 });
@@ -693,7 +740,7 @@ describe("POST /batches/:batchJobId/reanalyze", () => {
 // ============================================================
 
 describe("POST /batches/:batchJobId/start", () => {
-  const VALID_BATCH_JOB_ID = "11111111-1111-1111-1111-111111111111";
+  const VALID_BATCH_JOB_ID = "11111111-1111-4111-8111-111111111111";
   const VALID_EXEC_ARN =
     "arn:aws:states:ap-northeast-1:123456789012:execution:BatchExec:run1";
   const VALID_BATCH_SM_ARN =

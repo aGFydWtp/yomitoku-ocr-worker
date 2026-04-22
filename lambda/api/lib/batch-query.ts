@@ -1,7 +1,7 @@
 import { QueryCommand } from "@aws-sdk/lib-dynamodb";
 import type { BatchStatus } from "../schemas";
 import type { BatchMeta, BatchWithFiles, FileItem } from "./batch-store";
-import { QUERY_LIMIT } from "./batch-store";
+import { BATCH_LIST_LIMIT, QUERY_LIMIT } from "./batch-store";
 import { docClient } from "./dynamodb";
 import { decodeBatchCursor, encodeBatchCursor } from "./validate";
 
@@ -112,7 +112,7 @@ export class BatchQuery {
         KeyConditionExpression: "#gsi1pk = :gsi1pk",
         ExpressionAttributeNames: { "#gsi1pk": "GSI1PK" },
         ExpressionAttributeValues: { ":gsi1pk": gsi1pkVal },
-        Limit: 50,
+        Limit: BATCH_LIST_LIMIT,
         ...(exclusiveStartKey ? { ExclusiveStartKey: exclusiveStartKey } : {}),
       }),
     );
@@ -150,7 +150,7 @@ export class BatchQuery {
         ExpressionAttributeValues: {
           ":gsi2pk": `PARENT#${parentBatchJobId}`,
         },
-        Limit: 50,
+        Limit: BATCH_LIST_LIMIT,
       }),
     );
 
