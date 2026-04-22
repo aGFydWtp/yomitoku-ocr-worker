@@ -140,6 +140,24 @@ describe("ApiStack (batch-first IAM / env wiring, Task 6.2)", () => {
     });
   });
 
+  // --- Secrets Manager (H1: origin verify secret) ---
+  describe("Origin Verify Secret (H1)", () => {
+    it("Secrets Manager シークレットリソースが 1 つ作成されている", () => {
+      const { template } = createStack();
+      template.resourceCountIs("AWS::SecretsManager::Secret", 1);
+    });
+
+    it("GenerateSecretString で 64 文字の高エントロピー値を自動生成する", () => {
+      const { template } = createStack();
+      template.hasResourceProperties("AWS::SecretsManager::Secret", {
+        GenerateSecretString: Match.objectLike({
+          PasswordLength: 64,
+          ExcludePunctuation: true,
+        }),
+      });
+    });
+  });
+
   // --- CloudFront Distribution ---
   describe("CloudFront Distribution", () => {
     it("CloudFront Distribution が作成されている", () => {
@@ -163,6 +181,16 @@ describe("ApiStack (batch-first IAM / env wiring, Task 6.2)", () => {
           ]),
         },
       });
+    });
+
+    it("customHeaders が Secrets Manager 動的参照を使用する (H1: ハードコード撤去)", () => {
+      const { template } = createStack();
+      const distributions = template.findResources(
+        "AWS::CloudFront::Distribution",
+      );
+      const serialized = JSON.stringify(distributions);
+      // CFN の Secrets Manager dynamic reference が含まれている
+      expect(serialized).toContain("{{resolve:secretsmanager:");
     });
 
     it("ViewerProtocolPolicy が redirect-to-https である", () => {

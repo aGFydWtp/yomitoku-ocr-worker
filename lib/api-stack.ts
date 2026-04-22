@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import {
   AccessLogFormat,
   CfnAccount,
@@ -28,6 +27,7 @@ import { Runtime } from "aws-cdk-lib/aws-lambda";
 import { NodejsFunction } from "aws-cdk-lib/aws-lambda-nodejs";
 import { LogGroup, RetentionDays } from "aws-cdk-lib/aws-logs";
 import type { Bucket } from "aws-cdk-lib/aws-s3";
+import { Secret } from "aws-cdk-lib/aws-secretsmanager";
 import type { IStateMachine } from "aws-cdk-lib/aws-stepfunctions";
 import type { StackProps } from "aws-cdk-lib/core";
 import { CfnOutput, Duration, Stack } from "aws-cdk-lib/core";
@@ -164,10 +164,19 @@ export class ApiStack extends Stack {
       description: "API Gateway URL",
     });
 
-    // --- CloudFront Distribution ---
-    const originVerifySecret = createHash("sha256")
-      .update(`${this.stackName}-origin-verify`)
-      .digest("hex");
+    // --- Origin Verify Secret (H1) ---
+    // CloudFront → API Gateway 間の共有シークレット。スタック名由来のハッシュだと
+    // スタック名が既知であれば誰でも再現可能になるため、Secrets Manager で
+    // 高エントロピーな値を生成し、CFN 動的参照でデプロイ時に解決する。
+    const originVerifySecretResource = new Secret(this, "OriginVerifySecret", {
+      description: `Origin verify secret for ${this.stackName} CloudFront → API Gateway auth`,
+      generateSecretString: {
+        passwordLength: 64,
+        excludePunctuation: true,
+      },
+    });
+    const originVerifySecret =
+      originVerifySecretResource.secretValue.unsafeUnwrap();
 
     const wafWebAclId = this.node.tryGetContext("wafWebAclId") as
       | string
@@ -335,5 +344,17 @@ export class ApiStack extends Stack {
       distribution,
       cfDistributionSuppressions,
     );
+
+    // Origin verify secret は CloudFront/API Gateway 両方に static に埋め込まれる
+    // ため自動ローテーションは不可。ローテーションにはスタック再デプロイが必要。
+    NagSuppressions.addResourceSuppressions(originVerifySecretResource, [
+      {
+        id: "AwsSolutions-SMG4",
+        reason:
+          "This secret is injected into CloudFront origin custom headers and " +
+          "API Gateway resource policy at synth time. Rotation requires full " +
+          "stack redeploy and will be handled manually when needed.",
+      },
+    ]);
   }
 }
