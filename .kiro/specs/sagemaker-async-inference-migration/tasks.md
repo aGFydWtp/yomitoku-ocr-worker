@@ -134,7 +134,7 @@
 
 ## 4. BatchExecutionStack — Task Role / SFN / env vars
 
-- [ ] 4.1 (P) Task Role の SageMaker 権限を `InvokeEndpointAsync` に切替える
+- [x] 4.1 (P) Task Role の SageMaker 権限を `InvokeEndpointAsync` に切替える
   - `sagemaker:InvokeEndpoint` (Realtime) と `sagemaker:DescribeEndpoint` を削除
   - `sagemaker:InvokeEndpointAsync` を Endpoint ARN (`arn:aws:sagemaker:{region}:{account}:endpoint/{endpointName}`) 限定で付与
   - 観測可能条件: `cdk synth` の Task Role Policy が `sagemaker:InvokeEndpointAsync` 1 件のみを持ち、Realtime 系 action が 0 件

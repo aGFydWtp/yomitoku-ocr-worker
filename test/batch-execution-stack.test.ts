@@ -220,24 +220,34 @@ describe("BatchExecutionStack", () => {
       );
     });
 
-    it("Task Role が SageMaker InvokeEndpoint と DescribeEndpoint を持つ", () => {
+    it("Task Role が SageMaker InvokeEndpointAsync のみを Endpoint ARN 限定で持つ (Realtime action 削除)", () => {
       const { template } = createStack();
+      // InvokeEndpointAsync が付与されている
       template.hasResourceProperties(
         "AWS::IAM::Policy",
         Match.objectLike({
           PolicyDocument: Match.objectLike({
             Statement: Match.arrayWith([
               Match.objectLike({
-                Action: Match.arrayWith([
-                  "sagemaker:InvokeEndpoint",
-                  "sagemaker:DescribeEndpoint",
-                ]),
+                Action: "sagemaker:InvokeEndpointAsync",
                 Effect: "Allow",
               }),
             ]),
           }),
         }),
       );
+
+      // Realtime 系 action (InvokeEndpoint / DescribeEndpoint) は Task Role から削除されている。
+      // SFN 実行ロールの DescribeEndpoint は別ポリシーのため、Task Role に紐づく
+      // "TaskRoleDefaultPolicy" を対象に文字列検査する。
+      const policies = template.findResources("AWS::IAM::Policy");
+      const taskRolePolicies = Object.entries(policies).filter(([name]) =>
+        name.includes("TaskRoleDefaultPolicy"),
+      );
+      expect(taskRolePolicies.length).toBeGreaterThan(0);
+      const taskRoleJson = JSON.stringify(taskRolePolicies);
+      expect(taskRoleJson).not.toContain('"sagemaker:InvokeEndpoint"');
+      expect(taskRoleJson).not.toContain('"sagemaker:DescribeEndpoint"');
     });
   });
 
@@ -371,13 +381,13 @@ describe("BatchExecutionStack", () => {
       );
     });
 
-    it("SFN 実行ロールが SageMaker DescribeEndpoint 権限を持つ", () => {
+    it("SFN 実行ロールが SageMaker describeEndpoint 権限を持つ (Task 4.4 で EnsureEndpointInService ごと撤去予定)", () => {
       const { template } = createStack();
-      // CallAwsService は service/action を Action 文字列にマッピングするが、
-      // 単一 Action/配列どちらで生成されるかは CDK バージョンに依存するため
-      // IAM ポリシー全体の直列化で存在確認する。
+      // CallAwsService は action を camelCase (先頭小文字) に変換する。
+      // Task 4.4 で EnsureEndpointInService state を撤去する際、本 assertion も
+      // 併せて削除する予定。
       const policies = template.findResources("AWS::IAM::Policy");
-      expect(JSON.stringify(policies)).toContain("sagemaker:DescribeEndpoint");
+      expect(JSON.stringify(policies)).toContain("sagemaker:describeEndpoint");
     });
   });
 

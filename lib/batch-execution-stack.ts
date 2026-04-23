@@ -218,12 +218,15 @@ export class BatchExecutionStack extends Stack {
       }),
     );
 
-    // SageMaker: エンドポイント呼び出し + 状態確認
+    // SageMaker: Async Inference 呼び出しのみ。旧 Realtime API
+    // (`sagemaker:InvokeEndpoint` / `sagemaker:DescribeEndpoint`) は撤去する。
+    // DescribeEndpoint は SFN `EnsureEndpointInService` が CallAwsService 経由で
+    // 別 IAM ポリシーとして付与するため、Task Role には不要 (Task 4.4 で SFN も撤去予定)。
     this.taskDefinition.addToTaskRolePolicy(
       new PolicyStatement({
-        sid: "SageMakerInvokeEndpoint",
+        sid: "SageMakerInvokeEndpointAsync",
         effect: Effect.ALLOW,
-        actions: ["sagemaker:InvokeEndpoint", "sagemaker:DescribeEndpoint"],
+        actions: ["sagemaker:InvokeEndpointAsync"],
         resources: [
           `arn:aws:sagemaker:${this.region}:${this.account}:endpoint/${endpointName}`,
         ],
