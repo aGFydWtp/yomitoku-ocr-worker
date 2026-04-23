@@ -1,6 +1,6 @@
 """SageMaker Asynchronous Inference 呼び出しクライアント。
 
-Task 3.1 〜 3.3 での責務:
+Task 3.1 〜 3.3 / 5.1 を通じて以下を担う:
     - 入力ファイルを ``batches/_async/inputs/{batch_job_id}/{file}`` へ
       S3 ``PutObject`` でステージングする
     - ``InferenceId`` を ``{batch_job_id}:{file_stem}`` 形式で生成する
@@ -15,10 +15,9 @@ Task 3.1 〜 3.3 での責務:
     - ``BATCH_TASK_TIMEOUT_SECONDS=7200`` (既定、引数で上書き可) の deadline
       まで待機し、未完了 InferenceId は ``BatchResult.in_flight_timeout`` に
       集計する
-
-後続 (3.4 / 5.1) で Async タイムアウト経路のテスト拡充、
-``runner.run_async_batch`` からの呼び出しおよび `output/*.json` /
-`process_log.jsonl` の永続化と統合する。
+    - 成功時は ``OutputLocation`` から JSON を取得して
+      ``output_dir/{stem}.json`` に保存し、全結果 (成功/失敗/タイムアウト) を
+      ``process_log.jsonl`` に 1 行 1 レコードで追記する
 """
 
 from __future__ import annotations
@@ -26,10 +25,13 @@ from __future__ import annotations
 import json
 import logging
 import mimetypes
+import posixpath
+import shutil
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 import boto3
 from botocore.exceptions import ClientError
@@ -265,15 +267,16 @@ class AsyncInvoker:
         return results
 
     # ------------------------------------------------------------------
-    # Task 3.3: max_concurrent 背圧 + BatchResult 集計 + deadline 監視
+    # Task 3.3 / 5.1: max_concurrent 背圧 + BatchResult + deadline 監視
+    #                 + OutputLocation ダウンロード + process_log.jsonl 永続化
     # ------------------------------------------------------------------
     async def run_batch(
         self,
         *,
         batch_job_id: str,
         input_files: list[Path],
-        output_dir: Path,  # noqa: ARG002 — Task 5.1 で output JSON 書き込みに使用
-        log_path: Path,  # noqa: ARG002 — Task 5.1 で process_log.jsonl に使用
+        output_dir: Path,
+        log_path: Path,
         deadline_seconds: float = _DEFAULT_DEADLINE_SECONDS,
     ) -> BatchResult:
         """入力ファイルを Async Endpoint で処理し、BatchResult を返す。
@@ -286,19 +289,29 @@ class AsyncInvoker:
               ``_invoke_async`` を同期発行する。4xx の ``ClientError`` は
               ``failed_files`` に積んで継続
            b. ``_poll_queue(success)`` と ``_poll_queue(failure)`` を順に呼び、
-              自バッチ宛てを ``succeeded_files`` / ``failed_files`` に集計
+              自バッチ宛てを ``succeeded_files`` / ``failed_files`` に集計し、
+              成功時は OutputLocation から ``output_dir/{stem}.json`` を保存
+              する。同時に ``process_log.jsonl`` に 1 行 1 レコードで追記する
         3. deadline 超過で抜けた場合、残 in-flight を ``in_flight_timeout`` へ
-           移送
+           移送し、各ファイルに timeout レコードを追記する
 
         ``boto3`` は同期 API なので ``async def`` の内部では ``await`` を
         使わない。呼び出し側は ``asyncio.run(invoker.run_batch(...))`` で起動
         する想定。``async`` シグネチャは ``design.md`` の契約に揃えるため維持。
         """
+        output_dir = Path(output_dir)
+        log_path = Path(log_path)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+
         deadline = time.monotonic() + deadline_seconds
         result = BatchResult()
 
         # in_flight: InferenceId → file_stem
         in_flight: dict[str, str] = {}
+        # stem → 元の入力 Path。process_log の file_path 欄と
+        # 成功時の output パス生成で使う。
+        stem_to_input: dict[str, Path] = {}
         pending: list[Path] = list(input_files)
 
         while pending or in_flight:
@@ -309,6 +322,7 @@ class AsyncInvoker:
             while pending and len(in_flight) < self.max_concurrent:
                 file_path = pending.pop(0)
                 file_stem = file_path.stem
+                stem_to_input[file_stem] = file_path
                 try:
                     inference_id = self._build_inference_id(batch_job_id, file_stem)
                     input_location = self._stage_input(file_path)
@@ -321,13 +335,27 @@ class AsyncInvoker:
                     # 4xx は即時失敗確定 (リトライなし)。エラーコード + message を残す
                     code = exc.response.get("Error", {}).get("Code", "ClientError")
                     message = exc.response.get("Error", {}).get("Message", str(exc))
-                    result.failed_files.append(
-                        (file_stem, f"{code}: {message}")
+                    reason = f"{code}: {message}"
+                    result.failed_files.append((file_stem, reason))
+                    self._append_log_entry(
+                        log_path=log_path,
+                        file_path=file_path,
+                        output_path=None,
+                        success=False,
+                        error=reason,
                     )
                     continue
                 except (OSError, ValueError) as exc:
                     # 入力 read 失敗 / InferenceId 長さ超過 / prefix 逸脱等
-                    result.failed_files.append((file_stem, str(exc)))
+                    reason = str(exc)
+                    result.failed_files.append((file_stem, reason))
+                    self._append_log_entry(
+                        log_path=log_path,
+                        file_path=file_path,
+                        output_path=None,
+                        success=False,
+                        error=reason,
+                    )
                     continue
                 in_flight[inference_id] = file_stem
 
@@ -339,20 +367,34 @@ class AsyncInvoker:
             self._drain_queue(
                 queue_url=self.success_queue_url,
                 in_flight=in_flight,
-                succeeded=result.succeeded_files,
-                failed=result.failed_files,
+                stem_to_input=stem_to_input,
+                result=result,
+                output_dir=output_dir,
+                log_path=log_path,
                 is_failure=False,
             )
             self._drain_queue(
                 queue_url=self.failure_queue_url,
                 in_flight=in_flight,
-                succeeded=result.succeeded_files,
-                failed=result.failed_files,
+                stem_to_input=stem_to_input,
+                result=result,
+                output_dir=output_dir,
+                log_path=log_path,
                 is_failure=True,
             )
 
         # deadline 超過で抜けた場合、残 in-flight をタイムアウト扱い
-        result.in_flight_timeout.extend(sorted(in_flight.values()))
+        for file_stem in sorted(in_flight.values()):
+            result.in_flight_timeout.append(file_stem)
+            file_path = stem_to_input.pop(file_stem, None)
+            if file_path is not None:
+                self._append_log_entry(
+                    log_path=log_path,
+                    file_path=file_path,
+                    output_path=None,
+                    success=False,
+                    error="timeout: deadline exceeded before Async notification",
+                )
         return result
 
     def _drain_queue(
@@ -360,11 +402,20 @@ class AsyncInvoker:
         *,
         queue_url: str,
         in_flight: dict[str, str],
-        succeeded: list[str],
-        failed: list[tuple[str, str]],
+        stem_to_input: dict[str, Path],
+        result: BatchResult,
+        output_dir: Path,
+        log_path: Path,
         is_failure: bool,
     ) -> None:
-        """1 回 ``_poll_queue`` を実行し、結果を in_flight / 集計リストに反映する。
+        """1 回 ``_poll_queue`` を実行し、結果を result / in_flight に反映する。
+
+        成功通知を受けた場合は ``responseParameters.outputLocation`` から
+        JSON を S3 経由でダウンロードし、``output_dir/{stem}.json`` に保存する。
+        ダウンロード失敗は失敗扱いとして ``failed_files`` に積む。
+
+        失敗通知を受けた場合は ``failureReason`` を ``failed_files`` と
+        ``process_log.jsonl`` に記録する。
 
         自バッチ宛てメッセージは ``_poll_queue`` 内で ``DeleteMessage`` 済。
         """
@@ -377,11 +428,134 @@ class AsyncInvoker:
             if file_stem is None:
                 # 別 iteration で既に取り込み済 (重複配信)。at-least-once 耐性。
                 continue
+            file_path = stem_to_input.pop(file_stem, None)
+
+            def _record_failure(reason: str) -> None:
+                """失敗を result と process_log に 1 箇所で記録する。"""
+                result.failed_files.append((file_stem, reason))
+                if file_path is not None:
+                    self._append_log_entry(
+                        log_path=log_path,
+                        file_path=file_path,
+                        output_path=None,
+                        success=False,
+                        error=reason,
+                    )
+
             if is_failure:
                 reason = notif.body.get("failureReason") or "unknown"
-                failed.append((file_stem, str(reason)))
-            else:
-                succeeded.append(file_stem)
+                _record_failure(str(reason))
+                continue
+
+            # 成功: OutputLocation から JSON をダウンロードして保存
+            output_location = (
+                notif.body.get("responseParameters", {}).get("outputLocation")
+            )
+            persisted_path = output_dir / f"{file_stem}.json"
+            try:
+                if not isinstance(output_location, str) or not output_location:
+                    raise ValueError(
+                        "responseParameters.outputLocation missing in success notification"
+                    )
+                self._download_output(
+                    s3_uri=output_location, destination=persisted_path
+                )
+            except ClientError as exc:
+                code = exc.response.get("Error", {}).get("Code", "ClientError")
+                message = exc.response.get("Error", {}).get("Message", str(exc))
+                _record_failure(f"output download failed ({code}): {message}")
+                continue
+            except (OSError, ValueError) as exc:
+                _record_failure(f"output download failed: {exc}")
+                continue
+
+            result.succeeded_files.append(file_stem)
+            if file_path is not None:
+                self._append_log_entry(
+                    log_path=log_path,
+                    file_path=file_path,
+                    output_path=persisted_path,
+                    success=True,
+                    error=None,
+                )
+
+    # ------------------------------------------------------------------
+    # Task 5.1: S3 OutputLocation ダウンロード + process_log.jsonl 追記
+    # ------------------------------------------------------------------
+    def _parse_s3_uri(self, uri: str) -> tuple[str, str]:
+        """``s3://bucket/key`` を ``(bucket, key)`` に分解する。
+
+        スキームが ``s3`` 以外、または bucket / key が空なら ``ValueError``。
+        ``..`` を含むなど正規化後に変わるキーも不正 URI として拒否する
+        (SageMaker からの notification が汚染された場合の横取り防止)。
+        ``bucket`` は ``self.output_bucket`` と一致するもののみ許可する。
+        """
+        parsed = urlparse(uri)
+        if parsed.scheme != "s3" or not parsed.netloc:
+            raise ValueError(f"invalid S3 URI: {uri!r}")
+        key = parsed.path.lstrip("/")
+        if not key:
+            raise ValueError(f"S3 URI missing key: {uri!r}")
+        if key != posixpath.normpath(key) or ".." in key.split("/"):
+            raise ValueError(f"S3 URI key is not normalized: {uri!r}")
+        if parsed.netloc != self.output_bucket:
+            raise ValueError(
+                f"S3 URI bucket {parsed.netloc!r} does not match "
+                f"output_bucket {self.output_bucket!r}"
+            )
+        return parsed.netloc, key
+
+    # SageMaker Async の出力サイズ上限は 1GB。yomitoku の応答は数 MB 程度に
+    # 収まる想定だが、誤設定で巨大レスポンスが返された場合にメモリを食い
+    # 潰さないよう、ストリーム書き込み + ContentLength 上限で防御する。
+    _MAX_OUTPUT_BYTES = 128 * 1024 * 1024  # 128 MiB
+
+    def _download_output(self, *, s3_uri: str, destination: Path) -> None:
+        """``s3_uri`` を ``destination`` にストリーム保存する。
+
+        ContentLength が ``_MAX_OUTPUT_BYTES`` を超えるレスポンスは即時拒否し、
+        本体 read 前に ``ValueError`` を送出する。
+        """
+        bucket, key = self._parse_s3_uri(s3_uri)
+        response = self._s3.get_object(Bucket=bucket, Key=key)
+        content_length = response.get("ContentLength")
+        if (
+            isinstance(content_length, int)
+            and content_length > self._MAX_OUTPUT_BYTES
+        ):
+            raise ValueError(
+                f"output too large: {content_length} bytes "
+                f"(max={self._MAX_OUTPUT_BYTES})"
+            )
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        with destination.open("wb") as f:
+            shutil.copyfileobj(response["Body"], f)
+
+    @staticmethod
+    def _append_log_entry(
+        *,
+        log_path: Path,
+        file_path: Path,
+        output_path: Path | None,
+        success: bool,
+        error: str | None,
+    ) -> None:
+        """``process_log.jsonl`` に 1 行 1 レコードで追記する。
+
+        DDB 反映 (Task 3.4 の ``update_batch_items_from_log``) で
+        ``file_path`` → ``BatchTable`` PK を特定し、
+        ``output_path`` / ``success`` / ``error`` を状態遷移に用いる。
+        """
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        record = {
+            "file_path": str(file_path),
+            "output_path": str(output_path) if output_path is not None else None,
+            "success": success,
+            "error": error,
+        }
+        with log_path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False))
+            f.write("\n")
 
     @staticmethod
     def _unwrap_notification(body_text: str) -> dict[str, Any] | None:

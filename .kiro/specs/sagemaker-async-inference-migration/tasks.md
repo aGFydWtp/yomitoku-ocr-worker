@@ -173,7 +173,7 @@
 
 ## 5. Fargate runner 統合
 
-- [ ] 5.1 `runner.py` を Async 経路へ刷新する
+- [x] 5.1 `runner.py` を Async 経路へ刷新する
   - 旧 `create_client` / `run_analyze_batch` (Realtime `YomitokuClient.analyze_batch_async` 経由) を完全撤去
   - 新 `run_async_batch(settings)` を実装し、内部で `AsyncInvoker(settings).run_batch(...)` を `await` 呼び出し
   - 既存の `generate_all_visualizations` (`parse_pydantic_model`, `correct_rotation_image`, `page_result.visualize`) を後段で流用

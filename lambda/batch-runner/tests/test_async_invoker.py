@@ -114,21 +114,35 @@ def _sns_wrap(inner: dict) -> str:
 
 
 def _success_body(inference_id: str) -> dict:
+    # outputLocation は stem 単位で別 URI にして、テストでダミー JSON を
+    # 事前配置した S3 オブジェクトを指せるようにする。
+    stem = inference_id.split(":")[-1]
     return {
         "awsRegion": REGION,
         "invocationStatus": "Completed",
         "requestParameters": {
             "endpointName": "yomitoku-async",
             "inputLocation": (
-                f"s3://{BUCKET}/batches/_async/inputs/{BATCH_JOB_ID}/{inference_id.split(':')[-1]}.pdf"
+                f"s3://{BUCKET}/batches/_async/inputs/{BATCH_JOB_ID}/{stem}.pdf"
             ),
         },
         "responseParameters": {
             "contentType": "application/json",
-            "outputLocation": f"s3://{BUCKET}/batches/_async/outputs/abc.out",
+            "outputLocation": f"s3://{BUCKET}/batches/_async/outputs/{stem}.out",
         },
         "inferenceId": inference_id,
     }
+
+
+def _put_dummy_output(s3: Any, stem: str, payload: dict | None = None) -> None:
+    """Async 成功時の OutputLocation に相当するダミー JSON を S3 に配置する。"""
+    body = json.dumps(payload or {"pages": [], "stem": stem}).encode("utf-8")
+    s3.put_object(
+        Bucket=BUCKET,
+        Key=f"batches/_async/outputs/{stem}.out",
+        Body=body,
+        ContentType="application/json",
+    )
 
 
 def _failure_body(inference_id: str) -> dict:
@@ -491,7 +505,9 @@ def test_run_batch_respects_max_concurrent_semaphore(full_aws_env, tmp_path: Pat
     files = [_write_input(tmp_path, f"{stem}.pdf") for stem in ("a", "b", "c")]
 
     # 3 ファイル分の Success メッセージを事前投入しておく (poll でまとめて回収)
+    # OutputLocation ダウンロードが発生するので S3 にもダミーを配置する。
     for stem in ("a", "b", "c"):
+        _put_dummy_output(env["s3"], stem)
         env["sqs"].send_message(
             QueueUrl=env["success_url"],
             MessageBody=_sns_wrap(_success_body(f"{BATCH_JOB_ID}:{stem}")),
@@ -542,6 +558,7 @@ def test_run_batch_aggregates_success_and_failure(full_aws_env, tmp_path: Path) 
     file_ok = _write_input(tmp_path, "ok.pdf")
     file_bad = _write_input(tmp_path, "bad.pdf")
 
+    _put_dummy_output(env["s3"], "ok")
     env["sqs"].send_message(
         QueueUrl=env["success_url"],
         MessageBody=_sns_wrap(_success_body(f"{BATCH_JOB_ID}:ok")),
@@ -625,6 +642,7 @@ def test_run_batch_records_4xx_as_immediate_failure(full_aws_env, tmp_path: Path
     file_ok = _write_input(tmp_path, "ok.pdf")
     file_bad = _write_input(tmp_path, "bad.pdf")
 
+    _put_dummy_output(env["s3"], "ok")
     env["sqs"].send_message(
         QueueUrl=env["success_url"],
         MessageBody=_sns_wrap(_success_body(f"{BATCH_JOB_ID}:ok")),
@@ -737,6 +755,7 @@ def test_run_batch_idempotent_on_sqs_duplicate_delivery(
 
     file_ok = _write_input(tmp_path, "ok.pdf")
 
+    _put_dummy_output(env["s3"], "ok")
     body = _sns_wrap(_success_body(f"{BATCH_JOB_ID}:ok"))
     # 同一メッセージを 2 通送信 (重複配信をシミュレート)
     env["sqs"].send_message(QueueUrl=env["success_url"], MessageBody=body)
@@ -779,6 +798,7 @@ def test_run_batch_ignores_other_batch_messages_in_shared_queue(
     file_ok = _write_input(tmp_path, "ok.pdf")
 
     other_batch = "batch-async-999"
+    _put_dummy_output(env["s3"], "ok")
     # 自バッチの成功通知 + 他バッチの成功通知を同一 SuccessQueue に投入
     env["sqs"].send_message(
         QueueUrl=env["success_url"],
@@ -825,3 +845,274 @@ def test_run_batch_ignores_other_batch_messages_in_shared_queue(
     leftover_inner = json.loads(messages[0]["Body"])
     inner = json.loads(leftover_inner["Message"])
     assert inner["inferenceId"] == f"{other_batch}:other"
+
+
+# --------------------------------------------------------------------------
+# Task 5.1: OutputLocation ダウンロード + process_log.jsonl 永続化
+# --------------------------------------------------------------------------
+def _read_process_log(log_path: Path) -> list[dict]:
+    """process_log.jsonl を読み込んで dict のリストに変換する。"""
+    if not log_path.exists():
+        return []
+    return [
+        json.loads(line)
+        for line in log_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+
+
+def test_run_batch_persists_output_json_from_output_location(
+    full_aws_env, tmp_path: Path
+) -> None:
+    """成功通知を受けたら OutputLocation から JSON をダウンロードし
+    `output_dir/{stem}.json` に保存する。"""
+    env = full_aws_env
+    invoker = _make_invoker(env, max_concurrent=2)
+
+    file_ok = _write_input(tmp_path, "ok.pdf")
+    _put_dummy_output(env["s3"], "ok", payload={"pages": [{"idx": 0}], "stem": "ok"})
+    env["sqs"].send_message(
+        QueueUrl=env["success_url"],
+        MessageBody=_sns_wrap(_success_body(f"{BATCH_JOB_ID}:ok")),
+    )
+
+    stubber = env["stubber"]
+    stubber.add_response(
+        "invoke_endpoint_async",
+        {"InferenceId": f"{BATCH_JOB_ID}:ok", "OutputLocation": "s3://x/y"},
+    )
+    stubber.activate()
+
+    output_dir = tmp_path / "out"
+    log_path = tmp_path / "out" / "process_log.jsonl"
+    result = asyncio.run(
+        invoker.run_batch(
+            batch_job_id=BATCH_JOB_ID,
+            input_files=[file_ok],
+            output_dir=output_dir,
+            log_path=log_path,
+            deadline_seconds=30.0,
+        )
+    )
+
+    assert result.succeeded_files == ["ok"]
+    # output JSON がローカルに書き出される
+    persisted = output_dir / "ok.json"
+    assert persisted.exists(), f"output JSON not persisted: {persisted}"
+    body = json.loads(persisted.read_text(encoding="utf-8"))
+    assert body == {"pages": [{"idx": 0}], "stem": "ok"}
+
+
+def test_run_batch_appends_process_log_for_success_and_failure(
+    full_aws_env, tmp_path: Path
+) -> None:
+    """process_log.jsonl には成功・失敗の両方が 1 行 1 レコードで追記される。"""
+    env = full_aws_env
+    invoker = _make_invoker(env, max_concurrent=4)
+
+    file_ok = _write_input(tmp_path, "ok.pdf")
+    file_bad = _write_input(tmp_path, "bad.pdf")
+
+    _put_dummy_output(env["s3"], "ok")
+    env["sqs"].send_message(
+        QueueUrl=env["success_url"],
+        MessageBody=_sns_wrap(_success_body(f"{BATCH_JOB_ID}:ok")),
+    )
+    env["sqs"].send_message(
+        QueueUrl=env["failure_url"],
+        MessageBody=_sns_wrap(_failure_body(f"{BATCH_JOB_ID}:bad")),
+    )
+
+    stubber = env["stubber"]
+    for stem in ("ok", "bad"):
+        stubber.add_response(
+            "invoke_endpoint_async",
+            {"InferenceId": f"{BATCH_JOB_ID}:{stem}", "OutputLocation": "s3://x/y"},
+        )
+    stubber.activate()
+
+    output_dir = tmp_path / "out"
+    log_path = output_dir / "process_log.jsonl"
+    asyncio.run(
+        invoker.run_batch(
+            batch_job_id=BATCH_JOB_ID,
+            input_files=[file_ok, file_bad],
+            output_dir=output_dir,
+            log_path=log_path,
+            deadline_seconds=30.0,
+        )
+    )
+
+    records = _read_process_log(log_path)
+    by_success: dict[bool, list[dict]] = {True: [], False: []}
+    for r in records:
+        by_success[bool(r.get("success"))].append(r)
+
+    assert len(by_success[True]) == 1
+    assert len(by_success[False]) == 1
+    success_row = by_success[True][0]
+    assert Path(success_row["file_path"]).name == "ok.pdf"
+    assert success_row["output_path"].endswith("ok.json")
+    assert success_row.get("error") in (None, "")
+    failure_row = by_success[False][0]
+    assert Path(failure_row["file_path"]).name == "bad.pdf"
+    assert "ModelError" in (failure_row.get("error") or "")
+
+
+def test_run_batch_records_output_download_failure(
+    full_aws_env, tmp_path: Path
+) -> None:
+    """OutputLocation ダウンロードに失敗したら failed_files に積み、
+    process_log.jsonl にもエラーとして記録する。"""
+    env = full_aws_env
+    invoker = _make_invoker(env, max_concurrent=2)
+
+    file_ok = _write_input(tmp_path, "ghost.pdf")
+    # あえて _put_dummy_output を呼ばない → S3 に該当オブジェクトが存在しない
+    env["sqs"].send_message(
+        QueueUrl=env["success_url"],
+        MessageBody=_sns_wrap(_success_body(f"{BATCH_JOB_ID}:ghost")),
+    )
+
+    stubber = env["stubber"]
+    stubber.add_response(
+        "invoke_endpoint_async",
+        {"InferenceId": f"{BATCH_JOB_ID}:ghost", "OutputLocation": "s3://x/y"},
+    )
+    stubber.activate()
+
+    output_dir = tmp_path / "out"
+    log_path = output_dir / "process_log.jsonl"
+    result = asyncio.run(
+        invoker.run_batch(
+            batch_job_id=BATCH_JOB_ID,
+            input_files=[file_ok],
+            output_dir=output_dir,
+            log_path=log_path,
+            deadline_seconds=30.0,
+        )
+    )
+
+    assert result.succeeded_files == []
+    assert len(result.failed_files) == 1
+    stem, reason = result.failed_files[0]
+    assert stem == "ghost"
+    assert "output" in reason.lower() or "NoSuchKey" in reason
+    records = _read_process_log(log_path)
+    assert any(
+        r.get("success") is False and Path(r["file_path"]).name == "ghost.pdf"
+        for r in records
+    )
+
+
+def test_parse_s3_uri_rejects_traversal_and_foreign_bucket(
+    s3_bucket: str,
+) -> None:
+    """``_parse_s3_uri`` は ``..`` / 未知 bucket を汚染 URI として拒否する。"""
+    invoker = AsyncInvoker(
+        endpoint_name="yomitoku-async",
+        input_bucket=BUCKET,
+        input_prefix=INPUT_PREFIX,
+        output_bucket=BUCKET,
+        success_queue_url="https://sqs.invalid/success",
+        failure_queue_url="https://sqs.invalid/failure",
+        max_concurrent=2,
+    )
+
+    with pytest.raises(ValueError, match="not normalized"):
+        invoker._parse_s3_uri(f"s3://{BUCKET}/batches/../etc/passwd")
+
+    with pytest.raises(ValueError, match="does not match"):
+        invoker._parse_s3_uri("s3://foreign-bucket/batches/_async/outputs/x.out")
+
+    with pytest.raises(ValueError, match="missing key"):
+        invoker._parse_s3_uri(f"s3://{BUCKET}/")
+
+    with pytest.raises(ValueError, match="invalid S3 URI"):
+        invoker._parse_s3_uri("https://example.com/bucket/key")
+
+
+def test_run_batch_rejects_oversized_output(full_aws_env, tmp_path: Path) -> None:
+    """ContentLength が上限を超える場合は ``failed_files`` に積む。"""
+    env = full_aws_env
+    invoker = _make_invoker(env, max_concurrent=2)
+
+    file_ok = _write_input(tmp_path, "big.pdf")
+    # 実際には 130 MiB 書き込まないが、moto の head が ContentLength を
+    # 返すように実体を置いた上で、上限を絞って閾値超過を発火する。
+    big_body = b"0" * 1024
+    env["s3"].put_object(
+        Bucket=BUCKET,
+        Key="batches/_async/outputs/big.out",
+        Body=big_body,
+        ContentType="application/json",
+    )
+    env["sqs"].send_message(
+        QueueUrl=env["success_url"],
+        MessageBody=_sns_wrap(_success_body(f"{BATCH_JOB_ID}:big")),
+    )
+
+    # 上限を実 body より小さくして閾値違反を発生させる
+    invoker._MAX_OUTPUT_BYTES = 512  # type: ignore[attr-defined]
+
+    stubber = env["stubber"]
+    stubber.add_response(
+        "invoke_endpoint_async",
+        {"InferenceId": f"{BATCH_JOB_ID}:big", "OutputLocation": "s3://x/y"},
+    )
+    stubber.activate()
+
+    result = asyncio.run(
+        invoker.run_batch(
+            batch_job_id=BATCH_JOB_ID,
+            input_files=[file_ok],
+            output_dir=tmp_path / "out",
+            log_path=tmp_path / "out" / "process_log.jsonl",
+            deadline_seconds=30.0,
+        )
+    )
+
+    assert result.succeeded_files == []
+    assert len(result.failed_files) == 1
+    stem, reason = result.failed_files[0]
+    assert stem == "big"
+    assert "output too large" in reason
+    stubber.assert_no_pending_responses()
+
+
+def test_run_batch_records_in_flight_timeout_to_process_log(
+    full_aws_env, tmp_path: Path
+) -> None:
+    """deadline 超過で未完了のファイルは process_log.jsonl に failure 行として記録される。"""
+    env = full_aws_env
+    invoker = _make_invoker(env, max_concurrent=2)
+
+    file_a = _write_input(tmp_path, "a.pdf")
+
+    stubber = env["stubber"]
+    stubber.add_response(
+        "invoke_endpoint_async",
+        {"InferenceId": f"{BATCH_JOB_ID}:a", "OutputLocation": "s3://x/y"},
+    )
+    stubber.activate()
+
+    output_dir = tmp_path / "out"
+    log_path = output_dir / "process_log.jsonl"
+    result = asyncio.run(
+        invoker.run_batch(
+            batch_job_id=BATCH_JOB_ID,
+            input_files=[file_a],
+            output_dir=output_dir,
+            log_path=log_path,
+            deadline_seconds=0.1,
+        )
+    )
+
+    assert result.in_flight_timeout == ["a"]
+    records = _read_process_log(log_path)
+    assert any(
+        r.get("success") is False
+        and Path(r["file_path"]).name == "a.pdf"
+        and "timeout" in (r.get("error") or "").lower()
+        for r in records
+    )

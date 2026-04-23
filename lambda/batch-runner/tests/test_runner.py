@@ -1,17 +1,15 @@
-"""Tests for runner.py: analyze_batch_async 実行と可視化生成。
+"""Tests for runner.py: run_async_batch と可視化生成 (Task 5.1)。
 
-YomitokuClient / analyze_batch_async / parse_pydantic_model / DocumentResult.visualize
-はすべて monkeypatch で置換し、外部依存なしで動作検証する。
+AsyncInvoker は monkeypatch で fake に差し替え、Task 5.1 では runner 層の
+組み立て責務 (input/output 準備 + AsyncInvoker 呼び出しへの引数写像) を検証する。
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
-import logging
 import sys
 from pathlib import Path
-from unittest.mock import MagicMock
 
 import pytest
 
@@ -25,7 +23,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 @pytest.fixture
 def settings_stub():
-    """BatchRunnerSettings 相当のスタブ。"""
+    """BatchRunnerSettings 相当のスタブ (Async フィールド込み)。"""
     from types import SimpleNamespace
 
     return SimpleNamespace(
@@ -33,7 +31,13 @@ def settings_stub():
         bucket_name="test-bucket",
         batch_table_name="BatchTable",
         control_table_name="ControlTable",
-        endpoint_name="yomitoku-endpoint",
+        endpoint_name="yomitoku-async",
+        success_queue_url="https://sqs.invalid/success",
+        failure_queue_url="https://sqs.invalid/failure",
+        async_input_prefix="batches/_async/inputs",
+        async_output_prefix="batches/_async/outputs",
+        async_error_prefix="batches/_async/errors",
+        async_max_concurrent=4,
         max_file_concurrency=3,
         max_page_concurrency=4,
         max_retries=5,
@@ -58,213 +62,125 @@ def reload_runner():
 
 
 # ---------------------------------------------------------------------------
-# create_client
+# run_async_batch
 # ---------------------------------------------------------------------------
 
 
-class TestCreateClient:
-    def test_constructs_yomitoku_client_with_configs(
-        self, settings_stub, reload_runner, monkeypatch
+class _FakeBatchResult:
+    def __init__(self):
+        self.succeeded_files = ["a"]
+        self.failed_files = [("b", "ModelError: test")]
+        self.in_flight_timeout: list[str] = []
+
+
+class _FakeAsyncInvoker:
+    """AsyncInvoker のテスト置換。__init__ と run_batch の引数を記録する。"""
+
+    last_init: dict | None = None
+    last_run: dict | None = None
+
+    def __init__(self, **kwargs):
+        _FakeAsyncInvoker.last_init = kwargs
+
+    async def run_batch(self, **kwargs):
+        _FakeAsyncInvoker.last_run = kwargs
+        return _FakeBatchResult()
+
+
+class TestRunAsyncBatch:
+    def setup_method(self, _method):
+        _FakeAsyncInvoker.last_init = None
+        _FakeAsyncInvoker.last_run = None
+
+    def test_constructs_async_invoker_from_settings(
+        self, settings_stub, reload_runner, monkeypatch, tmp_path
     ):
         runner = reload_runner()
-
-        captured: dict = {}
-
-        class FakeRequestConfig:
-            def __init__(self, **kwargs):
-                captured["request_config"] = kwargs
-
-        class FakeCircuitConfig:
-            def __init__(self, **kwargs):
-                captured["circuit_config"] = kwargs
-
-        class FakeClient:
-            def __init__(self, **kwargs):
-                captured["client"] = kwargs
-
-        monkeypatch.setattr(runner, "YomitokuClient", FakeClient)
-        monkeypatch.setattr(runner, "RequestConfig", FakeRequestConfig)
-        monkeypatch.setattr(runner, "CircuitConfig", FakeCircuitConfig)
-
-        runner.create_client(settings_stub)
-
-        assert captured["request_config"] == {
-            "read_timeout": 120,
-            "connect_timeout": 10,
-            "max_retries": 5,
-        }
-        assert captured["circuit_config"] == {
-            "threshold": 7,
-            "cooldown_time": 45,
-        }
-        assert captured["client"]["endpoint"] == "yomitoku-endpoint"
-        assert captured["client"]["max_workers"] == 3
-        assert isinstance(
-            captured["client"]["request_config"], FakeRequestConfig
-        )
-        assert isinstance(
-            captured["client"]["circuit_config"], FakeCircuitConfig
-        )
-
-
-# ---------------------------------------------------------------------------
-# run_analyze_batch
-# ---------------------------------------------------------------------------
-
-
-class TestRunAnalyzeBatch:
-    def test_calls_analyze_batch_async_with_settings(
-        self, settings_stub, reload_runner, tmp_path
-    ):
-        runner = reload_runner()
-
-        captured: dict = {}
-
-        class FakeClient:
-            async def analyze_batch_async(self, **kwargs):
-                captured.update(kwargs)
-                # process_log.jsonl を模擬作成
-                log_path = kwargs.get("log_path")
-                if log_path:
-                    Path(log_path).write_text(
-                        json.dumps(
-                            {"file_path": "a.pdf", "success": True}
-                        ) + "\n"
-                    )
+        monkeypatch.setattr(runner, "AsyncInvoker", _FakeAsyncInvoker)
 
         input_dir = tmp_path / "input"
         output_dir = tmp_path / "output"
         input_dir.mkdir()
         output_dir.mkdir()
+        (input_dir / "a.pdf").write_bytes(b"%PDF-")
+        (input_dir / "b.pdf").write_bytes(b"%PDF-")
 
-        log_path = output_dir / "process_log.jsonl"
-        asyncio.run(
-            runner.run_analyze_batch(
-                client=FakeClient(),
+        result = asyncio.run(
+            runner.run_async_batch(
+                settings=settings_stub,
                 input_dir=str(input_dir),
                 output_dir=str(output_dir),
+                log_path=str(output_dir / "process_log.jsonl"),
+            )
+        )
+
+        init_kwargs = _FakeAsyncInvoker.last_init
+        assert init_kwargs is not None
+        assert init_kwargs["endpoint_name"] == "yomitoku-async"
+        assert init_kwargs["input_bucket"] == "test-bucket"
+        assert init_kwargs["output_bucket"] == "test-bucket"
+        # input_prefix は settings.async_input_prefix + batch_job_id + "/" で組み立てる
+        assert (
+            init_kwargs["input_prefix"]
+            == "batches/_async/inputs/batch-test-001/"
+        )
+        assert init_kwargs["success_queue_url"] == "https://sqs.invalid/success"
+        assert init_kwargs["failure_queue_url"] == "https://sqs.invalid/failure"
+        assert init_kwargs["max_concurrent"] == 4
+
+        # run_batch へ input_files / output_dir / log_path / deadline を転送する
+        run_kwargs = _FakeAsyncInvoker.last_run
+        assert run_kwargs is not None
+        assert run_kwargs["batch_job_id"] == "batch-test-001"
+        input_files = sorted(p.name for p in run_kwargs["input_files"])
+        assert input_files == ["a.pdf", "b.pdf"]
+        assert Path(run_kwargs["output_dir"]) == output_dir
+        assert Path(run_kwargs["log_path"]) == output_dir / "process_log.jsonl"
+        # deadline は settings.batch_max_duration_sec を使う
+        assert run_kwargs["deadline_seconds"] == 3600.0
+
+        # BatchResult をそのまま返す
+        assert result.succeeded_files == ["a"]
+        assert result.failed_files == [("b", "ModelError: test")]
+
+    def test_deadline_override_is_respected(
+        self, settings_stub, reload_runner, monkeypatch, tmp_path
+    ):
+        runner = reload_runner()
+        monkeypatch.setattr(runner, "AsyncInvoker", _FakeAsyncInvoker)
+
+        input_dir = tmp_path / "input"
+        output_dir = tmp_path / "output"
+        input_dir.mkdir()
+        output_dir.mkdir()
+
+        asyncio.run(
+            runner.run_async_batch(
                 settings=settings_stub,
-                log_path=str(log_path),
+                input_dir=str(input_dir),
+                output_dir=str(output_dir),
+                log_path=str(output_dir / "log.jsonl"),
+                deadline_seconds=60.0,
             )
         )
 
-        assert captured["input_dir"] == str(input_dir)
-        assert captured["output_dir"] == str(output_dir)
-        assert captured["max_file_concurrency"] == 3
-        assert captured["max_page_concurrency"] == 4
-        assert captured["extra_formats"] == ["markdown", "csv"]
-        assert captured["log_path"] == str(log_path)
-        assert log_path.exists()
+        run_kwargs = _FakeAsyncInvoker.last_run
+        assert run_kwargs is not None
+        assert run_kwargs["deadline_seconds"] == 60.0
 
-    def test_emits_structured_info_log(
-        self, settings_stub, reload_runner, tmp_path, caplog
-    ):
+    def test_realtime_symbols_are_removed(self, reload_runner):
+        """旧 Realtime 経路 (create_client / run_analyze_batch) は撤去済。"""
         runner = reload_runner()
-
-        class FakeClient:
-            async def analyze_batch_async(self, **kwargs):
-                return None
-
-        input_dir = tmp_path / "input"
-        output_dir = tmp_path / "output"
-        input_dir.mkdir()
-        output_dir.mkdir()
-        (input_dir / "a.pdf").write_bytes(b"%PDF")
-        (input_dir / "b.pdf").write_bytes(b"%PDF")
-
-        with caplog.at_level(logging.INFO, logger=runner.logger.name):
-            asyncio.run(
-                runner.run_analyze_batch(
-                    client=FakeClient(),
-                    input_dir=str(input_dir),
-                    output_dir=str(output_dir),
-                    settings=settings_stub,
-                )
-            )
-
-        # batch_job_id とファイル数を INFO ログで出すこと
-        info_records = [r for r in caplog.records if r.levelno == logging.INFO]
-        assert any(
-            getattr(r, "batch_job_id", None) == "batch-test-001"
-            and getattr(r, "file_count", None) == 2
-            for r in info_records
-        ), f"structured INFO log not found: {[r.__dict__ for r in info_records]}"
-        # 経過時間 (elapsed_sec) が記録されること
-        assert any(
-            getattr(r, "elapsed_sec", None) is not None
-            for r in info_records
+        assert not hasattr(runner, "create_client"), (
+            "create_client は Task 5.1 で撤去されているはず"
         )
-
-    def test_complete_log_includes_circuit_break_count(
-        self, settings_stub, reload_runner, tmp_path, caplog
-    ):
-        """complete ログに circuit_break_count (private _circuit_failures) を記録する。"""
-        runner = reload_runner()
-
-        class FakeClient:
-            def __init__(self):
-                # yomitoku-client の private 属性を模擬
-                self._circuit_failures = 3
-
-            async def analyze_batch_async(self, **kwargs):
-                return None
-
-        input_dir = tmp_path / "input"
-        output_dir = tmp_path / "output"
-        input_dir.mkdir()
-        output_dir.mkdir()
-
-        with caplog.at_level(logging.INFO, logger=runner.logger.name):
-            asyncio.run(
-                runner.run_analyze_batch(
-                    client=FakeClient(),
-                    input_dir=str(input_dir),
-                    output_dir=str(output_dir),
-                    settings=settings_stub,
-                )
-            )
-
-        complete_records = [
-            r for r in caplog.records
-            if r.levelno == logging.INFO
-            and getattr(r, "circuit_break_count", None) is not None
-        ]
-        assert complete_records, "complete log with circuit_break_count not found"
-        assert complete_records[-1].circuit_break_count == 3
-
-    def test_complete_log_circuit_break_count_defaults_to_zero(
-        self, settings_stub, reload_runner, tmp_path, caplog
-    ):
-        """client に _circuit_failures が無い場合は 0 を記録する。"""
-        runner = reload_runner()
-
-        class FakeClient:
-            async def analyze_batch_async(self, **kwargs):
-                return None
-
-        input_dir = tmp_path / "input"
-        output_dir = tmp_path / "output"
-        input_dir.mkdir()
-        output_dir.mkdir()
-
-        with caplog.at_level(logging.INFO, logger=runner.logger.name):
-            asyncio.run(
-                runner.run_analyze_batch(
-                    client=FakeClient(),
-                    input_dir=str(input_dir),
-                    output_dir=str(output_dir),
-                    settings=settings_stub,
-                )
-            )
-
-        assert any(
-            getattr(r, "circuit_break_count", None) == 0
-            for r in caplog.records
+        assert not hasattr(runner, "run_analyze_batch"), (
+            "run_analyze_batch は Task 5.1 で撤去されているはず"
         )
 
 
 # ---------------------------------------------------------------------------
-# generate_visualizations
+# generate_visualizations (Task 3.3 から継続)
 # ---------------------------------------------------------------------------
 
 
@@ -281,7 +197,6 @@ class TestGenerateVisualizations:
                 self.preprocess = {"angle": 0}
 
             def visualize(self, img, mode):
-                # 戻り値は np.ndarray
                 return fake_img
 
         class FakeParsed:
@@ -330,7 +245,6 @@ class TestGenerateVisualizations:
         )
 
         assert errors == {}
-        # 2 page × 2 mode = 4 jpgs
         generated = sorted(p.name for p in output_dir.glob("*.jpg"))
         assert generated == [
             "sample_layout_page_0.jpg",
@@ -350,7 +264,6 @@ class TestGenerateVisualizations:
         input_dir.mkdir()
         output_dir.mkdir()
 
-        # PDF が無い (DDB FILE 削除など)
         (output_dir / "missing.json").write_text("{}")
 
         errors = runner.generate_all_visualizations(
@@ -362,11 +275,9 @@ class TestGenerateVisualizations:
     def test_collects_per_page_errors_without_aborting(
         self, reload_runner, monkeypatch, tmp_path
     ):
-        """1 ページの可視化失敗でファイル処理を中断せず、残りページを継続する。"""
         runner = reload_runner()
         self._install_fakes(runner, monkeypatch, pages=2)
 
-        # page 0 の visualize だけ常に失敗するように差し替え
         original_parse = runner.parse_pydantic_model
 
         def broken_parse(data):
@@ -391,10 +302,8 @@ class TestGenerateVisualizations:
             input_dir=str(input_dir), output_dir=str(output_dir)
         )
 
-        # page 0 のエラーが捕捉されている
         assert "a" in errors
         assert any("page 0" in e for e in errors["a"])
-        # page 1 の 2 枚は生成成功
         generated = sorted(p.name for p in output_dir.glob("*.jpg"))
         assert generated == [
             "a_layout_page_1.jpg",
