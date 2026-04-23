@@ -558,6 +558,51 @@ describe("BatchExecutionStack", () => {
     });
   });
 
+  describe("Async 移行の観測可能条件 (Task 4.5 契約スナップショット)", () => {
+    // Task 4.5 のタスク完了条件を一箇所で可視化する契約テスト。
+    // ここが落ちる場合は、Task 4.1-4.4 のいずれかが後続変更でリグレッションした
+    // 可能性が高いので、個別のテストセクションを確認すること。
+    it("Realtime 系 action 不在 / Async action 存在 / _async prefix 限定 / Queue URL 環境変数 / Public subnet が同時に成立する", () => {
+      const { template } = createStack();
+      const policies = template.findResources("AWS::IAM::Policy");
+      const policiesJson = JSON.stringify(policies);
+      const sm = template.findResources("AWS::StepFunctions::StateMachine");
+      const smJson = JSON.stringify(sm);
+      const td = template.findResources("AWS::ECS::TaskDefinition");
+      const tdJson = JSON.stringify(td);
+
+      // 1. Task Role Realtime action 不在
+      const taskRolePolicies = Object.entries(policies).filter(([name]) =>
+        name.includes("TaskRoleDefaultPolicy"),
+      );
+      const taskRoleJson = JSON.stringify(taskRolePolicies);
+      expect(taskRoleJson).not.toContain('"sagemaker:InvokeEndpoint"');
+      expect(taskRoleJson).not.toContain('"sagemaker:DescribeEndpoint"');
+
+      // 2. Task Role Async action 存在
+      expect(policiesJson).toContain("sagemaker:InvokeEndpointAsync");
+
+      // 3. SQS / S3 _async prefix 限定
+      expect(policiesJson).toContain("sqs:ReceiveMessage");
+      expect(policiesJson).toContain("batches/_async/inputs/*");
+      expect(policiesJson).toContain("batches/_async/outputs/*");
+      expect(policiesJson).toContain("batches/_async/errors/*");
+
+      // 4. SFN Endpoint lifecycle 撤去
+      expect(smJson).not.toContain("EnsureEndpointInService");
+      expect(smJson).not.toContain("WaitEndpoint");
+      expect(smJson).not.toContain("describeEndpoint");
+
+      // 5. ContainerDefinition に Queue URL / Async prefix 環境変数が注入済
+      expect(tdJson).toContain("SUCCESS_QUEUE_URL");
+      expect(tdJson).toContain("FAILURE_QUEUE_URL");
+      expect(tdJson).toContain("ASYNC_MAX_CONCURRENT");
+
+      // 6. Public subnet + assignPublicIp=ENABLED 維持
+      expect(smJson).toContain('\\"AssignPublicIp\\":\\"ENABLED\\"');
+    });
+  });
+
   describe("Props validation", () => {
     it("endpointName が空文字 / 未指定の場合エラーになる", () => {
       const app = new App();

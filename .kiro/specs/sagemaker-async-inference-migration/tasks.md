@@ -162,7 +162,7 @@
   - 観測可能条件: state machine の JSON 表現から `EnsureEndpointInService` / `WaitEndpoint` / `DescribeEndpoint` の文字列が消失
   - _Requirements: 1.4, 3.6_
 
-- [ ] 4.5 BatchExecutionStack のユニットテストを更新する
+- [x] 4.5 BatchExecutionStack のユニットテストを更新する
   - Task Role の Realtime action 不在と Async action の存在
   - SQS / S3 `_async` 権限が対象 ARN / prefix 限定
   - SFN 定義から Endpoint lifecycle ステップが消滅
