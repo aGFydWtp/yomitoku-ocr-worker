@@ -10,12 +10,8 @@ vi.mock("../lib/sfn", () => ({
 }));
 
 vi.mock("../lib/s3", () => ({
-  createUploadUrl: vi.fn(),
-  createResultUrl: vi.fn(),
-  deleteObject: vi.fn(),
   headObject: vi.fn(),
-  RESULT_URL_EXPIRES_IN: 3600,
-  UPLOAD_URL_EXPIRES_IN: 900,
+  listObjectKeys: vi.fn(),
 }));
 
 /**
