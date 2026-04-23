@@ -1,15 +1,24 @@
 """SageMaker Asynchronous Inference 呼び出しクライアント。
 
-Task 3.1 現在の責務:
+Task 3.1 〜 3.3 での責務:
     - 入力ファイルを ``batches/_async/inputs/{batch_job_id}/{file}`` へ
       S3 ``PutObject`` でステージングする
     - ``InferenceId`` を ``{batch_job_id}:{file_stem}`` 形式で生成する
     - ``sagemaker-runtime.invoke_endpoint_async`` を発行する
-    - 4xx (``ValidationException`` 等) の ``ClientError`` を呼び出し元へ
-      そのまま伝搬し、AsyncInvoker 内ではリトライしない
+    - 4xx (``ValidationException`` 等) の ``ClientError`` は即時失敗として
+      ``BatchResult.failed_files`` に積み、リトライしない
+    - ``AsyncCompletionQueue`` / ``AsyncFailureQueue`` を 20 秒 long-poll で
+      交互受信し、自バッチ宛ては ``DeleteMessage``、他バッチ宛ては
+      ``ChangeMessageVisibility=0`` で他ランナーに返却する
+    - in-flight `InferenceId` 集合を ``max_concurrent`` 上限で維持し、上限到達
+      時は新規 invoke を停止して SQS pull に専念する (背圧制御)
+    - ``BATCH_TASK_TIMEOUT_SECONDS=7200`` (既定、引数で上書き可) の deadline
+      まで待機し、未完了 InferenceId は ``BatchResult.in_flight_timeout`` に
+      集計する
 
-後続 (3.2 / 3.3 / 3.4) で SQS long-poll 受信、``InferenceId`` フィルタ、
-``max_concurrent`` 背圧、``BatchResult`` 集計、``run_batch`` API を加える。
+後続 (3.4 / 5.1) で Async タイムアウト経路のテスト拡充、
+``runner.run_async_batch`` からの呼び出しおよび `output/*.json` /
+`process_log.jsonl` の永続化と統合する。
 """
 
 from __future__ import annotations
@@ -17,11 +26,13 @@ from __future__ import annotations
 import json
 import logging
 import mimetypes
-from dataclasses import dataclass
+import time
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import boto3
+from botocore.exceptions import ClientError
 
 
 logger = logging.getLogger(__name__)
@@ -44,6 +55,27 @@ _INFERENCE_ID_MAX_LENGTH = 64
 
 # SQS Receive は 1 回あたり最大 10 件。moto / 本番共通の API 上限。
 _RECEIVE_MAX_MESSAGES = 10
+
+# Fargate タスク全体のウォッチドッグ。design.md の設定と一致させる
+# (個別推論の ``InvocationTimeoutSeconds`` は別管理で 3600 秒)。
+_DEFAULT_DEADLINE_SECONDS = 7200.0
+
+
+@dataclass(frozen=True)
+class BatchResult:
+    """`run_batch` の戻り値。
+
+    - ``succeeded_files``: 成功確定したファイル stem (``InferenceId`` の ``:`` 以降)
+    - ``failed_files``: ``(file_stem, error_message)`` のリスト。同期 4xx と
+      Async FailureQueue 経由の双方が混在する
+    - ``in_flight_timeout``: deadline までに通知が来なかったファイル stem。
+      Fargate タスクはこれらを `FAILED` として扱い、SFN 側で `MarkFailedForced`
+      に分岐する (design.md Req 3.3)
+    """
+
+    succeeded_files: list[str] = field(default_factory=list)
+    failed_files: list[tuple[str, str]] = field(default_factory=list)
+    in_flight_timeout: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -98,6 +130,10 @@ class AsyncInvoker:
         if not input_prefix.endswith("/"):
             raise ValueError(
                 f"input_prefix must end with '/': {input_prefix!r}"
+            )
+        if max_concurrent < 1:
+            raise ValueError(
+                f"max_concurrent must be >= 1: got {max_concurrent}"
             )
         self.endpoint_name = endpoint_name
         self.input_bucket = input_bucket
@@ -227,6 +263,125 @@ class AsyncInvoker:
                     VisibilityTimeout=0,
                 )
         return results
+
+    # ------------------------------------------------------------------
+    # Task 3.3: max_concurrent 背圧 + BatchResult 集計 + deadline 監視
+    # ------------------------------------------------------------------
+    async def run_batch(
+        self,
+        *,
+        batch_job_id: str,
+        input_files: list[Path],
+        output_dir: Path,  # noqa: ARG002 — Task 5.1 で output JSON 書き込みに使用
+        log_path: Path,  # noqa: ARG002 — Task 5.1 で process_log.jsonl に使用
+        deadline_seconds: float = _DEFAULT_DEADLINE_SECONDS,
+    ) -> BatchResult:
+        """入力ファイルを Async Endpoint で処理し、BatchResult を返す。
+
+        制御フロー (pseudo):
+
+        1. deadline を ``time.monotonic() + deadline_seconds`` で固定
+        2. ``pending`` と ``in_flight`` の両方が空になるまでループ:
+           a. 空きがあれば ``max_concurrent`` 上限まで ``_stage_input`` →
+              ``_invoke_async`` を同期発行する。4xx の ``ClientError`` は
+              ``failed_files`` に積んで継続
+           b. ``_poll_queue(success)`` と ``_poll_queue(failure)`` を順に呼び、
+              自バッチ宛てを ``succeeded_files`` / ``failed_files`` に集計
+        3. deadline 超過で抜けた場合、残 in-flight を ``in_flight_timeout`` へ
+           移送
+
+        ``boto3`` は同期 API なので ``async def`` の内部では ``await`` を
+        使わない。呼び出し側は ``asyncio.run(invoker.run_batch(...))`` で起動
+        する想定。``async`` シグネチャは ``design.md`` の契約に揃えるため維持。
+        """
+        deadline = time.monotonic() + deadline_seconds
+        result = BatchResult()
+
+        # in_flight: InferenceId → file_stem
+        in_flight: dict[str, str] = {}
+        pending: list[Path] = list(input_files)
+
+        while pending or in_flight:
+            if time.monotonic() >= deadline:
+                break
+
+            # Phase A: in-flight 上限まで invoke を発行
+            while pending and len(in_flight) < self.max_concurrent:
+                file_path = pending.pop(0)
+                file_stem = file_path.stem
+                try:
+                    inference_id = self._build_inference_id(batch_job_id, file_stem)
+                    input_location = self._stage_input(file_path)
+                    self._invoke_async(
+                        inference_id=inference_id,
+                        input_location=input_location,
+                        content_type=_guess_content_type(file_path),
+                    )
+                except ClientError as exc:
+                    # 4xx は即時失敗確定 (リトライなし)。エラーコード + message を残す
+                    code = exc.response.get("Error", {}).get("Code", "ClientError")
+                    message = exc.response.get("Error", {}).get("Message", str(exc))
+                    result.failed_files.append(
+                        (file_stem, f"{code}: {message}")
+                    )
+                    continue
+                except (OSError, ValueError) as exc:
+                    # 入力 read 失敗 / InferenceId 長さ超過 / prefix 逸脱等
+                    result.failed_files.append((file_stem, str(exc)))
+                    continue
+                in_flight[inference_id] = file_stem
+
+            if not in_flight:
+                # 全件 invoke 前エラー or 全件完了
+                break
+
+            # Phase B: SQS を交互に polling して完了通知を回収
+            self._drain_queue(
+                queue_url=self.success_queue_url,
+                in_flight=in_flight,
+                succeeded=result.succeeded_files,
+                failed=result.failed_files,
+                is_failure=False,
+            )
+            self._drain_queue(
+                queue_url=self.failure_queue_url,
+                in_flight=in_flight,
+                succeeded=result.succeeded_files,
+                failed=result.failed_files,
+                is_failure=True,
+            )
+
+        # deadline 超過で抜けた場合、残 in-flight をタイムアウト扱い
+        result.in_flight_timeout.extend(sorted(in_flight.values()))
+        return result
+
+    def _drain_queue(
+        self,
+        *,
+        queue_url: str,
+        in_flight: dict[str, str],
+        succeeded: list[str],
+        failed: list[tuple[str, str]],
+        is_failure: bool,
+    ) -> None:
+        """1 回 ``_poll_queue`` を実行し、結果を in_flight / 集計リストに反映する。
+
+        自バッチ宛てメッセージは ``_poll_queue`` 内で ``DeleteMessage`` 済。
+        """
+        notifications = self._poll_queue(
+            queue_url=queue_url,
+            in_flight=set(in_flight.keys()),
+        )
+        for notif in notifications:
+            file_stem = in_flight.pop(notif.inference_id, None)
+            if file_stem is None:
+                # 別 iteration で既に取り込み済 (重複配信)。at-least-once 耐性。
+                continue
+            if is_failure:
+                reason = notif.body.get("failureReason") or "unknown"
+                failed.append((file_stem, str(reason)))
+            else:
+                succeeded.append(file_stem)
 
     @staticmethod
     def _unwrap_notification(body_text: str) -> dict[str, Any] | None:

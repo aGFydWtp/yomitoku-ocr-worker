@@ -10,8 +10,11 @@ Task 3.2 追補:
     - `InferenceId` による in-flight セットへのフィルタ
     - 自バッチ宛ては DeleteMessage、他バッチ宛ては ChangeMessageVisibility=0
 
-実メッセージ受信の総合 (``run_batch``) や BatchResult 集計は後続サブタスク
-(3.3 / 3.4) で追加する。
+Task 3.3 追補:
+    - `max_concurrent` 背圧 (`_poll_queue` に渡る in-flight 集合が上限を超えない)
+    - `BatchResult` (succeeded / failed / in_flight_timeout) の集計
+    - deadline 超過で未完了 InferenceId が `in_flight_timeout` に落ちる
+    - 同期 4xx ClientError を即時 `failed_files` へ積む
 
 テスト用依存:
     - moto[s3,sqs] で S3 / SQS をモック
@@ -21,8 +24,10 @@ Task 3.2 追補:
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
+from typing import Any
 
 import boto3
 import pytest
@@ -30,7 +35,7 @@ from botocore.exceptions import ClientError
 from botocore.stub import Stubber
 from moto import mock_aws
 
-from async_invoker import AsyncInvoker, PolledNotification
+from async_invoker import AsyncInvoker, BatchResult, PolledNotification
 
 
 REGION = "ap-northeast-1"
@@ -410,3 +415,240 @@ def test_poll_skips_malformed_messages_without_raising(sqs_env) -> None:
     # 正常な方だけ拾える
     ids = {n.inference_id for n in notifications}
     assert ids == {f"{BATCH_JOB_ID}:d"}
+
+
+# --------------------------------------------------------------------------
+# Task 3.3: max_concurrent 背圧 + BatchResult + timeout 集計
+# --------------------------------------------------------------------------
+@pytest.fixture
+def full_aws_env():
+    """S3 + SQS を同一 `mock_aws()` 内で立ち上げ、sagemaker-runtime は Stubber 経由。
+
+    `run_batch` は `_stage_input` (S3 PutObject) と `_invoke_async`
+    (sagemaker-runtime) と `_poll_queue` (SQS) を束ねるため、1 テスト内で
+    3 サービス全てのモックを共有する必要がある。
+    """
+    with mock_aws():
+        s3 = boto3.client("s3", region_name=REGION)
+        s3.create_bucket(
+            Bucket=BUCKET,
+            CreateBucketConfiguration={"LocationConstraint": REGION},
+        )
+        sqs = boto3.client("sqs", region_name=REGION)
+        success_url = sqs.create_queue(QueueName="async-success")["QueueUrl"]
+        failure_url = sqs.create_queue(QueueName="async-failure")["QueueUrl"]
+        sagemaker = boto3.client("sagemaker-runtime", region_name=REGION)
+        stubber = Stubber(sagemaker)
+        try:
+            yield {
+                "s3": s3,
+                "sqs": sqs,
+                "sagemaker": sagemaker,
+                "stubber": stubber,
+                "success_url": success_url,
+                "failure_url": failure_url,
+            }
+        finally:
+            stubber.deactivate()
+
+
+def _make_invoker(env: dict[str, Any], *, max_concurrent: int = 2) -> AsyncInvoker:
+    """`full_aws_env` から `AsyncInvoker` を構築する小ヘルパ。"""
+    return AsyncInvoker(
+        endpoint_name="yomitoku-async",
+        input_bucket=BUCKET,
+        input_prefix=INPUT_PREFIX,
+        output_bucket=BUCKET,
+        success_queue_url=env["success_url"],
+        failure_queue_url=env["failure_url"],
+        max_concurrent=max_concurrent,
+        poll_wait_seconds=0,
+        sagemaker_client=env["sagemaker"],
+        sqs_client=env["sqs"],
+        s3_client=env["s3"],
+    )
+
+
+def test_run_batch_respects_max_concurrent_semaphore(full_aws_env, tmp_path: Path) -> None:
+    """`max_concurrent=2` で 3 ファイルを投げても、同時 in-flight が 2 を超えない。
+
+    観測方法: `_poll_queue` が呼ばれた際の `in_flight` セットサイズを記録し、
+    最大値を assert する。poll が走る時点の in_flight = 同時並行数 - 完了数。
+    pending=a,b,c を max_concurrent=2 で流した場合、`a,b` 投入 → poll → `c` 投入
+    の順となり、poll 時点で観測される in_flight の最大は 2 に収まるはず。
+    """
+    env = full_aws_env
+    invoker = _make_invoker(env, max_concurrent=2)
+
+    files = [_write_input(tmp_path, f"{stem}.pdf") for stem in ("a", "b", "c")]
+
+    # 3 ファイル分の Success メッセージを事前投入しておく (poll でまとめて回収)
+    for stem in ("a", "b", "c"):
+        env["sqs"].send_message(
+            QueueUrl=env["success_url"],
+            MessageBody=_sns_wrap(_success_body(f"{BATCH_JOB_ID}:{stem}")),
+        )
+
+    stubber = env["stubber"]
+    for stem in ("a", "b", "c"):
+        stubber.add_response(
+            "invoke_endpoint_async",
+            {"InferenceId": f"{BATCH_JOB_ID}:{stem}", "OutputLocation": "s3://x/y"},
+        )
+    stubber.activate()
+
+    observed_max = [0]
+    original_poll = invoker._poll_queue
+
+    def spy_poll(*, queue_url: str, in_flight: set[str]):
+        observed_max[0] = max(observed_max[0], len(in_flight))
+        return original_poll(queue_url=queue_url, in_flight=in_flight)
+
+    invoker._poll_queue = spy_poll  # type: ignore[method-assign]
+
+    result = asyncio.run(
+        invoker.run_batch(
+            batch_job_id=BATCH_JOB_ID,
+            input_files=files,
+            output_dir=tmp_path / "out",
+            log_path=tmp_path / "log.jsonl",
+            deadline_seconds=30.0,
+        )
+    )
+
+    assert observed_max[0] <= 2, (
+        f"max in-flight exceeded max_concurrent=2: observed={observed_max[0]}"
+    )
+    assert isinstance(result, BatchResult)
+    assert sorted(result.succeeded_files) == ["a", "b", "c"]
+    assert result.failed_files == []
+    assert result.in_flight_timeout == []
+    stubber.assert_no_pending_responses()
+
+
+def test_run_batch_aggregates_success_and_failure(full_aws_env, tmp_path: Path) -> None:
+    """1 成功 + 1 失敗 の混在バッチで BatchResult が両方を正しく集計する。"""
+    env = full_aws_env
+    invoker = _make_invoker(env, max_concurrent=4)
+
+    file_ok = _write_input(tmp_path, "ok.pdf")
+    file_bad = _write_input(tmp_path, "bad.pdf")
+
+    env["sqs"].send_message(
+        QueueUrl=env["success_url"],
+        MessageBody=_sns_wrap(_success_body(f"{BATCH_JOB_ID}:ok")),
+    )
+    env["sqs"].send_message(
+        QueueUrl=env["failure_url"],
+        MessageBody=_sns_wrap(_failure_body(f"{BATCH_JOB_ID}:bad")),
+    )
+
+    stubber = env["stubber"]
+    for stem in ("ok", "bad"):
+        stubber.add_response(
+            "invoke_endpoint_async",
+            {"InferenceId": f"{BATCH_JOB_ID}:{stem}", "OutputLocation": "s3://x/y"},
+        )
+    stubber.activate()
+
+    result = asyncio.run(
+        invoker.run_batch(
+            batch_job_id=BATCH_JOB_ID,
+            input_files=[file_ok, file_bad],
+            output_dir=tmp_path / "out",
+            log_path=tmp_path / "log.jsonl",
+            deadline_seconds=30.0,
+        )
+    )
+
+    assert result.succeeded_files == ["ok"]
+    assert len(result.failed_files) == 1
+    stem, reason = result.failed_files[0]
+    assert stem == "bad"
+    assert "ModelError" in reason  # _failure_body() の failureReason が記録される
+    assert result.in_flight_timeout == []
+    stubber.assert_no_pending_responses()
+
+
+def test_run_batch_collects_in_flight_timeout(full_aws_env, tmp_path: Path) -> None:
+    """deadline 内に通知が来なかった InferenceId は `in_flight_timeout` に落ちる。
+
+    SuccessQueue / FailureQueue のどちらにも何も投入せず、`deadline_seconds` を
+    極小 (100ms) に設定することで、invoke 後の polling がすぐに時間切れする。
+    """
+    env = full_aws_env
+    invoker = _make_invoker(env, max_concurrent=2)
+
+    file_a = _write_input(tmp_path, "a.pdf")
+    file_b = _write_input(tmp_path, "b.pdf")
+
+    stubber = env["stubber"]
+    for stem in ("a", "b"):
+        stubber.add_response(
+            "invoke_endpoint_async",
+            {"InferenceId": f"{BATCH_JOB_ID}:{stem}", "OutputLocation": "s3://x/y"},
+        )
+    stubber.activate()
+
+    result = asyncio.run(
+        invoker.run_batch(
+            batch_job_id=BATCH_JOB_ID,
+            input_files=[file_a, file_b],
+            output_dir=tmp_path / "out",
+            log_path=tmp_path / "log.jsonl",
+            deadline_seconds=0.1,
+        )
+    )
+
+    assert result.succeeded_files == []
+    assert result.failed_files == []
+    assert sorted(result.in_flight_timeout) == ["a", "b"]
+    stubber.assert_no_pending_responses()
+
+
+def test_run_batch_records_4xx_as_immediate_failure(full_aws_env, tmp_path: Path) -> None:
+    """同期 4xx ValidationException は `failed_files` に即積まれる (リトライなし)。
+
+    残り 1 ファイルは通常の Async 経路で成功し、BatchResult に両方が反映される。
+    """
+    env = full_aws_env
+    invoker = _make_invoker(env, max_concurrent=4)
+
+    file_ok = _write_input(tmp_path, "ok.pdf")
+    file_bad = _write_input(tmp_path, "bad.pdf")
+
+    env["sqs"].send_message(
+        QueueUrl=env["success_url"],
+        MessageBody=_sns_wrap(_success_body(f"{BATCH_JOB_ID}:ok")),
+    )
+
+    stubber = env["stubber"]
+    stubber.add_response(
+        "invoke_endpoint_async",
+        {"InferenceId": f"{BATCH_JOB_ID}:ok", "OutputLocation": "s3://x/y"},
+    )
+    stubber.add_client_error(
+        "invoke_endpoint_async",
+        service_error_code="ValidationException",
+        service_message="Invalid content type",
+        http_status_code=400,
+    )
+    stubber.activate()
+
+    result = asyncio.run(
+        invoker.run_batch(
+            batch_job_id=BATCH_JOB_ID,
+            input_files=[file_ok, file_bad],
+            output_dir=tmp_path / "out",
+            log_path=tmp_path / "log.jsonl",
+            deadline_seconds=30.0,
+        )
+    )
+
+    assert result.succeeded_files == ["ok"]
+    assert len(result.failed_files) == 1
+    stem, reason = result.failed_files[0]
+    assert stem == "bad"
+    assert "ValidationException" in reason
+    assert result.in_flight_timeout == []
+    stubber.assert_no_pending_responses()

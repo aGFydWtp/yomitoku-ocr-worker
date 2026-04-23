@@ -115,7 +115,7 @@
   - _Requirements: 3.2, 3.5_
   - _Boundary: async_invoker.py_
 
-- [ ] 3.3 `max_concurrent` 背圧制御と BatchResult 集計を実装する
+- [x] 3.3 `max_concurrent` 背圧制御と BatchResult 集計を実装する
   - in-flight `InferenceId` 上限 (既定 16、context 可変) を Semaphore 相当で維持
   - 上限到達時は新規 invoke を停止し、SQS pull で空くのを待つ
   - `BATCH_TASK_TIMEOUT_SECONDS=7200` までに未完了の InferenceId を `in_flight_timeout` として集計し、Fargate タスクは失敗終了 (SFN `MarkFailedForced` 経路)
