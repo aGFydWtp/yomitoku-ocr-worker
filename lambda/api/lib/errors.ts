@@ -22,19 +22,6 @@ export class ConflictError extends Error {
   }
 }
 
-export interface ServiceUnavailableDetails {
-  endpointState: string;
-}
-
-export class ServiceUnavailableError extends Error {
-  public readonly details: ServiceUnavailableDetails;
-  constructor(message: string, details: ServiceUnavailableDetails) {
-    super(message);
-    this.name = "ServiceUnavailableError";
-    this.details = details;
-  }
-}
-
 export function handleError(err: unknown, c: Context) {
   if (err instanceof ValidationError) {
     return c.json({ error: err.message }, 400);
@@ -44,12 +31,6 @@ export function handleError(err: unknown, c: Context) {
   }
   if (err instanceof ConflictError) {
     return c.json({ error: err.message }, 409);
-  }
-  if (err instanceof ServiceUnavailableError) {
-    return c.json(
-      { error: err.message, endpointState: err.details.endpointState },
-      503,
-    );
   }
   if (err instanceof HTTPException) {
     const status = err.status;
