@@ -1,5 +1,6 @@
 import type { ITable } from "aws-cdk-lib/aws-dynamodb";
 import { SubnetType, Vpc } from "aws-cdk-lib/aws-ec2";
+import { Platform } from "aws-cdk-lib/aws-ecr-assets";
 import {
   Cluster,
   ContainerImage,
@@ -12,7 +13,6 @@ import { Effect, PolicyStatement } from "aws-cdk-lib/aws-iam";
 import { LogGroup, RetentionDays } from "aws-cdk-lib/aws-logs";
 import type { IBucket } from "aws-cdk-lib/aws-s3";
 import type { IQueue } from "aws-cdk-lib/aws-sqs";
-import { Platform } from "aws-cdk-lib/aws-ecr-assets";
 import {
   Choice,
   Condition,

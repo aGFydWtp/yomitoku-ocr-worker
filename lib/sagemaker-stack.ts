@@ -2,13 +2,13 @@ import {
   CfnScalableTarget,
   CfnScalingPolicy,
 } from "aws-cdk-lib/aws-applicationautoscaling";
+import { CfnAlarm } from "aws-cdk-lib/aws-cloudwatch";
 import {
   Effect,
   PolicyStatement,
   Role,
   ServicePrincipal,
 } from "aws-cdk-lib/aws-iam";
-import { CfnAlarm } from "aws-cdk-lib/aws-cloudwatch";
 import { Alias } from "aws-cdk-lib/aws-kms";
 import type { IBucket } from "aws-cdk-lib/aws-s3";
 import {
