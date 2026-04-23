@@ -188,7 +188,7 @@
   - 観測可能条件: settings スキーマテストで必須/任意フィールドを検証、不足時 ValidationError
   - _Requirements: 3.1, 10.2_
 
-- [ ] 5.3 `run_async_batch` の E2E smoke を localstack + moto で実装する
+- [x] 5.3 `run_async_batch` の E2E smoke を localstack + moto で実装する
   - 1 成功 + 1 失敗混在バッチで `process_log.jsonl` の per-file status を検証
   - 別バッチの SQS メッセージを共通 Queue に投入し、誤消費しないことを確認
   - Fargate 7200 秒タイムアウト相当の早期切り上げで `in_flight_timeout` が出現するパス
