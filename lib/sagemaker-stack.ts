@@ -140,6 +140,23 @@ export class SagemakerStack extends Stack {
     );
 
     // Task 2.6: S3 権限を `batches/_async/*` prefix に最小化
+    // SageMaker Endpoint 作成時のロール検証 (CreateEndpoint の事前チェック) は
+    // バケット本体への `s3:ListBucket` とバケット配下への `s3:PutObject` を要求する。
+    // `s3:ListBucket` はオブジェクトではなくバケット ARN を対象にするため別ステートメント。
+    // 最小化のため Condition で prefix (`batches/_async/*`) を限定する。
+    executionRole.addToPolicy(
+      new PolicyStatement({
+        sid: "S3AsyncListBucket",
+        effect: Effect.ALLOW,
+        actions: ["s3:ListBucket"],
+        resources: [bucket.bucketArn],
+        // NOTE: `s3:prefix` Condition は意図的に付与しない。SageMaker の
+        // CreateEndpoint 事前検証は `iam:SimulatePrincipalPolicy` を
+        // prefix context key 無しで実行するため、Condition 付き ListBucket は
+        // 検証に落ちて "role is invalid" で Endpoint 作成が失敗する。
+        // 読み書きの prefix 限定は GetObject/PutObject の Resource 側で維持する。
+      }),
+    );
     executionRole.addToPolicy(
       new PolicyStatement({
         sid: "S3AsyncInputGet",
@@ -248,6 +265,20 @@ export class SagemakerStack extends Stack {
       );
     }
 
+    // SageMaker CreateEndpoint の事前検証は、Topic 側の resource policy ではなく
+    // 実行ロールの IdentityPolicy に `sns:Publish` が付いているかを
+    // `iam:SimulatePrincipalPolicy` で確認する。resource policy だけでは
+    // "role is invalid: sns:Publish permission missing" で Endpoint 作成が失敗する。
+    // 付与先を 2 Topic ARN に限定して最小化。
+    executionRole.addToPolicy(
+      new PolicyStatement({
+        sid: "SnsPublishAsyncNotifications",
+        effect: Effect.ALLOW,
+        actions: ["sns:Publish"],
+        resources: [successTopic.topicArn, errorTopic.topicArn],
+      }),
+    );
+
     // -----------------------------------------------------------------------
     // 4. SQS AsyncCompletionQueue / AsyncFailureQueue (Task 2.3)
     //    AWS 管理 KMS (`alias/aws/sqs`) はキーポリシーを書き換えられず、
@@ -300,7 +331,13 @@ export class SagemakerStack extends Stack {
           variantName: "AllTraffic",
           modelName: model.attrModelName,
           instanceType: "ml.g5.xlarge",
-          initialInstanceCount: 0,
+          // CloudFormation の `AWS::SageMaker::EndpointConfig` スキーマは
+          // `InitialInstanceCount >= 1` を強制するため 0 を宣言できない
+          // (SageMaker API 単体では 0 可)。そのため初期値は 1 に置き、
+          // CfnScalableTarget の MinCapacity=0 と
+          // ApproximateBacklogSizePerInstance ターゲット追跡で、
+          // InService 直後の backlog=0 を検知して速やかに 0 へ scale-in する。
+          initialInstanceCount: 1,
         },
       ],
       asyncInferenceConfig: {
@@ -332,6 +369,16 @@ export class SagemakerStack extends Stack {
     // `endpointConfig.attrEndpointConfigName` 経由の参照 token から CloudFormation
     // は自動で DependsOn を生成するが、意図を文書化するため明示的にも宣言する。
     endpoint.addDependency(endpointConfig);
+
+    // CDK は ExecutionRoleArn 経由で Model → Role の依存を自動配線するが、
+    // Role に addToPolicy で紐付ける inline `DefaultPolicy` (AWS::IAM::Policy)
+    // への依存は作らない。SageMaker の CreateEndpoint 事前検証は IAM::Policy の
+    // 付与完了より前に走り得るため、明示的に Endpoint → DefaultPolicy への
+    // DependsOn を配線して "role is invalid" (ListBucket/PutObject 不足) を防ぐ。
+    const defaultPolicy = executionRole.node.tryFindChild("DefaultPolicy");
+    if (defaultPolicy) {
+      endpoint.node.addDependency(defaultPolicy);
+    }
 
     // -----------------------------------------------------------------------
     // 7. Application Auto Scaling (Task 2.4)

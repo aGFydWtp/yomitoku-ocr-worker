@@ -129,30 +129,29 @@ describe("SagemakerStack", () => {
       });
     });
 
-    it("Realtime `InitialInstanceCount=1` が残存しない / Async `InitialInstanceCount=0`", () => {
+    it("Async `InitialInstanceCount=1` + MinCapacity=0 で初期 scale-in 前提", () => {
+      // CloudFormation の AWS::SageMaker::EndpointConfig スキーマは
+      // `InitialInstanceCount >= 1` を強制するため 0 不可。
+      // `MinCapacity=0` の CfnScalableTarget と ApproximateBacklogSizePerInstance
+      // ターゲット追跡で InService 直後に 0 へ scale-in する運用。
       const { template } = createStack();
       template.hasResourceProperties("AWS::SageMaker::EndpointConfig", {
         ProductionVariants: [
           Match.objectLike({
             VariantName: "AllTraffic",
             InstanceType: "ml.g5.xlarge",
-            InitialInstanceCount: 0,
+            InitialInstanceCount: 1,
           }),
         ],
       });
 
-      // 全 EndpointConfig を走査して InitialInstanceCount=1 がどこにも出現しないことを確認
-      const configs = template.findResources("AWS::SageMaker::EndpointConfig");
-      for (const resource of Object.values(configs)) {
-        const variants = (
-          resource.Properties as {
-            ProductionVariants?: Array<{ InitialInstanceCount?: number }>;
-          }
-        ).ProductionVariants;
-        for (const variant of variants ?? []) {
-          expect(variant.InitialInstanceCount).not.toBe(1);
-        }
-      }
+      // MinCapacity=0 が ScalableTarget 側に配線されていること
+      template.hasResourceProperties(
+        "AWS::ApplicationAutoScaling::ScalableTarget",
+        {
+          MinCapacity: 0,
+        },
+      );
     });
 
     it("AsyncInferenceConfig.OutputConfig.S3OutputPath が batches/_async/outputs/ prefix", () => {
