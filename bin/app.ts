@@ -5,7 +5,6 @@ import { ApiStack } from "../lib/api-stack";
 import { resolveAsyncRuntimeContext } from "../lib/async-runtime-context";
 import { BatchExecutionStack } from "../lib/batch-execution-stack";
 import { MonitoringStack } from "../lib/monitoring-stack";
-import { OrchestrationStack } from "../lib/orchestration-stack";
 import { ProcessingStack } from "../lib/processing-stack";
 import { SagemakerStack } from "../lib/sagemaker-stack";
 
@@ -28,22 +27,17 @@ if (account && !AWS_ACCOUNT_PATTERN.test(account)) {
   throw new Error(`Invalid AWS account ID format: "${account}"`);
 }
 
-// SageMaker エンドポイント関連の context は orchestration / batch 両スタックで
-// 使用するため、app レベルで 1 度だけ解決し、各スタックに typed prop で渡す。
+// SageMaker エンドポイント名は SagemakerStack / BatchExecutionStack /
+// MonitoringStack で共有する必要があるため、app レベルで 1 度だけ解決して
+// 各スタックに typed prop で渡す。
+// Task 7.1 で旧エンドポイント lifecycle スタックを撤去したため
+// `endpointConfigName` は不要になり、context からは読まない。
 const endpointName = app.node.tryGetContext("endpointName") as
   | string
   | undefined;
 if (!endpointName) {
   throw new Error(
     "endpointName must be set in cdk.json context or via --context",
-  );
-}
-const endpointConfigName = app.node.tryGetContext("endpointConfigName") as
-  | string
-  | undefined;
-if (!endpointConfigName) {
-  throw new Error(
-    "endpointConfigName must be set in cdk.json context or via --context",
   );
 }
 
@@ -66,13 +60,6 @@ const sagemakerStack = new SagemakerStack(app, "SagemakerStack", {
   endpointName,
 });
 
-const orchestrationStack = new OrchestrationStack(app, "OrchestrationStack", {
-  env: { region, account },
-  controlTable: processingStack.controlTable,
-  endpointName,
-  endpointConfigName,
-});
-
 const batchExecutionStack = new BatchExecutionStack(
   app,
   "BatchExecutionStack",
@@ -93,7 +80,6 @@ new ApiStack(app, "ApiStack", {
   bucket: processingStack.bucket,
   controlTable: processingStack.controlTable,
   batchTable: processingStack.batchTable,
-  stateMachine: orchestrationStack.stateMachine,
   batchExecutionStateMachine: batchExecutionStack.stateMachine,
 });
 

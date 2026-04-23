@@ -37,19 +37,22 @@ import type { Construct } from "constructs";
 /**
  * ApiStack: バッチ API のエントリポイント。
  *
- * Task 6.2 で IAM / 環境変数をバッチ構成に再スコープ:
- *   - S3 grants は `batches/*` プレフィックス限定（旧 input/output/visualizations 削除済み）
- *   - BatchTable へ PutItem / UpdateItem / GetItem / Query（GSI1/GSI2 含む）/
- *     TransactWriteItems を付与
- *   - BatchExecutionStateMachine への StartExecution を付与（/batches/:id/start 用）
- *   - EndpointControl StateMachine への StartExecution は自動起動フローのため維持
+ * Task 7.3 で旧エンドポイント lifecycle スタック依存を撤去:
+ *   - EndpointControl 由来の `stateMachine` prop を削除し、
+ *     `batchExecutionStateMachine` のみを受け取る
+ *   - `STATE_MACHINE_ARN` 環境変数を撤廃 (Async Inference + AutoScaling 化で
+ *     エンドポイント自動起動フローが不要になったため)
+ *   - ControlTable は Fargate 側 heartbeat / last_batch_completed_at の
+ *     参照用として read 権限のみ維持
+ *
+ * 既存 `/batches` API 契約 (パス / スキーマ / HTTP ステータス) は不変。
+ *   - `/batches` POST は 503 (endpoint 未起動) 経路を持たなくなるが、
+ *     SageMaker AsyncInvoke が自動スケールで吸収するため問題なし。
  */
 export interface ApiStackProps extends StackProps {
   bucket: Bucket;
   controlTable: ITable;
   batchTable: ITable;
-  /** EndpointControl StateMachine — エンドポイント起動の自動トリガー用 */
-  stateMachine: IStateMachine;
   /** BatchExecutionStateMachine — /batches/:id/start 実行用 */
   batchExecutionStateMachine: IStateMachine;
 }
@@ -58,13 +61,8 @@ export class ApiStack extends Stack {
   constructor(scope: Construct, id: string, props: ApiStackProps) {
     super(scope, id, props);
 
-    const {
-      bucket,
-      controlTable,
-      batchTable,
-      stateMachine,
-      batchExecutionStateMachine,
-    } = props;
+    const { bucket, controlTable, batchTable, batchExecutionStateMachine } =
+      props;
 
     const fn = new NodejsFunction(this, "ApiFunction", {
       entry: "lambda/api/index.ts",
@@ -79,15 +77,13 @@ export class ApiStack extends Stack {
         BUCKET_NAME: bucket.bucketName,
         CONTROL_TABLE_NAME: controlTable.tableName,
         BATCH_TABLE_NAME: batchTable.tableName,
-        STATE_MACHINE_ARN: stateMachine.stateMachineArn,
         BATCH_EXECUTION_STATE_MACHINE_ARN:
           batchExecutionStateMachine.stateMachineArn,
       },
     });
 
-    // --- IAM 権限 (Task 6.2: batch-first scope) ---
+    // --- IAM 権限 (Task 6.2: batch-first scope / Task 7.3: orchestration 剥離) ---
     controlTable.grantReadData(fn);
-    stateMachine.grantStartExecution(fn);
     batchExecutionStateMachine.grantStartExecution(fn);
 
     // BatchTable: META/FILE アイテムの CRUD + GSI1/GSI2 の Query + 反解析時の

@@ -9,7 +9,6 @@ import {
   CreateBatchResponseSchema,
   ErrorResponseSchema,
   ProcessLogLinkSchema,
-  ServiceUnavailableSchema,
   StartBatchResponseSchema,
 } from "../schemas";
 
@@ -28,8 +27,9 @@ export const createBatchRoute = createRoute({
     "2. 各 `uploadUrl` に PDF を PUT（有効期限 15 分）",
     "3. `POST /batches/:batchJobId/start` でバッチ実行を開始",
     "",
-    "## 制約",
-    "- エンドポイント未起動時は `503` を返します（裏で自動起動を試みます）",
+    "Task 7.3 以降、SageMaker Async Inference + AutoScaling により",
+    "エンドポイントは自動スケールアウトされるため、本エンドポイントは",
+    "エンドポイント状態に関わらず常に `201` を返します (旧 `503` 経路は撤去)。",
   ].join("\n"),
   request: {
     body: {
@@ -45,10 +45,6 @@ export const createBatchRoute = createRoute({
     400: {
       description: "バリデーションエラー",
       content: { "application/json": { schema: ErrorResponseSchema } },
-    },
-    503: {
-      description: "エンドポイント未起動",
-      content: { "application/json": { schema: ServiceUnavailableSchema } },
     },
   },
 });

@@ -36,15 +36,6 @@ export const ALLOWED_EXTENSIONS = [".pdf"] as const;
 // 共通
 // ---------------------------------------------------------------------------
 
-export const ENDPOINT_STATES = [
-  "IDLE",
-  "CREATING",
-  "IN_SERVICE",
-  "DELETING",
-] as const;
-
-export type EndpointState = (typeof ENDPOINT_STATES)[number];
-
 export const ErrorResponseSchema = z
   .object({ error: z.string() })
   .openapi("ErrorResponse");
@@ -205,32 +196,3 @@ export const CancelBatchResponseSchema = z
     status: z.literal("CANCELLED"),
   })
   .openapi("CancelBatchResponse");
-
-// ---------------------------------------------------------------------------
-// POST /batches/:batchJobId/reanalyze
-// ---------------------------------------------------------------------------
-
-export const ServiceUnavailableSchema = z
-  .object({
-    error: z.string(),
-    endpointState: z.string(),
-  })
-  .openapi("ServiceUnavailableResponse");
-
-// ---------------------------------------------------------------------------
-// POST /up / GET /status (既存ルート — 継続)
-// ---------------------------------------------------------------------------
-
-export const StartEndpointResponseSchema = z
-  .object({
-    message: z.string(),
-    endpointState: z.enum(ENDPOINT_STATES),
-  })
-  .openapi("StartEndpointResponse");
-
-export const EndpointStatusResponseSchema = z
-  .object({
-    endpointState: z.enum(ENDPOINT_STATES),
-    updatedAt: z.string().datetime().nullable(),
-  })
-  .openapi("EndpointStatusResponse");

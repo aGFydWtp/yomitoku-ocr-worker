@@ -5,7 +5,6 @@ type AnyJson = any;
 
 // --- vi.hoisted() でモック関数を事前宣言（vi.mock ホイスティング対策） ---
 const {
-  mockDynamoSend,
   mockSfnSend,
   mockPutBatchWithFiles,
   mockTransitionBatchStatus,
@@ -18,7 +17,6 @@ const {
   mockHeadObject,
   mockListObjectKeys,
 } = vi.hoisted(() => ({
-  mockDynamoSend: vi.fn(),
   mockSfnSend: vi.fn(),
   mockPutBatchWithFiles: vi.fn(),
   mockTransitionBatchStatus: vi.fn(),
@@ -30,10 +28,6 @@ const {
   mockListFailedFiles: vi.fn(),
   mockHeadObject: vi.fn(),
   mockListObjectKeys: vi.fn(),
-}));
-
-vi.mock("../../lib/dynamodb", () => ({
-  docClient: { send: (...args: unknown[]) => mockDynamoSend(...args) },
 }));
 
 vi.mock("../../lib/sfn", () => ({
@@ -84,11 +78,6 @@ function createApp() {
 const VALID_BODY = {
   basePath: "project/2026/test",
   files: [{ filename: "a.pdf" }, { filename: "b.pdf" }],
-};
-
-const IN_SERVICE_ITEM = {
-  lock_key: "endpoint_control",
-  endpoint_state: "IN_SERVICE",
 };
 
 const UPLOAD_RESULTS = [
@@ -143,12 +132,9 @@ describe("POST /batches", () => {
     process.env.BATCH_TABLE_NAME = "BatchTable";
     process.env.BUCKET_NAME = "test-bucket";
     process.env.CONTROL_TABLE_NAME = "ControlTable";
-    process.env.STATE_MACHINE_ARN =
-      "arn:aws:states:ap-northeast-1:123456789012:stateMachine:test";
   });
 
-  it("正常系: IN_SERVICE なら 201 と batchJobId・uploads を返す", async () => {
-    mockDynamoSend.mockResolvedValue({ Item: IN_SERVICE_ITEM });
+  it("正常系: 201 と batchJobId・uploads を返す (Task 7.3: endpoint_state gate 撤去)", async () => {
     mockPutBatchWithFiles.mockResolvedValue(undefined);
     mockCreateUploadUrls.mockResolvedValue(UPLOAD_RESULTS);
 
@@ -168,7 +154,6 @@ describe("POST /batches", () => {
   });
 
   it("正常系: BatchStore.putBatchWithFiles が正しい引数で呼ばれる", async () => {
-    mockDynamoSend.mockResolvedValue({ Item: IN_SERVICE_ITEM });
     mockPutBatchWithFiles.mockResolvedValue(undefined);
     mockCreateUploadUrls.mockResolvedValue(UPLOAD_RESULTS);
 
@@ -187,7 +172,6 @@ describe("POST /batches", () => {
   });
 
   it("正常系: extraFormats が指定されると BatchStore に渡される", async () => {
-    mockDynamoSend.mockResolvedValue({ Item: IN_SERVICE_ITEM });
     mockPutBatchWithFiles.mockResolvedValue(undefined);
     mockCreateUploadUrls.mockResolvedValue([UPLOAD_RESULTS[0]]);
 
@@ -206,11 +190,9 @@ describe("POST /batches", () => {
     expect(args.extraFormats).toEqual(["markdown", "csv"]);
   });
 
-  it("503: IDLE 状態なら 503 を返し SFN を起動する", async () => {
-    mockDynamoSend.mockResolvedValue({
-      Item: { lock_key: "endpoint_control", endpoint_state: "IDLE" },
-    });
-    mockSfnSend.mockResolvedValue({});
+  it("Task 7.3: endpoint_state によらず 201 を返し、SFN 起動は発生しない", async () => {
+    mockPutBatchWithFiles.mockResolvedValue(undefined);
+    mockCreateUploadUrls.mockResolvedValue(UPLOAD_RESULTS);
 
     const app = createApp();
     const res = await app.request("/batches", {
@@ -219,44 +201,8 @@ describe("POST /batches", () => {
       body: JSON.stringify(VALID_BODY),
     });
 
-    expect(res.status).toBe(503);
-    const body: AnyJson = await res.json();
-    expect(body.endpointState).toBe("IDLE");
-    expect(mockSfnSend).toHaveBeenCalledOnce();
-    expect(mockPutBatchWithFiles).not.toHaveBeenCalled();
-  });
-
-  it("503: CREATING 状態なら 503 を返すが SFN は起動しない", async () => {
-    mockDynamoSend.mockResolvedValue({
-      Item: { lock_key: "endpoint_control", endpoint_state: "CREATING" },
-    });
-
-    const app = createApp();
-    const res = await app.request("/batches", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(VALID_BODY),
-    });
-
-    expect(res.status).toBe(503);
+    expect(res.status).toBe(201);
     expect(mockSfnSend).not.toHaveBeenCalled();
-  });
-
-  it("503: DELETING 状態なら 503 を返し SFN を起動する", async () => {
-    mockDynamoSend.mockResolvedValue({
-      Item: { lock_key: "endpoint_control", endpoint_state: "DELETING" },
-    });
-    mockSfnSend.mockResolvedValue({});
-
-    const app = createApp();
-    const res = await app.request("/batches", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(VALID_BODY),
-    });
-
-    expect(res.status).toBe(503);
-    expect(mockSfnSend).toHaveBeenCalledOnce();
   });
 
   it("400: files が空配列は拒否される", async () => {
@@ -306,7 +252,6 @@ describe("POST /batches", () => {
   });
 
   it("正常系: 許可された contentType は通過する", async () => {
-    mockDynamoSend.mockResolvedValue({ Item: IN_SERVICE_ITEM });
     mockPutBatchWithFiles.mockResolvedValue(undefined);
     mockCreateUploadUrls.mockResolvedValue([UPLOAD_RESULTS[0]]);
 
@@ -323,7 +268,6 @@ describe("POST /batches", () => {
   });
 
   it("500: BatchStore がエラーを throw すると 500 を返す", async () => {
-    mockDynamoSend.mockResolvedValue({ Item: IN_SERVICE_ITEM });
     mockPutBatchWithFiles.mockRejectedValue(new Error("DynamoDB error"));
 
     const app = createApp();
@@ -336,7 +280,6 @@ describe("POST /batches", () => {
   });
 
   it("500: BatchPresign がエラーを throw すると 500 を返す（部分失敗）", async () => {
-    mockDynamoSend.mockResolvedValue({ Item: IN_SERVICE_ITEM });
     mockPutBatchWithFiles.mockResolvedValue(undefined);
     mockCreateUploadUrls.mockRejectedValue(new Error("S3 presign error"));
 

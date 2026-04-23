@@ -221,7 +221,7 @@
 
 ## 7. OrchestrationStack / endpoint-control / ApiStack 解体
 
-- [ ] 7.1 `OrchestrationStack` と `bin/app.ts` の関連宣言を撤去する
+- [x] 7.1 `OrchestrationStack` と `bin/app.ts` の関連宣言を撤去する
   - `lib/orchestration-stack.ts` 削除
   - `bin/app.ts` から `OrchestrationStack` import・インスタンス化・依存注入を除去
   - `SagemakerStack` の outputs を直接 `BatchExecutionStack` / `MonitoringStack` の props として接続
@@ -233,7 +233,7 @@
   - 観測可能条件: リポジトリツリーに `lambda/endpoint-control/` が存在せず、`cdk synth` 出力にも対応 Lambda 関数が無い
   - _Requirements: 1.4_
 
-- [ ] 7.3 `ApiStack` から orchestration state machine 依存を剥がす
+- [x] 7.3 `ApiStack` から orchestration state machine 依存を剥がす
   - props から `stateMachine` (OrchestrationStack 由来) を削除し `batchExecutionStateMachine` のみを残す
   - endpoint-control 呼び出し経路が存在した場合は API Lambda 側のコードも削除
   - 既存 `/batches` API 契約 (パス / スキーマ / HTTP ステータス) を一切変更しない

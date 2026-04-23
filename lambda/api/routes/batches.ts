@@ -1,23 +1,19 @@
 import { randomUUID } from "node:crypto";
 import { StartExecutionCommand } from "@aws-sdk/client-sfn";
-import { GetCommand } from "@aws-sdk/lib-dynamodb";
 import { OpenAPIHono } from "@hono/zod-openapi";
 import { BatchPresign, RESULT_EXPIRES_IN } from "../lib/batch-presign";
 import { BatchQuery } from "../lib/batch-query";
 import { BatchStore } from "../lib/batch-store";
-import { docClient } from "../lib/dynamodb";
 import {
   ConflictError,
   handleError,
   NotFoundError,
-  ServiceUnavailableError,
   ValidationError,
 } from "../lib/errors";
 import { headObject, listObjectKeys } from "../lib/s3";
 import { sfnClient } from "../lib/sfn";
 import { assertValidStateMachineArn } from "../lib/validate";
-import type { BatchStatus, EndpointState } from "../schemas";
-import { ENDPOINT_STATES } from "../schemas";
+import type { BatchStatus } from "../schemas";
 import {
   cancelBatchRoute,
   createBatchRoute,
@@ -45,16 +41,6 @@ batchesRoutes.onError(handleError);
 // ヘルパー
 // ---------------------------------------------------------------------------
 
-function toEndpointState(raw: unknown): EndpointState {
-  if (
-    typeof raw === "string" &&
-    (ENDPOINT_STATES as readonly string[]).includes(raw)
-  ) {
-    return raw as EndpointState;
-  }
-  return "IDLE";
-}
-
 function currentYYYYMM(): string {
   const now = new Date();
   return `${now.getUTCFullYear()}${String(now.getUTCMonth() + 1).padStart(2, "0")}`;
@@ -79,33 +65,11 @@ function requireEnv(name: string): string {
 batchesRoutes.openapi(createBatchRoute, async (c) => {
   const batchTableName = requireEnv("BATCH_TABLE_NAME");
   const bucketName = requireEnv("BUCKET_NAME");
-  const controlTableName = requireEnv("CONTROL_TABLE_NAME");
-  const stateMachineArn = requireEnv("STATE_MACHINE_ARN");
-  assertValidStateMachineArn(stateMachineArn);
 
-  const controlResult = await docClient.send(
-    new GetCommand({
-      TableName: controlTableName,
-      Key: { lock_key: "endpoint_control" },
-      ConsistentRead: true,
-    }),
-  );
-  const endpointState = toEndpointState(controlResult.Item?.endpoint_state);
-
-  if (endpointState !== "IN_SERVICE") {
-    if (endpointState !== "CREATING") {
-      await sfnClient.send(
-        new StartExecutionCommand({
-          stateMachineArn,
-          input: JSON.stringify({ trigger: "batch_api_request" }),
-        }),
-      );
-    }
-    throw new ServiceUnavailableError(
-      "SageMaker endpoint is not in service. Please retry after the endpoint becomes IN_SERVICE.",
-      { endpointState },
-    );
-  }
+  // Task 7.3: Async Inference + AutoScaling 化により endpoint_state gate は撤去。
+  // エンドポイント起動待機は SageMaker 側 (`InvokeEndpointAsync` が自動的に
+  // スケールアウトを誘発) に委譲し、ここでは単純にバッチレコードと署名付き URL を
+  // 発行する。
 
   const body = c.req.valid("json");
   const batchJobId = randomUUID();

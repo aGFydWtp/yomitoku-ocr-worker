@@ -42,9 +42,6 @@ function createStack(): {
     partitionKey: { name: "GSI2PK", type: AttributeType.STRING },
     sortKey: { name: "GSI2SK", type: AttributeType.STRING },
   });
-  const stateMachine = new StateMachine(depStack, "TestStateMachine", {
-    definitionBody: DefinitionBody.fromChainable(new Pass(depStack, "Start")),
-  });
   const batchExecutionStateMachine = new StateMachine(
     depStack,
     "TestBatchExecutionStateMachine",
@@ -60,7 +57,6 @@ function createStack(): {
     bucket,
     controlTable,
     batchTable,
-    stateMachine,
     batchExecutionStateMachine,
   });
 
@@ -92,7 +88,7 @@ describe("ApiStack (batch-first IAM / env wiring, Task 6.2)", () => {
       });
     });
 
-    it("環境変数に BUCKET_NAME / CONTROL_TABLE_NAME / BATCH_TABLE_NAME / STATE_MACHINE_ARN / BATCH_EXECUTION_STATE_MACHINE_ARN が設定されている", () => {
+    it("環境変数に BUCKET_NAME / CONTROL_TABLE_NAME / BATCH_TABLE_NAME / BATCH_EXECUTION_STATE_MACHINE_ARN が設定されている", () => {
       const { template } = createStack();
       template.hasResourceProperties("AWS::Lambda::Function", {
         Environment: {
@@ -100,7 +96,6 @@ describe("ApiStack (batch-first IAM / env wiring, Task 6.2)", () => {
             BUCKET_NAME: Match.anyValue(),
             CONTROL_TABLE_NAME: Match.anyValue(),
             BATCH_TABLE_NAME: Match.anyValue(),
-            STATE_MACHINE_ARN: Match.anyValue(),
             BATCH_EXECUTION_STATE_MACHINE_ARN: Match.anyValue(),
           },
         },
@@ -112,6 +107,28 @@ describe("ApiStack (batch-first IAM / env wiring, Task 6.2)", () => {
       const fns = template.findResources("AWS::Lambda::Function");
       const serialized = JSON.stringify(fns);
       expect(serialized).not.toContain("STATUS_TABLE_NAME");
+    });
+
+    it("STATE_MACHINE_ARN 環境変数 (EndpointControl 由来) が存在しない (Task 7.3: orchestration 剥離)", () => {
+      const { template } = createStack();
+      const fns = template.findResources("AWS::Lambda::Function");
+      // Environment.Variables のキー集合を走査し、BATCH_EXECUTION_STATE_MACHINE_ARN
+      // とは別に `STATE_MACHINE_ARN` というキーが残っていないことを確認する。
+      // 単純な substring match では BATCH_EXECUTION_STATE_MACHINE_ARN に部分一致して
+      // 偽陽性になるため、キー名の完全一致で検査する。
+      const keys = new Set<string>();
+      for (const fn of Object.values(fns)) {
+        const vars = (
+          fn as {
+            Properties?: {
+              Environment?: { Variables?: Record<string, unknown> };
+            };
+          }
+        ).Properties?.Environment?.Variables;
+        if (vars) for (const k of Object.keys(vars)) keys.add(k);
+      }
+      expect(keys.has("STATE_MACHINE_ARN")).toBe(false);
+      expect(keys.has("BATCH_EXECUTION_STATE_MACHINE_ARN")).toBe(true);
     });
   });
 
@@ -376,9 +393,8 @@ describe("ApiStack (batch-first IAM / env wiring, Task 6.2)", () => {
       ).toBe(true);
     });
 
-    it("ControlTable への読み取り権限と EndpointControl StateMachine への StartExecution 権限が維持されている", () => {
+    it("ControlTable への読み取り権限 (GetItem) が維持されている", () => {
       const { template } = createStack();
-      // ControlTable への GetItem 権限
       template.hasResourceProperties(
         "AWS::IAM::Policy",
         Match.objectLike({
@@ -392,18 +408,19 @@ describe("ApiStack (batch-first IAM / env wiring, Task 6.2)", () => {
           }),
         }),
       );
-      // EndpointControl StateMachine (BatchExecution を含まない) への StartExecution が残っている
+    });
+
+    it("EndpointControl StateMachine への StartExecution は付与されない (Task 7.3: orchestration 剥離)", () => {
+      const { template } = createStack();
+      // StartExecution は BatchExecution SM 以外に残っていないことを確認する。
       const stmts = extractStatements(template);
-      const endpointControlStart = stmts.some((s) => {
+      const nonBatchStarts = stmts.filter((s) => {
         if (s.Action !== "states:StartExecution") return false;
         if (s.Effect !== "Allow") return false;
         const resourceJson = JSON.stringify(s.Resource ?? "");
-        return (
-          resourceJson.includes("TestStateMachine") &&
-          !resourceJson.includes("TestBatchExecutionStateMachine")
-        );
+        return !resourceJson.includes("TestBatchExecutionStateMachine");
       });
-      expect(endpointControlStart).toBe(true);
+      expect(nonBatchStarts).toHaveLength(0);
     });
   });
 
