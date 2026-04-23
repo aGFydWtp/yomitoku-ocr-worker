@@ -96,7 +96,7 @@
 
 ## 3. AsyncInvoker — Fargate runtime module
 
-- [ ] 3.1 `invoke_endpoint_async` 送信と S3 入力ステージングを実装する
+- [x] 3.1 `invoke_endpoint_async` 送信と S3 入力ステージングを実装する
   - `InferenceId` を `{batch_job_id}:{file_stem}` 形式で生成
   - 入力ファイルを `batches/_async/inputs/{batch_job_id}/{file}` に `PutObject`
   - `sagemaker-runtime.invoke_endpoint_async(InputLocation, InferenceId, ContentType=...)` を発行
