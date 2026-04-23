@@ -25,3 +25,6 @@ __pycache__/
 
 # macOS
 .DS_Store
+
+# E2E/smoke test fixtures (personal data, keep local only)
+sample-pdf/
