@@ -155,7 +155,7 @@
   - _Requirements: 3.1, 3.2_
   - _Boundary: BatchExecutionStack_
 
-- [ ] 4.4 Step Functions 定義から Endpoint lifecycle 管理ステップを削除する
+- [x] 4.4 Step Functions 定義から Endpoint lifecycle 管理ステップを削除する
   - `EnsureEndpointInService`, `WaitEndpoint`, `EndpointReady?`, `DescribeEndpoint` (CallAwsService) を撤去
   - `AcquireBatchLock` → `RunBatchTask` → `AppendProcessLog` → `ReleaseBatchLock` の直結フローに整理
   - `States.Timeout` キャッチで `MarkFailedForced` → `ReleaseBatchLockOnError` → `Failed` の既存エラーパスは維持

@@ -431,8 +431,6 @@ describe("BatchExecutionStack", () => {
       const defStr = JSON.stringify(sm);
       for (const s of [
         "AcquireBatchLock",
-        "EnsureEndpointInService",
-        "WaitEndpoint",
         "RunBatchTask",
         "AggregateResults",
         "MarkCompleted",
@@ -444,6 +442,29 @@ describe("BatchExecutionStack", () => {
       ]) {
         expect(defStr).toContain(s);
       }
+    });
+
+    it("Endpoint lifecycle 管理ステップ (EnsureEndpointInService / WaitEndpoint / EndpointReady? / DescribeEndpoint) が定義から撤去されている (Task 4.4)", () => {
+      const { template } = createStack();
+      const sm = template.findResources("AWS::StepFunctions::StateMachine");
+      const defStr = JSON.stringify(sm);
+      expect(defStr).not.toContain("EnsureEndpointInService");
+      expect(defStr).not.toContain("WaitEndpoint");
+      expect(defStr).not.toContain("EndpointReady?");
+      // CallAwsService は action を camelCase 化した文字列として定義に残るため、
+      // describeEndpoint (小文字先頭) の存在でも検出する。
+      expect(defStr).not.toContain("describeEndpoint");
+    });
+
+    it("AcquireBatchLock が RunBatchTask に直結する (Task 4.4)", () => {
+      const { template } = createStack();
+      const sm = template.findResources("AWS::StepFunctions::StateMachine");
+      const defStr = JSON.stringify(sm);
+      // AcquireBatchLock ステート内の "Next":"RunBatchTask" を直接検出する。
+      // エスケープされた JSON 文字列として state machine の DefinitionString に含まれる。
+      expect(defStr).toMatch(
+        /AcquireBatchLock[\s\S]*?\\"Next\\":\\"RunBatchTask\\"/,
+      );
     });
 
     it("StopBatchTask ステートは定義されない (SFN .sync が自動停止するため; H3)", () => {
@@ -526,13 +547,14 @@ describe("BatchExecutionStack", () => {
       );
     });
 
-    it("SFN 実行ロールが SageMaker describeEndpoint 権限を持つ (Task 4.4 で EnsureEndpointInService ごと撤去予定)", () => {
+    it("SFN 実行ロールが SageMaker describeEndpoint 権限を持たない (Task 4.4)", () => {
       const { template } = createStack();
-      // CallAwsService は action を camelCase (先頭小文字) に変換する。
-      // Task 4.4 で EnsureEndpointInService state を撤去する際、本 assertion も
-      // 併せて削除する予定。
+      // Task 4.4 で EnsureEndpointInService state を撤去したため、
+      // CallAwsService が自動生成していた sagemaker:describeEndpoint も消滅する。
       const policies = template.findResources("AWS::IAM::Policy");
-      expect(JSON.stringify(policies)).toContain("sagemaker:describeEndpoint");
+      expect(JSON.stringify(policies)).not.toContain(
+        "sagemaker:describeEndpoint",
+      );
     });
   });
 

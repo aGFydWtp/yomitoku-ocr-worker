@@ -22,11 +22,8 @@ import {
   StateMachine,
   Succeed,
   Timeout,
-  Wait,
-  WaitTime,
 } from "aws-cdk-lib/aws-stepfunctions";
 import {
-  CallAwsService,
   DynamoAttributeValue,
   DynamoDeleteItem,
   DynamoGetItem,
@@ -58,8 +55,10 @@ export const DEFAULT_ASYNC_MAX_CONCURRENT = 4;
 
 /**
  * StateMachine 全体のタイムアウト。`BATCH_TASK_TIMEOUT_SECONDS` に
- * Lock 獲得・エンドポイント確認・ロック解放などのオーバーヘッド (約 800 秒)
- * を加えた値で、タスク自体のタイムアウトより必ず長くする。
+ * Lock 獲得・ロック解放などのオーバーヘッド (約 800 秒) を加えた値で、
+ * タスク自体のタイムアウトより必ず長くする。
+ * (Task 4.4 で Endpoint lifecycle 管理ステップを撤去したが、オーバーヘッド
+ * バッファは結果集計/ロック解放のために維持する)
  */
 export const SFN_EXECUTION_TIMEOUT_SECONDS = BATCH_TASK_TIMEOUT_SECONDS + 800;
 
@@ -337,7 +336,6 @@ export class BatchExecutionStack extends Stack {
     const definition = this.buildBatchStateMachineDefinition(
       batchTable,
       controlTable,
-      endpointName,
     );
 
     // SFN 全体タイムアウト: RunBatchTask の taskTimeout より必ず長く設定する
@@ -422,13 +420,10 @@ export class BatchExecutionStack extends Stack {
   /**
    * BatchExecutionStateMachine の定義を構築する。
    *
-   * フロー:
+   * フロー (Task 4.4 以降):
    *   AcquireBatchLock (ControlTable, BATCH_EXEC_LOCK#{id}, attribute_not_exists)
    *     ├─ ConditionalCheckFailedException → LockNotAcquired (Succeed)
-   *     └─ 成功 → EnsureEndpointInService
-   *   EnsureEndpointInService (sagemaker:DescribeEndpoint)
-   *     └─ EndpointStatus == InService → RunBatchTask
-   *        それ以外                    → WaitEndpoint (60s) → EnsureEndpointInService (ループ)
+   *     └─ 成功 → RunBatchTask
    *   RunBatchTask (ecs:runTask.sync, taskTimeout=BATCH_TASK_TIMEOUT_SECONDS)
    *     ├─ States.Timeout / States.TaskFailed / States.ALL
    *     │    → MarkFailedForced → ReleaseBatchLockOnError → Failed
@@ -440,11 +435,15 @@ export class BatchExecutionStack extends Stack {
    *        ├─ COMPLETED → MarkCompleted → ReleaseBatchLock → Done
    *        ├─ PARTIAL   → MarkPartial   → ReleaseBatchLock → Done
    *        └─ otherwise → MarkFailed    → ReleaseBatchLock → Done
+   *
+   * Endpoint lifecycle 管理 (EnsureEndpointInService / WaitEndpoint /
+   * EndpointReady? / DescribeEndpoint) は Async 化に伴い撤去済み。
+   * 非 InService 時の再試行は Async Endpoint 側 (InternalFailure メッセージ
+   * の内部リトライ / 障害時は runner の in-flight タイムアウト) に委ねる。
    */
   private buildBatchStateMachineDefinition(
     batchTable: ITable,
     controlTable: ITable,
-    endpointName: string,
   ) {
     const batchPkKey = DynamoAttributeValue.fromString(
       JsonPath.format("BATCH#{}", JsonPath.stringAt("$.batchJobId")),
@@ -472,25 +471,6 @@ export class BatchExecutionStack extends Stack {
 
     const lockNotAcquired = new Succeed(this, "LockNotAcquired", {
       comment: "Another execution already holds the batch lock",
-    });
-
-    // --- EnsureEndpointInService (describe → choice → wait loop) ---
-    const ensureEndpointInService = new CallAwsService(
-      this,
-      "EnsureEndpointInService",
-      {
-        service: "sagemaker",
-        action: "describeEndpoint",
-        parameters: { EndpointName: endpointName },
-        iamResources: [
-          `arn:aws:sagemaker:${this.region}:${this.account}:endpoint/${endpointName}`,
-        ],
-        resultPath: "$.endpointResult",
-      },
-    );
-
-    const waitEndpoint = new Wait(this, "WaitEndpoint", {
-      time: WaitTime.duration(Duration.seconds(60)),
     });
 
     // --- RunBatchTask (ecs:runTask.sync, 7200s timeout) ---
@@ -590,17 +570,11 @@ export class BatchExecutionStack extends Stack {
       errors: ["DynamoDB.ConditionalCheckFailedException"],
       resultPath: "$.lockError",
     });
-    acquireBatchLock.next(ensureEndpointInService);
-
-    const endpointReady = new Choice(this, "EndpointReady?")
-      .when(
-        Condition.stringEquals("$.endpointResult.EndpointStatus", "InService"),
-        runBatchTask,
-      )
-      .otherwise(waitEndpoint);
-
-    ensureEndpointInService.next(endpointReady);
-    waitEndpoint.next(ensureEndpointInService);
+    // Task 4.4: Endpoint lifecycle 管理ステップ撤去により AcquireBatchLock から
+    // RunBatchTask に直結する。Async Endpoint は常時 Scale-to-Zero 可能で、
+    // runner 側の `invoke_endpoint_async` が in-service 遷移を待たずに呼び出し、
+    // 未 InService 時は Async Endpoint のランタイムがメッセージを保留する。
+    acquireBatchLock.next(runBatchTask);
 
     // タイムアウト・タスク失敗時は SFN ランタイムが自動で stopTask を発行する。
     // 本 StateMachine 側では MarkFailedForced に直接遷移させる。
