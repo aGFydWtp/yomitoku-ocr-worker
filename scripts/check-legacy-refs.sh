@@ -55,13 +55,7 @@ EXCLUDES=(
   ':!docs/runbooks/'
   ':!README.md'
   ':!**/README.md'
-  # --- Async 移行中の一時除外 (Task 10.1 で削除) ---
-  # これらのファイルは後続タスクで Async 相当に書き換えるまで旧 Realtime
-  # 識別子を含み続ける。Task 7.1 の完了で OrchestrationStack / endpoint-control
-  # は全て削除されたため、lib/orchestration-stack.ts / bin/app.ts の一時除外は撤去。
-  #   - lib/batch-execution-stack.ts: Task 4.1 / 4.4 で書き換え
-  #   - YomiToku-Pro_AWS構築検討.md: 設計検討資料 (履歴保持)
-  ':!lib/batch-execution-stack.ts'
+  # 設計検討資料は履歴保持のため除外 (Async 移行の経緯を残す)
   ':!YomiToku-Pro_AWS構築検討.md'
 )
 

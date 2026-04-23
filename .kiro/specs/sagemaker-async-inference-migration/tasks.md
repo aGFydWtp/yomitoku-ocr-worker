@@ -277,7 +277,7 @@
 
 ## 10. Validation — 全体整合
 
-- [ ] 10.1 `check-legacy-refs` を repository 全体に対して実行し 0 ヒットを確認する
+- [x] 10.1 `check-legacy-refs` を repository 全体に対して実行し 0 ヒットを確認する
   - 1.2 で追加した禁止語が本番 / テスト / CDK コードのどこにも残らない
   - 観測可能条件: `pnpm test -- check-legacy-refs` が green
   - _Requirements: 10.4, 11.4_

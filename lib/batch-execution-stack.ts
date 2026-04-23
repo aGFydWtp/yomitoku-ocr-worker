@@ -265,10 +265,9 @@ export class BatchExecutionStack extends Stack {
       }),
     );
 
-    // SageMaker: Async Inference 呼び出しのみ。旧 Realtime API
-    // (`sagemaker:InvokeEndpoint` / `sagemaker:DescribeEndpoint`) は撤去する。
-    // DescribeEndpoint は SFN `EnsureEndpointInService` が CallAwsService 経由で
-    // 別 IAM ポリシーとして付与するため、Task Role には不要 (Task 4.4 で SFN も撤去予定)。
+    // SageMaker: Async Inference 呼び出しのみを許可する。
+    // Realtime 系 API (Invoke / Describe) は Async 移行で撤去済みであり、
+    // Task Role に付与しない (SFN からの Endpoint lifecycle 管理も Task 4.4 で撤去)。
     this.taskDefinition.addToTaskRolePolicy(
       new PolicyStatement({
         sid: "SageMakerInvokeEndpointAsync",
@@ -443,10 +442,10 @@ export class BatchExecutionStack extends Stack {
    *        ├─ PARTIAL   → MarkPartial   → ReleaseBatchLock → Done
    *        └─ otherwise → MarkFailed    → ReleaseBatchLock → Done
    *
-   * Endpoint lifecycle 管理 (EnsureEndpointInService / WaitEndpoint /
-   * EndpointReady? / DescribeEndpoint) は Async 化に伴い撤去済み。
-   * 非 InService 時の再試行は Async Endpoint 側 (InternalFailure メッセージ
-   * の内部リトライ / 障害時は runner の in-flight タイムアウト) に委ねる。
+   * Endpoint lifecycle 管理 (旧 Realtime 前提の Describe / Wait / Ready 判定)
+   * は Async 化に伴い撤去済み。非 InService 時の再試行は Async Endpoint 側
+   * (InternalFailure メッセージの内部リトライ / 障害時は runner の in-flight
+   * タイムアウト) に委ねる。
    */
   private buildBatchStateMachineDefinition(
     batchTable: ITable,
