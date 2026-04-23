@@ -228,7 +228,7 @@
   - 観測可能条件: `cdk synth --all` の出力に `OrchestrationStack` 名のスタックが存在しない
   - _Requirements: 1.4, 7.1_
 
-- [ ] 7.2 `lambda/endpoint-control/` ディレクトリを完全削除する
+- [x] 7.2 `lambda/endpoint-control/` ディレクトリを完全削除する
   - ソース、テスト、バンドル設定、cdk-nag suppression を漏れなく除去
   - 観測可能条件: リポジトリツリーに `lambda/endpoint-control/` が存在せず、`cdk synth` 出力にも対応 Lambda 関数が無い
   - _Requirements: 1.4_

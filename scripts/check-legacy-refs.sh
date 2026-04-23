@@ -58,12 +58,11 @@ EXCLUDES=(
   # --- Async 移行中の一時除外 (Task 10.1 で削除) ---
   # これらのファイルは後続タスクで削除もしくは Async 相当に書き換えるまで、
   # 旧 Realtime / OrchestrationStack 識別子を含み続ける。
-  #   - lib/orchestration-stack.ts / lambda/endpoint-control/: Task 7.1 / 7.2 で削除
+  #   - lib/orchestration-stack.ts: Task 7.1 で削除
   #   - lib/batch-execution-stack.ts: Task 4.1 / 4.4 で書き換え
   #   - bin/app.ts: Task 7.1 で OrchestrationStack 参照を除去
   #   - YomiToku-Pro_AWS構築検討.md: 設計検討資料 (履歴保持)
   ':!lib/orchestration-stack.ts'
-  ':!lambda/endpoint-control/'
   ':!lib/batch-execution-stack.ts'
   ':!bin/app.ts'
   ':!YomiToku-Pro_AWS構築検討.md'
