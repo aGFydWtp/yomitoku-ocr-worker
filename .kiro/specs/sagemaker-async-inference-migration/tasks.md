@@ -247,7 +247,7 @@
 
 ## 8. Region 既定値の整合
 
-- [ ] 8.1 `bin/app.ts` の region デフォルト (`ap-northeast-1`) と README/コメントを整合させる
+- [x] 8.1 `bin/app.ts` の region デフォルト (`ap-northeast-1`) と README/コメントを整合させる
   - 選定理由コメントを最新化 (us-east-1 は退避用オプションの位置付け)
   - README のデプロイ手順節で `-c region=ap-northeast-1` を既定として明記
   - 周辺リソース (S3 / DynamoDB) がリージョン間で分離されないよう、context override 時の注意を記載

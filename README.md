@@ -63,10 +63,16 @@ cp cdk.context.json.example cdk.context.json
 
 ## デプロイ
 
+既定の AWS リージョンは `ap-northeast-1` (東京) です。Async Endpoint 用 `ml.g5.xlarge` と周辺リソース (S3 / DynamoDB / CloudFront オリジン) を同一リージョンに揃え、国内運用を想定しています。
+
 ```bash
 npx cdk bootstrap   # 初回のみ
-npx cdk deploy --all
+npx cdk deploy --all -c region=ap-northeast-1
 ```
+
+> **退避用リージョンの注意点**
+>
+> `ap-northeast-1` で `ml.g5.xlarge` の capacity が逼迫した場合は `-c region=us-east-1` で退避用スタックをデプロイできます。ただし S3 / DynamoDB / Step Functions / CloudFront オリジンはすべて別リージョンに新設され、既存 `ap-northeast-1` スタックとはデータを共有しません。退避判断と切り替え手順は `docs/runbooks/sagemaker-async-cutover.md` を参照してください。
 
 デプロイ後、以下の出力値を確認してください:
 

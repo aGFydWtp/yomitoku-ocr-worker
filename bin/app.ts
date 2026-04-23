@@ -6,17 +6,17 @@ import { resolveAsyncRuntimeContext } from "../lib/async-runtime-context";
 import { BatchExecutionStack } from "../lib/batch-execution-stack";
 import { MonitoringStack } from "../lib/monitoring-stack";
 import { ProcessingStack } from "../lib/processing-stack";
+import { resolveRegionContext } from "../lib/region-context";
 import { SagemakerStack } from "../lib/sagemaker-stack";
 
 const app = new App();
 
-const region =
-  (app.node.tryGetContext("region") as string | undefined) ?? "ap-northeast-1";
-
-const AWS_REGION_PATTERN = /^[a-z]{2}-[a-z]+-\d$/;
-if (!AWS_REGION_PATTERN.test(region)) {
-  throw new Error(`Invalid AWS region format: "${region}"`);
-}
+// 既定は `ap-northeast-1` (東京)。Async Endpoint の ml.g5.xlarge が提供され、
+// 国内運用 (CloudFront / S3 / DynamoDB と同一リージョン) を前提とする。
+// `-c region=us-east-1` は capacity 逼迫時の退避用オプション (Req 8.4)。
+// 退避時は全 AWS リソースが別リージョンに新設され、既存 `ap-northeast-1`
+// スタックのデータは共有されない点に注意 (詳細は lib/region-context.ts)。
+const region = resolveRegionContext(app.node);
 
 const account =
   (app.node.tryGetContext("account") as string | undefined) ??
