@@ -256,7 +256,7 @@
 
 ## 9. Runbook / PR テンプレ (運用成果物)
 
-- [ ] 9.1 `docs/runbooks/sagemaker-async-cutover.md` を新設する
+- [x] 9.1 `docs/runbooks/sagemaker-async-cutover.md` を新設する
   - Pre-flight: in-flight バッチ 0 確認 / smoke PoC 成功確認手順
   - 7 ステップ cutover のコマンド列 (`cdk deploy SagemakerStack` → smoke PoC → `cdk deploy BatchExecutionStack` → `MonitoringStack` → `ApiStack` → `aws sagemaker delete-endpoint` → `delete-endpoint-config`)
   - 旧 Endpoint/EndpointConfig 削除後の検証コマンド (`describe-endpoint` が `ResourceNotFound`)
