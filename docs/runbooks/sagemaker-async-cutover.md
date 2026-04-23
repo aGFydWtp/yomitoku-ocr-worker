@@ -27,15 +27,20 @@
 - [ ] `bash scripts/check-legacy-refs.sh` が `✓ No legacy references found.` を返す
 - [ ] `pnpm lint && pnpm test` グリーン
 - [ ] `pnpm cdk synth --all` がエラーなく完了
-- [ ] **in-flight バッチ 0 確認**: DynamoDB `BatchTable` の GSI1 で `status IN (RUNNING, PENDING)` のアイテムが無いこと。以下のクエリをユーザーコミュニケーションに共有してスナップショットを添付:
+- [ ] **in-flight バッチ 0 確認**: DynamoDB `BatchTable` に `status IN (RUNNING, PENDING)` のアイテムが無いこと。`GSI1PK` の物理フォーマットは `STATUS#{status}#{YYYYMM}` の月パーティション化で (`lambda/api/lib/batch-store.ts::gsi1pk()`)、単月だけ問い合わせても過去月から移行した in-flight を見逃す恐れがあるため、**META アイテムを `ScanFilter` で横断検索する**:
   ```bash
-  aws dynamodb query \
-    --table-name <BatchTable 名> \
-    --index-name GSI1 \
-    --key-condition-expression "GSI1PK = :s" \
-    --expression-attribute-values '{":s":{"S":"STATUS#RUNNING"}}' \
+  # BatchTable 名を CloudFormation Output から動的に取得 (手動置換ミスを防ぐ)
+  BATCH_TABLE=$(aws cloudformation describe-stacks --stack-name ProcessingStack \
+    --region ap-northeast-1 \
+    --query "Stacks[0].Outputs[?OutputKey=='BatchTableName'].OutputValue" --output text)
+
+  aws dynamodb scan \
+    --table-name "$BATCH_TABLE" \
+    --filter-expression "SK = :meta AND (#st = :r OR #st = :p)" \
+    --expression-attribute-names '{"#st":"status"}' \
+    --expression-attribute-values '{":meta":{"S":"META"},":r":{"S":"RUNNING"},":p":{"S":"PENDING"}}' \
     --region ap-northeast-1 --select COUNT
-  # Count=0 を期待。非 0 なら `/batches/:id/status` で完了を待つか手動 CANCEL
+  # ScannedCount ではなく Count=0 を期待。非 0 なら `/batches/:id/status` で完了を待つか手動 CANCEL
   ```
 - [ ] **smoke PoC 成功確認**: staging の新 Async Endpoint に対し、固定テスト PDF 1 ファイル (~20 ページ) を `invoke_endpoint_async` で送信し、
   - SuccessTopic → SuccessQueue にメッセージが着信
@@ -126,12 +131,18 @@ pnpm cdk deploy ApiStack -c region=ap-northeast-1 --require-approval never
 ここが **ロールバック不能ポイント**。実施前に Step 1〜5 の全アラームが緑 / API レイテンシ / エラーレートに異常が無いことを 30 分以上観察する。
 
 ```bash
-# 1) 旧 Endpoint を参照するバッチが 0 であることを再確認
-aws dynamodb query \
-  --table-name <BatchTable 名> \
-  --index-name GSI1 \
-  --key-condition-expression "GSI1PK = :s" \
-  --expression-attribute-values '{":s":{"S":"STATUS#RUNNING"}}' \
+# 1) 旧 Endpoint を参照する in-flight バッチが 0 であることを再確認
+#    (Pre-flight と同じ scan を再実行。GSI1PK は月パーティション化されており
+#     単月 query では過去月の RUNNING を見逃すため scan を用いる)
+BATCH_TABLE=$(aws cloudformation describe-stacks --stack-name ProcessingStack \
+  --region ap-northeast-1 \
+  --query "Stacks[0].Outputs[?OutputKey=='BatchTableName'].OutputValue" --output text)
+
+aws dynamodb scan \
+  --table-name "$BATCH_TABLE" \
+  --filter-expression "SK = :meta AND (#st = :r OR #st = :p)" \
+  --expression-attribute-names '{"#st":"status"}' \
+  --expression-attribute-values '{":meta":{"S":"META"},":r":{"S":"RUNNING"},":p":{"S":"PENDING"}}' \
   --region ap-northeast-1 --select COUNT
 # Count=0 を期待
 

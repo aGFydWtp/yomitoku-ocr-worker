@@ -51,9 +51,14 @@ describe("Runbook: sagemaker-async-cutover.md (Task 9.1)", () => {
   describe("必須キーワード・検証コマンドが含まれる", () => {
     const content = readFileSync(RUNBOOK_PATH, "utf8");
 
-    it("in-flight バッチ 0 確認の DynamoDB query が記載されている", () => {
-      expect(content).toContain("GSI1PK");
-      expect(content).toContain("STATUS#RUNNING");
+    it("in-flight バッチ 0 確認の DynamoDB 検索コマンドが記載されている", () => {
+      // GSI1PK は月パーティション化されているため単月 query で見逃しが
+      // 発生する恐れがある。Pre-flight/Step 6 では META 行を scan で横断
+      // 検索し RUNNING / PENDING 両方を同時にカウントする運用とした。
+      expect(content).toContain("dynamodb scan");
+      expect(content).toContain("RUNNING");
+      expect(content).toContain("PENDING");
+      expect(content).toContain("SK = :meta");
     });
 
     it("smoke PoC 成功基準 (SuccessQueue, ApproximateAgeOfOldestRequest) が記載されている", () => {
