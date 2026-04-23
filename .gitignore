@@ -22,3 +22,6 @@ __pycache__/
 # IDE / tool local state
 .claude/
 .serena/
+
+# macOS
+.DS_Store
