@@ -51,13 +51,19 @@ if (!endpointConfigName) {
 // で共有する必要があるため、app レベルで 1 度だけ解決する。
 const asyncRuntime = resolveAsyncRuntimeContext(app.node);
 
+// Async 移行に伴い SagemakerStack は S3 bucket (AsyncInferenceConfig の
+// S3OutputPath/S3FailurePath に bucket ARN を埋め込む) と endpointName
+// (CfnEndpoint / ScalableTarget の ResourceId) を props で要求するため、
+// ProcessingStack を先に構築してから SagemakerStack に値を注入する。
+const processingStack = new ProcessingStack(app, "ProcessingStack", {
+  env: { region, account },
+});
+
 new SagemakerStack(app, "SagemakerStack", {
   env: { region, account },
   asyncRuntime,
-});
-
-const processingStack = new ProcessingStack(app, "ProcessingStack", {
-  env: { region, account },
+  bucket: processingStack.bucket,
+  endpointName,
 });
 
 const orchestrationStack = new OrchestrationStack(app, "OrchestrationStack", {

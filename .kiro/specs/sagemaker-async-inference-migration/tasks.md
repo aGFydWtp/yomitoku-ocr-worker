@@ -29,7 +29,7 @@
 
 ## 2. SagemakerStack — Async Endpoint / SNS / SQS / AutoScaling
 
-- [ ] 2.1 (P) `AsyncInferenceConfig` 付き `CfnEndpointConfig` を再定義する
+- [x] 2.1 (P) `AsyncInferenceConfig` 付き `CfnEndpointConfig` を再定義する
   - 旧 `ProductionVariant.InitialInstanceCount=1` を撤去し、`InitialInstanceCount=0`・`InstanceType=ml.g5.xlarge` に置換
   - `AsyncInferenceConfig.OutputConfig.S3OutputPath` を `batches/_async/outputs/` prefix に配線
   - `AsyncInferenceConfig.OutputConfig.S3FailurePath` を `batches/_async/errors/` prefix に配線
@@ -39,7 +39,7 @@
   - _Requirements: 1.1, 1.2, 1.5, 4.1, 4.3, 4.4_
   - _Boundary: SagemakerStack_
 
-- [ ] 2.2 (P) Async 通知用 SNS `SuccessTopic` / `ErrorTopic` を新設する
+- [x] 2.2 (P) Async 通知用 SNS `SuccessTopic` / `ErrorTopic` を新設する
   - AWS 管理 KMS (`alias/aws/sns`) で SSE 暗号化
   - Topic Policy で `Publish` を `sagemaker.amazonaws.com` かつ `SourceArn=<endpoint arn>` に限定
   - `EndpointConfig` の `NotificationConfig.SuccessTopic` / `ErrorTopic` として参照を配線
@@ -47,7 +47,7 @@
   - _Requirements: 4.2, 5.3_
   - _Boundary: SagemakerStack_
 
-- [ ] 2.3 (P) SNS サブスクリプション用 SQS `AsyncCompletionQueue` / `AsyncFailureQueue` を作成する
+- [x] 2.3 (P) SNS サブスクリプション用 SQS `AsyncCompletionQueue` / `AsyncFailureQueue` を作成する
   - AWS 管理 KMS (`alias/aws/sqs`) で SSE 暗号化
   - Queue Policy で `SendMessage` を対応する SNS Topic ARN に限定
   - `ReceiveMessageWaitTimeSeconds` を long-poll 前提 (20 秒) で構成
@@ -56,7 +56,7 @@
   - _Requirements: 4.2, 5.3_
   - _Boundary: SagemakerStack_
 
-- [ ] 2.4 (P) Application Auto Scaling `ScalableTarget` + `ScalingPolicy` を配線する
+- [x] 2.4 (P) Application Auto Scaling `ScalableTarget` + `ScalingPolicy` を配線する
   - `MinCapacity=0` / `MaxCapacity={asyncMaxCapacity}` (既定 1)
   - TargetTracking の `CustomizedMetricSpecification` として `AWS/SageMaker` `ApproximateBacklogSizePerInstance` を指定
   - `ScaleInCooldown={scaleInCooldownSeconds}` (既定 900 秒)、`ScaleOutCooldown` は短め (60 秒)
@@ -66,7 +66,7 @@
   - _Requirements: 2.1, 2.2, 2.3, 2.4, 2.5_
   - _Boundary: SagemakerStack_
 
-- [ ] 2.5 `CfnEndpoint` を `SagemakerStack` 所有に昇格し、旧 `EndpointConfig` を CFN ツリーから除去する
+- [x] 2.5 `CfnEndpoint` を `SagemakerStack` 所有に昇格し、旧 `EndpointConfig` を CFN ツリーから除去する
   - 旧 `OrchestrationStack` が `endpoint-control` Lambda で create/delete していた動的制御モデルを廃止
   - `CfnEndpoint` は 2.1 の新 `EndpointConfig` を参照するよう同スタック内で宣言
   - `successTopic` / `errorTopic` / `successQueue` / `failureQueue` / `endpointName` / `endpointConfigName` を `public readonly` で公開し `BatchExecutionStack` / `MonitoringStack` が props で受け取れるようにする
@@ -74,14 +74,14 @@
   - _Requirements: 1.4, 1.5, 7.1, 7.2_
   - _Depends: 2.1, 2.2, 2.3, 2.4_
 
-- [ ] 2.6 SageMaker 実行ロールの S3 権限を `batches/_async/*` prefix に最小化する
+- [x] 2.6 SageMaker 実行ロールの S3 権限を `batches/_async/*` prefix に最小化する
   - `s3:GetObject` を `batches/_async/inputs/*`
   - `s3:PutObject` を `batches/_async/outputs/*` および `batches/_async/errors/*`
   - バケット全域 (`s3:*`) への付与は禁止
   - 観測可能条件: unit test が IAM ポリシーの Resource が `_async` prefix に限定されていることを検証
   - _Requirements: 5.1_
 
-- [ ] 2.7 `SagemakerStack` のユニットテストを拡充する
+- [x] 2.7 `SagemakerStack` のユニットテストを拡充する
   - 検証項目:
     - `AsyncInferenceConfig.OutputConfig.S3OutputPath` / `S3FailurePath` が `batches/_async/` prefix
     - `NotificationConfig` に `SuccessTopic` / `ErrorTopic` が参照で配線済
