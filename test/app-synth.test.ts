@@ -167,16 +167,18 @@ describe("app-synth: cdk synth --all 横断契約 (Task 10.2)", () => {
     });
   });
 
-  describe("3) Realtime ProductionVariant (InitialInstanceCount=1) の不在", () => {
-    it.each([
-      ["processing"],
-      ["sagemaker"],
-      ["batchExecution"],
-      ["api"],
-      ["monitoring"],
-    ] as const)("%s template に InitialInstanceCount=1 の ProductionVariant が存在しない", (stackName) => {
-      const template = synth.templates[stackName];
-      const configs = template.findResources("AWS::SageMaker::EndpointConfig");
+  describe("3) Async ProductionVariant は MinCapacity=0 で scale-in 前提", () => {
+    // CloudFormation の AWS::SageMaker::EndpointConfig スキーマは
+    // ``InitialInstanceCount >= 1`` を強制するため 0 不可 (SageMaker API 単体では
+    // 0 可)。Async 化以降は ``InitialInstanceCount=1`` + ``MinCapacity=0`` の
+    // ScalableTarget + ``HasBacklogWithoutCapacity`` StepScaling の組で
+    // InService 直後に 0 台へ scale-in する構成に倒している。
+    // (詳細: commit d4fcdfe / lib/sagemaker-stack.ts)
+    it("sagemaker template: EndpointConfig は InitialInstanceCount=1 のみ", () => {
+      const configs = synth.templates.sagemaker.findResources(
+        "AWS::SageMaker::EndpointConfig",
+      );
+      expect(Object.keys(configs).length).toBeGreaterThan(0);
       for (const resource of Object.values(configs)) {
         const variants = (
           resource.Properties as {
@@ -184,9 +186,28 @@ describe("app-synth: cdk synth --all 横断契約 (Task 10.2)", () => {
           }
         ).ProductionVariants;
         for (const variant of variants ?? []) {
-          expect(variant.InitialInstanceCount).not.toBe(1);
+          expect(variant.InitialInstanceCount).toBe(1);
         }
       }
+    });
+
+    it("sagemaker template: ScalableTarget の MinCapacity=0", () => {
+      synth.templates.sagemaker.hasResourceProperties(
+        "AWS::ApplicationAutoScaling::ScalableTarget",
+        { MinCapacity: 0 },
+      );
+    });
+
+    it.each([
+      ["processing"],
+      ["batchExecution"],
+      ["api"],
+      ["monitoring"],
+    ] as const)("%s template: EndpointConfig を宣言しない (sagemaker 専有)", (stackName) => {
+      const configs = synth.templates[stackName].findResources(
+        "AWS::SageMaker::EndpointConfig",
+      );
+      expect(Object.keys(configs)).toHaveLength(0);
     });
   });
 
