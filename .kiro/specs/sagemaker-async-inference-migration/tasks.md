@@ -141,7 +141,7 @@
   - _Requirements: 5.2, 5.4_
   - _Boundary: BatchExecutionStack_
 
-- [ ] 4.2 (P) Task Role に SQS / S3 `_async` 権限を追加する
+- [x] 4.2 (P) Task Role に SQS / S3 `_async` 権限を追加する
   - SQS: `ReceiveMessage`, `DeleteMessage`, `ChangeMessageVisibility`, `GetQueueAttributes` を SuccessQueue / FailureQueue ARN 限定で付与
   - S3: `batches/_async/inputs/*` (Put/Get), `batches/_async/outputs/*` (Get), `batches/_async/errors/*` (Get) を追加、既存 `batches/*` 権限と穴なく重ねる
   - 観測可能条件: IAM ポリシー差分レビューが可能な形で synth 出力が得られ、test で Resource が対象 ARN / prefix に限定される

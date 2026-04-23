@@ -2,6 +2,7 @@ import { Match, Template } from "aws-cdk-lib/assertions";
 import { AttributeType, BillingMode, Table } from "aws-cdk-lib/aws-dynamodb";
 import { ContainerImage } from "aws-cdk-lib/aws-ecs";
 import { Bucket } from "aws-cdk-lib/aws-s3";
+import { Queue } from "aws-cdk-lib/aws-sqs";
 import { App, Stack } from "aws-cdk-lib/core";
 import { BatchExecutionStack } from "../lib/batch-execution-stack";
 
@@ -29,6 +30,8 @@ function createStack(): {
     billingMode: BillingMode.PAY_PER_REQUEST,
   });
   const bucket = new Bucket(depStack, "DataBucket");
+  const successQueue = new Queue(depStack, "AsyncSuccessQueue");
+  const failureQueue = new Queue(depStack, "AsyncFailureQueue");
 
   const stack = new BatchExecutionStack(app, "TestBatchExecutionStack", {
     env: { region: TEST_REGION, account: TEST_ACCOUNT },
@@ -36,6 +39,8 @@ function createStack(): {
     controlTable,
     bucket,
     endpointName: TEST_ENDPOINT_NAME,
+    successQueue,
+    failureQueue,
     // テスト用にプレースホルダイメージを注入（Docker ビルドを避ける）
     containerImage: ContainerImage.fromRegistry("placeholder:latest"),
   });
@@ -218,6 +223,106 @@ describe("BatchExecutionStack", () => {
           }),
         }),
       );
+    });
+
+    it("Task Role が SuccessQueue / FailureQueue に対する SQS 受信系アクションを持つ", () => {
+      const { template } = createStack();
+      // SuccessQueue (AsyncCompletionQueue) への 4 アクション
+      template.hasResourceProperties(
+        "AWS::IAM::Policy",
+        Match.objectLike({
+          PolicyDocument: Match.objectLike({
+            Statement: Match.arrayWith([
+              Match.objectLike({
+                Sid: "BatchSQSAsyncSuccessQueue",
+                Action: Match.arrayWith([
+                  "sqs:ReceiveMessage",
+                  "sqs:DeleteMessage",
+                  "sqs:ChangeMessageVisibility",
+                  "sqs:GetQueueAttributes",
+                ]),
+                Effect: "Allow",
+              }),
+            ]),
+          }),
+        }),
+      );
+      // FailureQueue (AsyncFailureQueue) への 4 アクション
+      template.hasResourceProperties(
+        "AWS::IAM::Policy",
+        Match.objectLike({
+          PolicyDocument: Match.objectLike({
+            Statement: Match.arrayWith([
+              Match.objectLike({
+                Sid: "BatchSQSAsyncFailureQueue",
+                Action: Match.arrayWith([
+                  "sqs:ReceiveMessage",
+                  "sqs:DeleteMessage",
+                  "sqs:ChangeMessageVisibility",
+                  "sqs:GetQueueAttributes",
+                ]),
+                Effect: "Allow",
+              }),
+            ]),
+          }),
+        }),
+      );
+    });
+
+    it("Task Role が batches/_async prefix 配下の S3 アクセスを明示的に持つ", () => {
+      const { template } = createStack();
+      // batches/_async/inputs/* に Get/Put
+      template.hasResourceProperties(
+        "AWS::IAM::Policy",
+        Match.objectLike({
+          PolicyDocument: Match.objectLike({
+            Statement: Match.arrayWith([
+              Match.objectLike({
+                Sid: "BatchS3AsyncInputs",
+                Action: Match.arrayWith(["s3:GetObject", "s3:PutObject"]),
+                Effect: "Allow",
+              }),
+            ]),
+          }),
+        }),
+      );
+      // batches/_async/outputs/* に Get
+      template.hasResourceProperties(
+        "AWS::IAM::Policy",
+        Match.objectLike({
+          PolicyDocument: Match.objectLike({
+            Statement: Match.arrayWith([
+              Match.objectLike({
+                Sid: "BatchS3AsyncOutputs",
+                Action: "s3:GetObject",
+                Effect: "Allow",
+              }),
+            ]),
+          }),
+        }),
+      );
+      // batches/_async/errors/* に Get
+      template.hasResourceProperties(
+        "AWS::IAM::Policy",
+        Match.objectLike({
+          PolicyDocument: Match.objectLike({
+            Statement: Match.arrayWith([
+              Match.objectLike({
+                Sid: "BatchS3AsyncErrors",
+                Action: "s3:GetObject",
+                Effect: "Allow",
+              }),
+            ]),
+          }),
+        }),
+      );
+
+      // Resource が _async prefix に限定されていること (全体の JSON に含まれる)
+      const policies = template.findResources("AWS::IAM::Policy");
+      const json = JSON.stringify(policies);
+      expect(json).toContain("batches/_async/inputs/*");
+      expect(json).toContain("batches/_async/outputs/*");
+      expect(json).toContain("batches/_async/errors/*");
     });
 
     it("Task Role が SageMaker InvokeEndpointAsync のみを Endpoint ARN 限定で持つ (Realtime action 削除)", () => {
@@ -406,6 +511,8 @@ describe("BatchExecutionStack", () => {
         billingMode: BillingMode.PAY_PER_REQUEST,
       });
       const bucket = new Bucket(depStack, "D");
+      const successQueue = new Queue(depStack, "AsyncSuccessQueueBad");
+      const failureQueue = new Queue(depStack, "AsyncFailureQueueBad");
 
       expect(() => {
         new BatchExecutionStack(app, "Bad", {
@@ -414,6 +521,8 @@ describe("BatchExecutionStack", () => {
           controlTable,
           bucket,
           endpointName: "",
+          successQueue,
+          failureQueue,
           containerImage: ContainerImage.fromRegistry("placeholder:latest"),
         });
       }).toThrow(/endpointName/);

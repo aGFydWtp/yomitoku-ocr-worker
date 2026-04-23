@@ -11,6 +11,7 @@ import {
 import { Effect, PolicyStatement } from "aws-cdk-lib/aws-iam";
 import { LogGroup, RetentionDays } from "aws-cdk-lib/aws-logs";
 import type { IBucket } from "aws-cdk-lib/aws-s3";
+import type { IQueue } from "aws-cdk-lib/aws-sqs";
 import {
   Choice,
   Condition,
@@ -79,6 +80,14 @@ export interface BatchExecutionStackProps extends StackProps {
    */
   endpointName: string;
   /**
+   * SageMaker Async Inference の `AsyncCompletionQueue` / `AsyncFailureQueue`。
+   * SagemakerStack が作成した Queue を注入し、Task Role に ReceiveMessage /
+   * DeleteMessage / ChangeMessageVisibility / GetQueueAttributes を付与する
+   * (Task 4.2)。
+   */
+  successQueue: IQueue;
+  failureQueue: IQueue;
+  /**
    * テスト時の Docker ビルド回避用にコンテナイメージを注入可能にする。
    * 本番 (bin/app.ts) では省略し、Dockerfile を `ContainerImage.fromAsset` でビルドする。
    */
@@ -100,8 +109,15 @@ export class BatchExecutionStack extends Stack {
   constructor(scope: Construct, id: string, props: BatchExecutionStackProps) {
     super(scope, id, props);
 
-    const { batchTable, controlTable, bucket, endpointName, containerImage } =
-      props;
+    const {
+      batchTable,
+      controlTable,
+      bucket,
+      endpointName,
+      successQueue,
+      failureQueue,
+      containerImage,
+    } = props;
 
     if (!endpointName) {
       throw new Error(
@@ -230,6 +246,65 @@ export class BatchExecutionStack extends Stack {
         resources: [
           `arn:aws:sagemaker:${this.region}:${this.account}:endpoint/${endpointName}`,
         ],
+      }),
+    );
+
+    // SQS: AsyncCompletionQueue / AsyncFailureQueue の long-poll 消費に必要な
+    // 最小アクションセット (Task 4.2)。Queue ARN を 1 本ずつ明示的に列挙し、
+    // リソース範囲が他 Queue に広がらないようにする。
+    this.taskDefinition.addToTaskRolePolicy(
+      new PolicyStatement({
+        sid: "BatchSQSAsyncSuccessQueue",
+        effect: Effect.ALLOW,
+        actions: [
+          "sqs:ReceiveMessage",
+          "sqs:DeleteMessage",
+          "sqs:ChangeMessageVisibility",
+          "sqs:GetQueueAttributes",
+        ],
+        resources: [successQueue.queueArn],
+      }),
+    );
+    this.taskDefinition.addToTaskRolePolicy(
+      new PolicyStatement({
+        sid: "BatchSQSAsyncFailureQueue",
+        effect: Effect.ALLOW,
+        actions: [
+          "sqs:ReceiveMessage",
+          "sqs:DeleteMessage",
+          "sqs:ChangeMessageVisibility",
+          "sqs:GetQueueAttributes",
+        ],
+        resources: [failureQueue.queueArn],
+      }),
+    );
+
+    // S3: batches/_async/* 配下の Put/Get を明示する (Task 4.2)。
+    // 既存 `batches/*` 権限と重複するが、Async 経路で使う prefix を独立した
+    // Sid で列挙することで、将来的に `batches/*` を縮退させる際のリスクを下げる
+    // (design.md §Security "穴なく重ねる")。
+    this.taskDefinition.addToTaskRolePolicy(
+      new PolicyStatement({
+        sid: "BatchS3AsyncInputs",
+        effect: Effect.ALLOW,
+        actions: ["s3:GetObject", "s3:PutObject"],
+        resources: [`${bucket.bucketArn}/batches/_async/inputs/*`],
+      }),
+    );
+    this.taskDefinition.addToTaskRolePolicy(
+      new PolicyStatement({
+        sid: "BatchS3AsyncOutputs",
+        effect: Effect.ALLOW,
+        actions: ["s3:GetObject"],
+        resources: [`${bucket.bucketArn}/batches/_async/outputs/*`],
+      }),
+    );
+    this.taskDefinition.addToTaskRolePolicy(
+      new PolicyStatement({
+        sid: "BatchS3AsyncErrors",
+        effect: Effect.ALLOW,
+        actions: ["s3:GetObject"],
+        resources: [`${bucket.bucketArn}/batches/_async/errors/*`],
       }),
     );
 

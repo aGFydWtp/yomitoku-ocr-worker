@@ -59,7 +59,7 @@ const processingStack = new ProcessingStack(app, "ProcessingStack", {
   env: { region, account },
 });
 
-new SagemakerStack(app, "SagemakerStack", {
+const sagemakerStack = new SagemakerStack(app, "SagemakerStack", {
   env: { region, account },
   asyncRuntime,
   bucket: processingStack.bucket,
@@ -82,6 +82,8 @@ const batchExecutionStack = new BatchExecutionStack(
     controlTable: processingStack.controlTable,
     bucket: processingStack.bucket,
     endpointName,
+    successQueue: sagemakerStack.successQueue,
+    failureQueue: sagemakerStack.failureQueue,
     asyncRuntime,
   },
 );
