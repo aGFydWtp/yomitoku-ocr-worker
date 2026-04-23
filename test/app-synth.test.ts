@@ -1,6 +1,7 @@
 import { Match, Template } from "aws-cdk-lib/assertions";
 import { ContainerImage } from "aws-cdk-lib/aws-ecs";
 import { App } from "aws-cdk-lib/core";
+import { beforeAll, describe, expect, it } from "vitest";
 import { ApiStack } from "../lib/api-stack";
 import { resolveAsyncRuntimeContext } from "../lib/async-runtime-context";
 import { BatchExecutionStack } from "../lib/batch-execution-stack";

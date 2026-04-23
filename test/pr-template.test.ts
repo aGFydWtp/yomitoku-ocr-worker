@@ -1,5 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { describe, expect, it } from "vitest";
 
 // Task 9.2: PR テンプレートに Async 移行のエビデンス要求
 // (Req 11.5) が含まれていることを CI で担保する。

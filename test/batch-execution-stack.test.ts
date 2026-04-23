@@ -4,6 +4,7 @@ import { ContainerImage } from "aws-cdk-lib/aws-ecs";
 import { Bucket } from "aws-cdk-lib/aws-s3";
 import { Queue } from "aws-cdk-lib/aws-sqs";
 import { App, Stack } from "aws-cdk-lib/core";
+import { describe, expect, it } from "vitest";
 import { BatchExecutionStack } from "../lib/batch-execution-stack";
 
 const TEST_REGION = "ap-northeast-1";

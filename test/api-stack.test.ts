@@ -7,6 +7,7 @@ import {
   StateMachine,
 } from "aws-cdk-lib/aws-stepfunctions";
 import { App, Stack } from "aws-cdk-lib/core";
+import { describe, expect, it } from "vitest";
 import { ApiStack } from "../lib/api-stack";
 
 const TEST_REGION = "us-east-1";

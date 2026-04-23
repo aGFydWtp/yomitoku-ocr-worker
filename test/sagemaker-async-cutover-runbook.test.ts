@@ -1,5 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { describe, expect, it } from "vitest";
 
 // Task 9.1: SageMaker Realtime → Async カットオーバー Runbook の
 // 完全性を担保する構造テスト。Runbook 自体は手動実行が完了条件

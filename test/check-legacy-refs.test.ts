@@ -5,9 +5,11 @@
  * - package.json に lint:legacy が登録されていることを確認
  * - 旧参照を含む現リポジトリで非ゼロ終了することを確認
  */
+
 import { spawnSync } from "node:child_process";
 import { accessSync, constants, existsSync } from "node:fs";
 import { resolve } from "node:path";
+import { describe, expect, it } from "vitest";
 
 const SCRIPT = resolve(__dirname, "../scripts/check-legacy-refs.sh");
 const REPO_ROOT = resolve(__dirname, "..");

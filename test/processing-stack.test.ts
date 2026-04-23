@@ -1,5 +1,6 @@
 import { Match, Template } from "aws-cdk-lib/assertions";
 import { App } from "aws-cdk-lib/core";
+import { describe, expect, it } from "vitest";
 import { ProcessingStack } from "../lib/processing-stack";
 
 const TEST_REGION = "ap-northeast-1";

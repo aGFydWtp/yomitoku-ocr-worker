@@ -1,4 +1,5 @@
 import { App } from "aws-cdk-lib/core";
+import { describe, expect, it } from "vitest";
 import { DEFAULT_REGION, resolveRegionContext } from "../lib/region-context";
 
 describe("resolveRegionContext (Task 8.1, Req 8.1/8.4)", () => {

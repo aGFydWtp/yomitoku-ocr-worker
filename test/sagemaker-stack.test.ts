@@ -1,6 +1,7 @@
 import { Match, Template } from "aws-cdk-lib/assertions";
 import { Bucket } from "aws-cdk-lib/aws-s3";
 import { App, Stack } from "aws-cdk-lib/core";
+import { describe, expect, it } from "vitest";
 import {
   type AsyncRuntimeContext,
   DEFAULT_ASYNC_RUNTIME_CONTEXT,

@@ -6,9 +6,11 @@
  * - context override (`--context key=value` 相当) を反映する
  * - 異常値 (非整数・0 以下) をエラーにする
  */
+
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { App } from "aws-cdk-lib/core";
+import { describe, expect, it } from "vitest";
 import {
   DEFAULT_ASYNC_RUNTIME_CONTEXT,
   resolveAsyncRuntimeContext,
