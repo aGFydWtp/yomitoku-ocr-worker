@@ -282,7 +282,7 @@
   - 観測可能条件: `pnpm test -- check-legacy-refs` が green
   - _Requirements: 10.4, 11.4_
 
-- [ ] 10.2 `cdk synth --all` 整合テストを実装する
+- [x] 10.2 `cdk synth --all` 整合テストを実装する
   - `OrchestrationStack` が存在しない
   - `SagemakerStack` に `AsyncInferenceConfig`・`CfnScalableTarget`・SNS Topic×2・SQS Queue×2 が含まれる
   - Realtime `ProductionVariant` (`InitialInstanceCount=1`) が全スタック横断で不在
