@@ -5,17 +5,23 @@ Task 3.1 (本ファイル初版):
     - `invoke_endpoint_async` 発行と `InferenceId` 生成 (`{batch_job_id}:{file_stem}`)
     - 4xx (ValidationException) の即時失敗・リトライなしパス
 
-実メッセージ受信 (SQS long-poll / InferenceId filter / max_concurrent) や
-BatchResult 集計は後続サブタスク (3.2 / 3.3 / 3.4) で追加する。
+Task 3.2 追補:
+    - SNS ラップ / Raw の両形式に対応した通知メッセージのアンラップ
+    - `InferenceId` による in-flight セットへのフィルタ
+    - 自バッチ宛ては DeleteMessage、他バッチ宛ては ChangeMessageVisibility=0
+
+実メッセージ受信の総合 (``run_batch``) や BatchResult 集計は後続サブタスク
+(3.3 / 3.4) で追加する。
 
 テスト用依存:
-    - moto[s3] で S3 をモック
+    - moto[s3,sqs] で S3 / SQS をモック
     - sagemaker-runtime は moto が未対応のため ``botocore.stub.Stubber`` で
       ``invoke_endpoint_async`` のレスポンスを捕捉する
 """
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import boto3
@@ -24,7 +30,7 @@ from botocore.exceptions import ClientError
 from botocore.stub import Stubber
 from moto import mock_aws
 
-from async_invoker import AsyncInvoker
+from async_invoker import AsyncInvoker, PolledNotification
 
 
 REGION = "ap-northeast-1"
@@ -61,13 +67,71 @@ def sagemaker_runtime_stub():
 
 
 @pytest.fixture
-def sqs_clients():
-    """SuccessQueue / FailureQueue を moto 上に用意して URL を返す。"""
+def sqs_env():
+    """SuccessQueue / FailureQueue を moto 上に用意し、AsyncInvoker と SQS クライアントを返す。"""
     with mock_aws():
         sqs = boto3.client("sqs", region_name=REGION)
         success_url = sqs.create_queue(QueueName="async-success")["QueueUrl"]
         failure_url = sqs.create_queue(QueueName="async-failure")["QueueUrl"]
-        yield sqs, success_url, failure_url
+        invoker = AsyncInvoker(
+            endpoint_name="yomitoku-async",
+            input_bucket=BUCKET,
+            input_prefix=INPUT_PREFIX,
+            output_bucket=BUCKET,
+            success_queue_url=success_url,
+            failure_queue_url=failure_url,
+            max_concurrent=2,
+            poll_wait_seconds=0,  # moto では long-poll を短縮
+            sqs_client=sqs,
+        )
+        yield invoker, sqs, success_url, failure_url
+
+
+def _sns_wrap(inner: dict) -> str:
+    """SNS → SQS (Raw Message Delivery OFF) で配送されるメッセージ形式。"""
+    return json.dumps(
+        {
+            "Type": "Notification",
+            "MessageId": "00000000-0000-0000-0000-000000000000",
+            "TopicArn": "arn:aws:sns:ap-northeast-1:123456789012:AsyncSuccess",
+            "Message": json.dumps(inner),
+            "Timestamp": "2026-04-23T00:00:00.000Z",
+        }
+    )
+
+
+def _success_body(inference_id: str) -> dict:
+    return {
+        "awsRegion": REGION,
+        "invocationStatus": "Completed",
+        "requestParameters": {
+            "endpointName": "yomitoku-async",
+            "inputLocation": (
+                f"s3://{BUCKET}/batches/_async/inputs/{BATCH_JOB_ID}/{inference_id.split(':')[-1]}.pdf"
+            ),
+        },
+        "responseParameters": {
+            "contentType": "application/json",
+            "outputLocation": f"s3://{BUCKET}/batches/_async/outputs/abc.out",
+        },
+        "inferenceId": inference_id,
+    }
+
+
+def _failure_body(inference_id: str) -> dict:
+    return {
+        "awsRegion": REGION,
+        "invocationStatus": "Failed",
+        "requestParameters": {
+            "endpointName": "yomitoku-async",
+            "inputLocation": (
+                f"s3://{BUCKET}/batches/_async/inputs/{BATCH_JOB_ID}/{inference_id.split(':')[-1]}.pdf"
+            ),
+        },
+        "failureLocation": f"s3://{BUCKET}/batches/_async/errors/def.out",
+        "failureReason": "ModelError: invalid PDF",
+        "inferenceId": inference_id,
+    }
 
 
 def _write_input(tmp_path: Path, name: str) -> Path:
@@ -237,3 +301,112 @@ def test_invoke_async_4xx_validation_exception_is_immediate_failure(
     # スタブに次のレスポンスを登録していないので、リトライが起きた場合は
     # StubResponseError が送出される。ここを通過できれば再試行なしを担保する。
     stubber.assert_no_pending_responses()
+
+
+# --------------------------------------------------------------------------
+# Task 3.2: SQS long-poll + InferenceId フィルタリング
+# --------------------------------------------------------------------------
+def test_poll_success_returns_matching_notifications_and_deletes(sqs_env) -> None:
+    """自バッチ宛ての Success メッセージはパースして返却し、キューから削除される。"""
+    invoker, sqs, success_url, _ = sqs_env
+
+    mine = _success_body(f"{BATCH_JOB_ID}:a")
+    other = _success_body("other-batch:z")
+    sqs.send_message(QueueUrl=success_url, MessageBody=_sns_wrap(mine))
+    sqs.send_message(QueueUrl=success_url, MessageBody=_sns_wrap(other))
+
+    notifications = invoker._poll_queue(
+        queue_url=success_url,
+        in_flight={f"{BATCH_JOB_ID}:a", f"{BATCH_JOB_ID}:b"},
+    )
+
+    assert len(notifications) == 1
+    notif = notifications[0]
+    assert isinstance(notif, PolledNotification)
+    assert notif.inference_id == f"{BATCH_JOB_ID}:a"
+    assert notif.body["invocationStatus"] == "Completed"
+
+    # 残っているのは他バッチのみ (ChangeMessageVisibility=0 で即時返却されている)
+    remaining = sqs.receive_message(
+        QueueUrl=success_url, MaxNumberOfMessages=10, VisibilityTimeout=0
+    ).get("Messages", [])
+    parsed = [json.loads(json.loads(m["Body"])["Message"]) for m in remaining]
+    ids = {m["inferenceId"] for m in parsed}
+    assert ids == {"other-batch:z"}
+
+
+def test_poll_failure_returns_matching_failure(sqs_env) -> None:
+    """自バッチ宛ての Failure メッセージは failureReason と failureLocation を保持する。"""
+    invoker, sqs, _, failure_url = sqs_env
+
+    mine = _failure_body(f"{BATCH_JOB_ID}:b")
+    sqs.send_message(QueueUrl=failure_url, MessageBody=_sns_wrap(mine))
+
+    notifications = invoker._poll_queue(
+        queue_url=failure_url,
+        in_flight={f"{BATCH_JOB_ID}:b"},
+    )
+
+    assert len(notifications) == 1
+    notif = notifications[0]
+    assert notif.inference_id == f"{BATCH_JOB_ID}:b"
+    assert notif.body["invocationStatus"] == "Failed"
+    assert notif.body["failureReason"] == "ModelError: invalid PDF"
+
+
+def test_poll_handles_raw_message_delivery(sqs_env) -> None:
+    """Raw Message Delivery が有効化された場合 (Message が裸 JSON) でも動く。"""
+    invoker, sqs, success_url, _ = sqs_env
+
+    mine = _success_body(f"{BATCH_JOB_ID}:c")
+    sqs.send_message(QueueUrl=success_url, MessageBody=json.dumps(mine))
+
+    notifications = invoker._poll_queue(
+        queue_url=success_url,
+        in_flight={f"{BATCH_JOB_ID}:c"},
+    )
+
+    assert len(notifications) == 1
+    assert notifications[0].inference_id == f"{BATCH_JOB_ID}:c"
+
+
+def test_poll_does_not_consume_other_batch_messages(sqs_env) -> None:
+    """他バッチ宛てメッセージは Delete されず、再度 receive 可能な状態で残る。"""
+    invoker, sqs, success_url, _ = sqs_env
+
+    other = _success_body("other-batch:x")
+    sqs.send_message(QueueUrl=success_url, MessageBody=_sns_wrap(other))
+
+    # 自バッチの in-flight セットに該当しない
+    notifications = invoker._poll_queue(
+        queue_url=success_url,
+        in_flight={f"{BATCH_JOB_ID}:a"},
+    )
+
+    assert notifications == []
+
+    # ChangeMessageVisibility=0 により即座に受信可能な状態で残っている
+    remaining = sqs.receive_message(
+        QueueUrl=success_url, MaxNumberOfMessages=10, VisibilityTimeout=0
+    ).get("Messages", [])
+    assert len(remaining) == 1
+    inner = json.loads(json.loads(remaining[0]["Body"])["Message"])
+    assert inner["inferenceId"] == "other-batch:x"
+
+
+def test_poll_skips_malformed_messages_without_raising(sqs_env) -> None:
+    """JSON 破損メッセージは無視して処理を継続する (at-least-once 配送耐性)。"""
+    invoker, sqs, success_url, _ = sqs_env
+
+    sqs.send_message(QueueUrl=success_url, MessageBody="not-a-json")
+    mine = _success_body(f"{BATCH_JOB_ID}:d")
+    sqs.send_message(QueueUrl=success_url, MessageBody=_sns_wrap(mine))
+
+    notifications = invoker._poll_queue(
+        queue_url=success_url,
+        in_flight={f"{BATCH_JOB_ID}:d"},
+    )
+
+    # 正常な方だけ拾える
+    ids = {n.inference_id for n in notifications}
+    assert ids == {f"{BATCH_JOB_ID}:d"}

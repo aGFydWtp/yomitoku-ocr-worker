@@ -105,7 +105,7 @@
   - _Requirements: 3.1, 3.4, 3.6_
   - _Boundary: async_invoker.py_
 
-- [ ] 3.2 SQS long-poll と `InferenceId` フィルタリングを実装する
+- [x] 3.2 SQS long-poll と `InferenceId` フィルタリングを実装する
   - `AsyncCompletionQueue` / `AsyncFailureQueue` を 20 秒 long-poll で交互受信
   - メッセージ内 `inferenceId` を in-flight セットと照合
   - 自分宛て成功: `OutputLocation` を `GetObject` し、`parse_pydantic_model` で JSON 整形し `DeleteMessage`

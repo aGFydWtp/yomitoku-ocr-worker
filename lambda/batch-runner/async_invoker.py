@@ -14,11 +14,17 @@ Task 3.1 現在の責務:
 
 from __future__ import annotations
 
+import json
+import logging
 import mimetypes
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import boto3
+
+
+logger = logging.getLogger(__name__)
 
 
 _DEFAULT_CONTENT_TYPE = "application/octet-stream"
@@ -35,6 +41,23 @@ _CONTENT_TYPE_OVERRIDES: dict[str, str] = {
 # (docs: pattern ``\A\S[\p{Print}]*\z`` / maxLength 64)。
 # 制約超過時は実行時 ValidationException となるため、呼び出し前に検知する。
 _INFERENCE_ID_MAX_LENGTH = 64
+
+# SQS Receive は 1 回あたり最大 10 件。moto / 本番共通の API 上限。
+_RECEIVE_MAX_MESSAGES = 10
+
+
+@dataclass(frozen=True)
+class PolledNotification:
+    """SQS から受信した SageMaker Async 通知の正規化表現。
+
+    ``body`` は SNS エンベロープを剥がした後の SageMaker 通知本体を
+    JSON デコード済みの dict で保持する。呼び出し側は
+    ``body["invocationStatus"]`` / ``responseParameters.outputLocation`` /
+    ``failureReason`` 等を直接参照する。
+    """
+
+    inference_id: str
+    body: dict[str, Any]
 
 
 def _guess_content_type(file_path: Path) -> str:
@@ -149,3 +172,84 @@ class AsyncInvoker:
             InferenceId=inference_id,
             ContentType=content_type,
         )
+
+    # ------------------------------------------------------------------
+    # Task 3.2: SQS long-poll + InferenceId フィルタ
+    # ------------------------------------------------------------------
+    def _poll_queue(
+        self,
+        *,
+        queue_url: str,
+        in_flight: set[str],
+    ) -> list[PolledNotification]:
+        """``queue_url`` から最大 10 件 receive し、in-flight と照合して返す。
+
+        - 自バッチ宛て (inference_id ∈ in_flight): 正規化して返し、SQS から削除
+        - 他バッチ宛て: ``ChangeMessageVisibility=0`` で即時返却し他ランナーに渡す
+        - JSON 破損 / ``inferenceId`` 欠落: 無視 (ログのみ)。at-least-once 配送
+          耐性を確保するため本 receive では削除せず、SQS の redrive 設定に委ねる
+        """
+        response = self._sqs.receive_message(
+            QueueUrl=queue_url,
+            MaxNumberOfMessages=_RECEIVE_MAX_MESSAGES,
+            WaitTimeSeconds=self.poll_wait_seconds,
+        )
+        messages = response.get("Messages", [])
+        results: list[PolledNotification] = []
+        for msg in messages:
+            receipt = msg["ReceiptHandle"]
+            notification = self._unwrap_notification(msg.get("Body", ""))
+            if notification is None:
+                logger.warning(
+                    "async_invoker: dropping unparseable SQS message", extra={
+                        "queue_url": queue_url,
+                        "message_id": msg.get("MessageId"),
+                    }
+                )
+                continue
+            inference_id = notification.get("inferenceId")
+            if not isinstance(inference_id, str):
+                logger.warning(
+                    "async_invoker: SQS message missing inferenceId",
+                    extra={"message_id": msg.get("MessageId")},
+                )
+                continue
+            if inference_id in in_flight:
+                results.append(
+                    PolledNotification(inference_id=inference_id, body=notification)
+                )
+                self._sqs.delete_message(QueueUrl=queue_url, ReceiptHandle=receipt)
+            else:
+                # 他バッチ宛て: 即時返却して別ランナーが受信できるようにする
+                self._sqs.change_message_visibility(
+                    QueueUrl=queue_url,
+                    ReceiptHandle=receipt,
+                    VisibilityTimeout=0,
+                )
+        return results
+
+    @staticmethod
+    def _unwrap_notification(body_text: str) -> dict[str, Any] | None:
+        """SNS エンベロープ / Raw Message Delivery の双方に対応して本体を返す。
+
+        - SNS エンベロープ (``Type == "Notification"``): ``Message`` 文字列を
+          再度 JSON パースして返す
+        - Raw Message Delivery: body そのものが SageMaker 通知 JSON
+        - JSON として解釈できない場合は ``None`` を返す
+        """
+        try:
+            outer = json.loads(body_text)
+        except json.JSONDecodeError:
+            return None
+
+        if isinstance(outer, dict) and outer.get("Type") == "Notification":
+            inner_text = outer.get("Message")
+            if not isinstance(inner_text, str):
+                return None
+            try:
+                inner = json.loads(inner_text)
+            except json.JSONDecodeError:
+                return None
+            return inner if isinstance(inner, dict) else None
+
+        return outer if isinstance(outer, dict) else None
