@@ -12,6 +12,7 @@ import { Effect, PolicyStatement } from "aws-cdk-lib/aws-iam";
 import { LogGroup, RetentionDays } from "aws-cdk-lib/aws-logs";
 import type { IBucket } from "aws-cdk-lib/aws-s3";
 import type { IQueue } from "aws-cdk-lib/aws-sqs";
+import { Platform } from "aws-cdk-lib/aws-ecr-assets";
 import {
   Choice,
   Condition,
@@ -177,6 +178,12 @@ export class BatchExecutionStack extends Stack {
     const image =
       containerImage ??
       ContainerImage.fromAsset("lambda/batch-runner", {
+        // Fargate TaskDefinition.runtimePlatform は X86_64 で、ビルド側も
+        // 必ず linux/amd64 ターゲットで生成する。Apple Silicon (arm64) 上の
+        // 通常ビルドだと host 既定のアーキテクチャ (arm64) で layer が
+        // 作られてしまい、Fargate 起動時に "exec format error" (ExitCode 255)
+        // でコンテナが即時落ちる。buildx で amd64 を強制する。
+        platform: Platform.LINUX_AMD64,
         exclude: [
           ".venv",
           "__pycache__",
@@ -238,6 +245,9 @@ export class BatchExecutionStack extends Stack {
     );
 
     // S3: batches/* prefix 配下への Get/Put/Delete/List
+    // `s3:PutObjectTagging` は `upload_outputs` が lifecycle 用タグ
+    // (`batch-content-type`) を付与するために必要。`Tagging` 付き
+    // `upload_file` は S3 側で PutObject + PutObjectTagging の双方を要求する。
     this.taskDefinition.addToTaskRolePolicy(
       new PolicyStatement({
         sid: "BatchS3Access",
@@ -245,6 +255,7 @@ export class BatchExecutionStack extends Stack {
         actions: [
           "s3:GetObject",
           "s3:PutObject",
+          "s3:PutObjectTagging",
           "s3:DeleteObject",
           "s3:AbortMultipartUpload",
         ],
