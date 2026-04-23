@@ -1,0 +1,15 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "types": ["vitest/globals"],
+    // ルート tsconfig は ``typeRoots: ["./node_modules/@types"]`` に
+    // 絞っているが、vitest のグローバル型定義は
+    // ``node_modules/vitest/globals.d.ts`` (= ``@types`` 配下ではなく
+    // パッケージ本体の exports) に存在する。テスト用ビルドではこの
+    // 制限を外して通常の Node モジュール解決にフォールバックさせる。
+    "typeRoots": ["./node_modules/@types", "./node_modules"]
+  },
+  "include": ["test/**/*.ts"],
+  "exclude": ["node_modules", "cdk.out", "lambda/api"]
+}

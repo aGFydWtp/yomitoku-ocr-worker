@@ -367,7 +367,8 @@ pnpm install           # 全ワークスペースの依存をインストール
 pnpm test              # CDK テスト (Vitest)
 pnpm test:watch        # CDK テストを watch モードで実行
 pnpm test:api          # API テスト (Vitest, lambda/api)
-pnpm lint              # Biome lint + check-legacy-refs.sh
+pnpm typecheck:test    # tsc --noEmit で test/ を型検査 (tsconfig.test.json)
+pnpm lint              # Biome lint + check-legacy-refs.sh + typecheck:test
 pnpm lint:fix          # Biome 自動修正
 pnpm lint:legacy       # 旧 API 参照が残っていないか検査 (CI ガード)
 pnpm build             # tsc (IaC の型検査)

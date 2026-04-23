@@ -10,8 +10,9 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:api": "pnpm --filter yomitoku-api test",
+    "typecheck:test": "tsc --noEmit -p tsconfig.test.json",
     "cdk": "cdk",
-    "lint": "biome check . && bash scripts/check-legacy-refs.sh",
+    "lint": "biome check . && bash scripts/check-legacy-refs.sh && pnpm typecheck:test",
     "lint:fix": "biome check --write .",
     "lint:legacy": "bash scripts/check-legacy-refs.sh",
     "format": "biome format --write ."
