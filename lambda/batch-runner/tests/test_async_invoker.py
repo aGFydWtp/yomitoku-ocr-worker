@@ -106,6 +106,23 @@ def test_stage_input_puts_to_async_inputs_prefix(
 
 def test_build_inference_id_uses_batch_job_id_and_file_stem() -> None:
     """InferenceId は ``{batch_job_id}:{file_stem}`` 形式で生成される。"""
+    assert (
+        AsyncInvoker._build_inference_id(BATCH_JOB_ID, "sample")
+        == f"{BATCH_JOB_ID}:sample"
+    )
+
+
+def test_build_inference_id_rejects_over_64_chars() -> None:
+    """SageMaker API の 64 文字上限を超える場合は ValueError を送出する。"""
+    long_stem = "s" * 64
+    with pytest.raises(ValueError, match="exceeds SageMaker max length"):
+        AsyncInvoker._build_inference_id(BATCH_JOB_ID, long_stem)
+
+
+def test_stage_input_rejects_name_with_slash(s3_bucket: str, tmp_path: Path) -> None:
+    """``file_path.name`` に ``/`` を含む入力は prefix 逸脱として拒否する。"""
+    # Path.name は通常 '/' を取り除くが、防御的検査を通すため直接構築する。
+    s3 = boto3.client("s3", region_name=REGION)
     invoker = AsyncInvoker(
         endpoint_name="yomitoku-async",
         input_bucket=BUCKET,
@@ -114,12 +131,22 @@ def test_build_inference_id_uses_batch_job_id_and_file_stem() -> None:
         success_queue_url="https://sqs.invalid/success",
         failure_queue_url="https://sqs.invalid/failure",
         max_concurrent=2,
+        s3_client=s3,
     )
 
-    assert (
-        invoker._build_inference_id(BATCH_JOB_ID, "sample")
-        == f"{BATCH_JOB_ID}:sample"
-    )
+    class _FakePath:
+        name = "../secret.pdf"
+
+        def read_bytes(self) -> bytes:  # pragma: no cover - called only on success path
+            return b""
+
+    # '/' を含む name を `_stage_input` が拒否することを確認。
+    # Path('../secret.pdf').name は 'secret.pdf' になるため、
+    # 本ガードの狙いはその後段 (未知の name 操作) で '/' が混入したケース。
+    bad = _FakePath()
+    bad.name = "other-job/payload.pdf"
+    with pytest.raises(ValueError, match="escapes input_prefix"):
+        invoker._stage_input(bad)  # type: ignore[arg-type]
 
 
 def test_invoke_async_issues_sagemaker_call_with_inference_id(

@@ -31,6 +31,11 @@ _CONTENT_TYPE_OVERRIDES: dict[str, str] = {
     ".tiff": "image/tiff",
 }
 
+# SageMaker InvokeEndpointAsync API は InferenceId を 64 文字までに制限する
+# (docs: pattern ``\A\S[\p{Print}]*\z`` / maxLength 64)。
+# 制約超過時は実行時 ValidationException となるため、呼び出し前に検知する。
+_INFERENCE_ID_MAX_LENGTH = 64
+
 
 def _guess_content_type(file_path: Path) -> str:
     """拡張子から ContentType を推定する。
@@ -88,12 +93,35 @@ class AsyncInvoker:
     # ------------------------------------------------------------------
     @staticmethod
     def _build_inference_id(batch_job_id: str, file_stem: str) -> str:
-        """``{batch_job_id}:{file_stem}`` 形式の InferenceId を返す。"""
-        return f"{batch_job_id}:{file_stem}"
+        """``{batch_job_id}:{file_stem}`` 形式の InferenceId を返す。
+
+        SageMaker API の ``InferenceId`` は 64 文字上限。上限超過時は実行時
+        ``ValidationException`` となるため、生成段階で検知して送出する。
+        """
+        inference_id = f"{batch_job_id}:{file_stem}"
+        if len(inference_id) > _INFERENCE_ID_MAX_LENGTH:
+            raise ValueError(
+                "InferenceId exceeds SageMaker max length "
+                f"({_INFERENCE_ID_MAX_LENGTH}): {inference_id!r} "
+                f"(len={len(inference_id)})"
+            )
+        return inference_id
 
     def _stage_input(self, file_path: Path) -> str:
-        """入力ファイルを ``input_prefix`` 配下へ PUT し、``s3://`` URI を返す。"""
+        """入力ファイルを ``input_prefix`` 配下へ PUT し、``s3://`` URI を返す。
+
+        ``file_path.name`` 由来の S3 key が ``input_prefix`` 配下に収まることを
+        呼び出し前に検証し、他バッチ prefix への書き込み事故を防ぐ。
+        """
         key = f"{self.input_prefix}{file_path.name}"
+        if not key.startswith(self.input_prefix) or "/" in file_path.name:
+            # Path.name はディレクトリ区切りを取り除くが、空文字や
+            # Windows 由来の妙な文字列が混じると prefix を逸脱し得るため、
+            # 念のため防御的に検証する。
+            raise ValueError(
+                f"Staged key escapes input_prefix: key={key!r}, "
+                f"prefix={self.input_prefix!r}"
+            )
         self._s3.put_object(
             Bucket=self.input_bucket,
             Key=key,
