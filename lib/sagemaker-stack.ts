@@ -8,6 +8,7 @@ import {
   Role,
   ServicePrincipal,
 } from "aws-cdk-lib/aws-iam";
+import { CfnAlarm } from "aws-cdk-lib/aws-cloudwatch";
 import { Alias } from "aws-cdk-lib/aws-kms";
 import type { IBucket } from "aws-cdk-lib/aws-s3";
 import {
@@ -426,6 +427,64 @@ export class SagemakerStack extends Stack {
       },
     );
     Tags.of(scalingPolicy).add("yomitoku:component", "autoscaling");
+
+    // --------------------------------------------------------------
+    // 7b. Scale-from-Zero bootstrap
+    //
+    // `AsyncBacklogScalingPolicy` (TargetTracking) は
+    // `ApproximateBacklogSizePerInstance = backlog / instances` が定義される
+    // `instances >= 1` 状態でのみ機能する。MinCapacity=0 の構成では
+    // `instances=0` で backlog が積まれても目的関数が未定義なので scale-up
+    // が起こらない。
+    //
+    // AWS 公式推奨パターン:
+    //   `HasBacklogWithoutCapacity` (backlog>0 かつ capacity=0 で 1) をウォッチし、
+    //   StepScalingPolicy で +1 する。以後の負荷分散は TargetTracking 側が担当。
+    // --------------------------------------------------------------
+    const scaleOutOnBacklogPolicy = new CfnScalingPolicy(
+      this,
+      "AsyncScaleOutOnBacklogPolicy",
+      {
+        policyName: "AsyncScaleOutOnBacklogWithoutCapacity",
+        policyType: "StepScaling",
+        scalingTargetId: scalableTarget.ref,
+        stepScalingPolicyConfiguration: {
+          adjustmentType: "ChangeInCapacity",
+          cooldown: 60,
+          metricAggregationType: "Maximum",
+          stepAdjustments: [
+            {
+              metricIntervalLowerBound: 0,
+              scalingAdjustment: 1,
+            },
+          ],
+        },
+      },
+    );
+    Tags.of(scaleOutOnBacklogPolicy).add("yomitoku:component", "autoscaling");
+
+    const hasBacklogWithoutCapacityAlarm = new CfnAlarm(
+      this,
+      "AsyncHasBacklogWithoutCapacityAlarm",
+      {
+        alarmDescription:
+          "Trigger scale-out of SageMaker Async endpoint when backlog exists but capacity is 0",
+        metricName: "HasBacklogWithoutCapacity",
+        namespace: "AWS/SageMaker",
+        statistic: "Maximum",
+        period: 60,
+        evaluationPeriods: 2,
+        threshold: 1,
+        comparisonOperator: "GreaterThanOrEqualToThreshold",
+        treatMissingData: "notBreaching",
+        dimensions: [{ name: "EndpointName", value: endpointName }],
+        alarmActions: [scaleOutOnBacklogPolicy.ref],
+      },
+    );
+    Tags.of(hasBacklogWithoutCapacityAlarm).add(
+      "yomitoku:component",
+      "autoscaling",
+    );
 
     // -----------------------------------------------------------------------
     // Public exports
