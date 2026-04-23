@@ -269,7 +269,7 @@
   - 観測可能条件: Runbook ファイルが作成され、上記全セクションが存在する
   - _Requirements: 7.3, 7.4, 7.5, 8.2, 8.3, 9.1, 9.3, 9.4, 11.1, 11.2, 11.3_
 
-- [ ] 9.2 PR テンプレートに Async 移行のエビデンス要求を追加する
+- [x] 9.2 PR テンプレートに Async 移行のエビデンス要求を追加する
   - `pnpm test` / `pnpm lint` / `pnpm cdk synth --all` / `pnpm cdk deploy --all` のグリーン確認欄を新設
   - `docs/runbooks/sagemaker-async-cutover.md` の該当セクション参照チェックボックスを配置
   - 観測可能条件: `.github/PULL_REQUEST_TEMPLATE.md` (または `.github/pull_request_template.md`) が更新され、新チェック項目が存在
