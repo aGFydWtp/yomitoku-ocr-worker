@@ -22,6 +22,7 @@ Task 3.1 〜 3.3 / 5.1 を通じて以下を担う:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import mimetypes
@@ -54,6 +55,24 @@ _CONTENT_TYPE_OVERRIDES: dict[str, str] = {
 # (docs: pattern ``\A\S[\p{Print}]*\z`` / maxLength 64)。
 # 制約超過時は実行時 ValidationException となるため、呼び出し前に検知する。
 _INFERENCE_ID_MAX_LENGTH = 64
+
+
+# SageMaker ``invoke_endpoint_async`` は ``InferenceId`` と ``InputLocation`` を
+# HTTP ヘッダ (``x-amzn-sagemaker-inference-id`` / ``x-amzn-sagemaker-inputlocation``)
+# に載せて送出する。非 ASCII バイトが混ざると:
+#   1. SigV4 canonical string が client/server で乖離 → InvalidSignatureException
+#   2. 仮に signing を擦り抜けても ``InferenceId`` の 64 文字上限を UTF-8 → percent-encode
+#      で容易に超過する (日本語 1 文字 = 9 ASCII 文字)
+# そのため ASCII でない場合は SHA-1 先頭 16 文字の安定ハッシュで置き換える。
+# ASCII の場合は元の文字列をそのまま使うことで、既存テスト / 運用上の可読性を維持する。
+_SAFE_IDENT_HASH_LENGTH = 16
+
+
+def _safe_ident(value: str) -> str:
+    """ASCII のみの場合はそのまま、非 ASCII を含む場合は SHA-1 先頭 16 文字を返す。"""
+    if value.isascii():
+        return value
+    return hashlib.sha1(value.encode("utf-8")).hexdigest()[:_SAFE_IDENT_HASH_LENGTH]
 
 # SQS Receive は 1 回あたり最大 10 件。moto / 本番共通の API 上限。
 _RECEIVE_MAX_MESSAGES = 10
@@ -154,12 +173,19 @@ class AsyncInvoker:
     # ------------------------------------------------------------------
     @staticmethod
     def _build_inference_id(batch_job_id: str, file_stem: str) -> str:
-        """``{batch_job_id}:{file_stem}`` 形式の InferenceId を返す。
+        """``{batch_job_id}:{safe_stem}`` 形式の InferenceId を返す。
 
         SageMaker API の ``InferenceId`` は 64 文字上限。上限超過時は実行時
         ``ValidationException`` となるため、生成段階で検知して送出する。
+
+        ``file_stem`` が非 ASCII を含む場合はそのままでは HTTP ヘッダ送信
+        (SigV4 canonical string の解釈乖離) で失敗する。かつ UTF-8 を
+        percent-encode しても 64 文字上限を超過しやすい。``_safe_ident`` で
+        ASCII のみの場合は無変換、非 ASCII を含む場合は SHA-1 16 文字に
+        畳み込む。
         """
-        inference_id = f"{batch_job_id}:{file_stem}"
+        safe_stem = _safe_ident(file_stem)
+        inference_id = f"{batch_job_id}:{safe_stem}"
         if len(inference_id) > _INFERENCE_ID_MAX_LENGTH:
             raise ValueError(
                 "InferenceId exceeds SageMaker max length "
@@ -173,8 +199,20 @@ class AsyncInvoker:
 
         ``file_path.name`` 由来の S3 key が ``input_prefix`` 配下に収まることを
         呼び出し前に検証し、他バッチ prefix への書き込み事故を防ぐ。
+
+        staging key のファイル名部分は ``_safe_ident`` で ASCII 化する
+        (ASCII ならそのまま、非 ASCII なら SHA-1 ハッシュに置換)。
+        ``InputLocation`` は後段 ``invoke_endpoint_async`` で HTTP ヘッダに
+        乗るため、非 ASCII バイトが混ざると SigV4 ``InvalidSignatureException``
+        を引き起こす。拡張子は ``file_path.suffix`` を保持して Content-Type
+        推定や model container 側のディスパッチに使わせる。
         """
-        key = f"{self.input_prefix}{file_path.name}"
+        # ``file_path`` は本番では ``pathlib.Path`` だがテストの ``_FakePath``
+        # 等も受け入れるため、``stem`` / ``suffix`` は ``name`` から計算する。
+        name_view = Path(file_path.name)
+        safe_stem = _safe_ident(name_view.stem)
+        safe_name = f"{safe_stem}{name_view.suffix}"
+        key = f"{self.input_prefix}{safe_name}"
         if not key.startswith(self.input_prefix) or "/" in file_path.name:
             # Path.name はディレクトリ区切りを取り除くが、空文字や
             # Windows 由来の妙な文字列が混じると prefix を逸脱し得るため、
