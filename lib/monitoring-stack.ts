@@ -18,13 +18,15 @@ import { BATCH_TASK_TIMEOUT_SECONDS } from "./batch-execution-stack";
  * MonitoringStack: バッチ運用アラーム通知用の SNS トピックと CloudWatch
  * アラームを提供する。
  *
- * Task 5.1 で `YomiToku/Batch` namespace のカスタムメトリクスを対象にした
- * 以下 2 つのアラームを追加している:
+ * バッチ観測メトリクス (BatchRunnerTask が EMF/PutMetricData で発行):
  *   - `FilesFailedTotal >= FILES_FAILED_THRESHOLD` (5 分 Sum)
  *   - `BatchDurationSeconds > BATCH_MAX_DURATION_SEC` (5 分 Max)
  *
- * メトリクス自体は BatchRunnerTask が EMF/PutMetricData で発行するため、
- * 本スタックは namespace 名とメトリクス名の整合性のみ保証する。
+ * SageMaker Async Endpoint 観測 (Task 6.1 / 6.2, `endpointName` 指定時のみ):
+ *   - `HasBacklogWithoutCapacity >= 1` (5 分連続) — キューにリクエストがあるのに
+ *     キャパが 0 なら自動スケールが詰まっている可能性あり
+ *   - `ApproximateAgeOfOldestRequest > 1800` (1 datapoint) — キュー滞留が 30 分
+ *     を超えたら SLA 危険域
  */
 export interface MonitoringStackProps extends StackProps {
   /** `FilesFailedTotal` アラームの閾値 (既定: 10 件/5 分)。 */
@@ -32,17 +34,18 @@ export interface MonitoringStackProps extends StackProps {
   /** `BatchDurationSeconds` アラームの閾値 (秒, 既定: 7200)。 */
   readonly batchMaxDurationSec?: number;
   /**
-   * Async Endpoint 名。Task 6.x で
-   * `HasBacklogWithoutCapacity` / `ApproximateAgeOfOldestRequest`
-   * アラームの `Dimension.EndpointName` として参照する。
-   * Task 1.1 時点では配管のみ用意し optional で受ける。
+   * Async Endpoint 名。`HasBacklogWithoutCapacity` /
+   * `ApproximateAgeOfOldestRequest` アラームの `Dimension.EndpointName`
+   * として参照する。未指定時は両アラームをスキップする。
    */
   readonly endpointName?: string;
 }
 
 const METRIC_NAMESPACE = "YomiToku/Batch";
+const SAGEMAKER_NAMESPACE = "AWS/SageMaker";
 const DEFAULT_FILES_FAILED_THRESHOLD = 10;
 const DEFAULT_BATCH_MAX_DURATION_SEC = BATCH_TASK_TIMEOUT_SECONDS;
+const OLDEST_REQUEST_AGE_THRESHOLD_SEC = 1800;
 
 export class MonitoringStack extends Stack {
   public readonly alarmTopic: Topic;
@@ -114,6 +117,60 @@ export class MonitoringStack extends Stack {
         "BatchDurationSeconds が BATCH_MAX_DURATION_SEC を超えた: タイムアウト／ハング疑い",
     });
     batchDurationAlarm.addAlarmAction(snsAction);
+
+    // --- Async Endpoint 用アラーム (Task 6.1 / 6.2) ---
+    // endpointName 未指定時はスキップ: Sagemaker スタック未デプロイ環境
+    // (PR 検証用の部分 synth など) で本スタック単独ビルドを許容するため。
+    if (props.endpointName) {
+      const endpointDimensions = { EndpointName: props.endpointName };
+
+      // HasBacklogWithoutCapacity: キューに pending があるのに instance=0
+      // の状態を 5 分連続検知 (1 分 × 5 period)。短い瞬間的なゼロ化は
+      // スケールアウト中の正常動作なので除外する。
+      const backlogMetric = new Metric({
+        namespace: SAGEMAKER_NAMESPACE,
+        metricName: "HasBacklogWithoutCapacity",
+        statistic: "Maximum",
+        period: Duration.minutes(1),
+        dimensionsMap: endpointDimensions,
+      });
+      const backlogAlarm = new Alarm(this, "HasBacklogWithoutCapacityAlarm", {
+        metric: backlogMetric,
+        threshold: 1,
+        evaluationPeriods: 5,
+        datapointsToAlarm: 5,
+        comparisonOperator:
+          ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+        treatMissingData: TreatMissingData.NOT_BREACHING,
+        alarmDescription:
+          "HasBacklogWithoutCapacity=1 が 5 分連続: 自動スケールが詰まっている可能性",
+      });
+      backlogAlarm.addAlarmAction(snsAction);
+
+      // ApproximateAgeOfOldestRequest: 最古リクエスト滞留秒。1800s (= 30 分)
+      // を 1 datapoint で発報し、早期に SLA 侵食を検知する。
+      const oldestAgeMetric = new Metric({
+        namespace: SAGEMAKER_NAMESPACE,
+        metricName: "ApproximateAgeOfOldestRequest",
+        statistic: "Maximum",
+        period: Duration.minutes(1),
+        dimensionsMap: endpointDimensions,
+      });
+      const oldestAgeAlarm = new Alarm(
+        this,
+        "ApproximateAgeOfOldestRequestAlarm",
+        {
+          metric: oldestAgeMetric,
+          threshold: OLDEST_REQUEST_AGE_THRESHOLD_SEC,
+          evaluationPeriods: 1,
+          comparisonOperator: ComparisonOperator.GREATER_THAN_THRESHOLD,
+          treatMissingData: TreatMissingData.NOT_BREACHING,
+          alarmDescription:
+            "ApproximateAgeOfOldestRequest > 1800s: キュー滞留が 30 分を超過",
+        },
+      );
+      oldestAgeAlarm.addAlarmAction(snsAction);
+    }
 
     new CfnOutput(this, "AlarmTopicArn", {
       value: this.alarmTopic.topicArn,

@@ -197,21 +197,21 @@
 
 ## 6. MonitoringStack — Async 用 CloudWatch アラーム
 
-- [ ] 6.1 (P) `HasBacklogWithoutCapacity` アラームを追加する
+- [x] 6.1 (P) `HasBacklogWithoutCapacity` アラームを追加する
   - Namespace `AWS/SageMaker`, Dimension `EndpointName`, 閾値 `>= 1`, 5 分連続
   - Action は既存 `AlarmTopic` に配線
   - 観測可能条件: `cdk synth` で 1 本の `AWS::CloudWatch::Alarm` が `EndpointName` dim 付きで生成され、AlarmActions に AlarmTopic ARN が入る
   - _Requirements: 6.1, 6.2_
   - _Boundary: MonitoringStack_
 
-- [ ] 6.2 (P) `ApproximateAgeOfOldestRequest` アラームを追加する
+- [x] 6.2 (P) `ApproximateAgeOfOldestRequest` アラームを追加する
   - Namespace `AWS/SageMaker`, Dimension `EndpointName`, 閾値 `> 1800` 秒, 1 datapoint で発報
   - Action は `AlarmTopic`
   - 観測可能条件: `cdk synth` で閾値 1800・EvaluationPeriods=1 のアラームが生成
   - _Requirements: 6.3_
   - _Boundary: MonitoringStack_
 
-- [ ] 6.3 MonitoringStack のユニットテストを更新する
+- [x] 6.3 MonitoringStack のユニットテストを更新する
   - 新 2 アラームの存在と AlarmTopic 接続
   - Realtime 専用 (`Invocations`, `ModelLatency`, `OverheadLatency`) アラームが追加されていない
   - 既存 `FilesFailedTotal` / `BatchDurationSeconds` アラームが維持
