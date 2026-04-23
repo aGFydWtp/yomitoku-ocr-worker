@@ -50,6 +50,13 @@ import type { AsyncRuntimeContext } from "./async-runtime-context";
 export const BATCH_TASK_TIMEOUT_SECONDS = 7200;
 
 /**
+ * `ASYNC_MAX_CONCURRENT` 既定値。`asyncRuntime` が未指定の場合に使用する。
+ * Async Endpoint の `MaxConcurrentInvocationsPerInstance` と揃え、
+ * runner 側の in-flight 上限として機能させる (design.md §3)。
+ */
+export const DEFAULT_ASYNC_MAX_CONCURRENT = 4;
+
+/**
  * StateMachine 全体のタイムアウト。`BATCH_TASK_TIMEOUT_SECONDS` に
  * Lock 獲得・エンドポイント確認・ロック解放などのオーバーヘッド (約 800 秒)
  * を加えた値で、タスク自体のタイムアウトより必ず長くする。
@@ -117,6 +124,7 @@ export class BatchExecutionStack extends Stack {
       successQueue,
       failureQueue,
       containerImage,
+      asyncRuntime,
     } = props;
 
     if (!endpointName) {
@@ -173,6 +181,17 @@ export class BatchExecutionStack extends Stack {
         ],
       });
 
+    // Async 経路の S3 prefix 規約 (design.md §Async prefix 命名)。
+    // runner.py (settings.py Task 5.2) がこれらを読み出して S3 staging と
+    // エラーファイル参照に用いる。末尾に "/" は付けず、キー連結は呼び出し側で行う。
+    const asyncInputPrefix = "batches/_async/inputs";
+    const asyncOutputPrefix = "batches/_async/outputs";
+    const asyncErrorPrefix = "batches/_async/errors";
+    const asyncMaxConcurrent = String(
+      asyncRuntime?.maxConcurrentInvocationsPerInstance ??
+        DEFAULT_ASYNC_MAX_CONCURRENT,
+    );
+
     this.taskDefinition.addContainer(this.containerName, {
       image,
       logging: LogDriver.awsLogs({
@@ -184,6 +203,12 @@ export class BatchExecutionStack extends Stack {
         CONTROL_TABLE_NAME: controlTable.tableName,
         BUCKET_NAME: bucket.bucketName,
         ENDPOINT_NAME: endpointName,
+        SUCCESS_QUEUE_URL: successQueue.queueUrl,
+        FAILURE_QUEUE_URL: failureQueue.queueUrl,
+        ASYNC_INPUT_PREFIX: asyncInputPrefix,
+        ASYNC_OUTPUT_PREFIX: asyncOutputPrefix,
+        ASYNC_ERROR_PREFIX: asyncErrorPrefix,
+        ASYNC_MAX_CONCURRENT: asyncMaxConcurrent,
       },
     });
 

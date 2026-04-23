@@ -148,7 +148,7 @@
   - _Requirements: 5.2, 5.5_
   - _Boundary: BatchExecutionStack_
 
-- [ ] 4.3 (P) Fargate TaskDefinition の環境変数を追加する
+- [x] 4.3 (P) Fargate TaskDefinition の環境変数を追加する
   - `SUCCESS_QUEUE_URL`, `FAILURE_QUEUE_URL`, `ASYNC_INPUT_PREFIX`, `ASYNC_OUTPUT_PREFIX`, `ASYNC_ERROR_PREFIX`, `ASYNC_MAX_CONCURRENT` を ContainerDefinition に注入
   - 既存 Public subnet + `assignPublicIp=true` 構成は維持
   - 観測可能条件: synth の ContainerDefinitions に新環境変数が 5 本以上存在

@@ -99,6 +99,46 @@ describe("BatchExecutionStack", () => {
       });
     });
 
+    it("Async 関連の環境変数 (Queue URL / S3 prefix / MAX_CONCURRENT) が ContainerDefinition に注入される (Task 4.3)", () => {
+      const { template } = createStack();
+      // SUCCESS_QUEUE_URL / FAILURE_QUEUE_URL は CloudFormation Ref によって
+      // Queue の URL に解決されるため、値は anyValue() で検証する。
+      // S3 prefix は static 値 (design.md §Async prefix 命名規約) として
+      // 直接比較し、ASYNC_MAX_CONCURRENT は asyncRuntime デフォルト "4" を期待する。
+      template.hasResourceProperties("AWS::ECS::TaskDefinition", {
+        ContainerDefinitions: Match.arrayWith([
+          Match.objectLike({
+            Environment: Match.arrayWith([
+              Match.objectLike({
+                Name: "SUCCESS_QUEUE_URL",
+                Value: Match.anyValue(),
+              }),
+              Match.objectLike({
+                Name: "FAILURE_QUEUE_URL",
+                Value: Match.anyValue(),
+              }),
+              Match.objectLike({
+                Name: "ASYNC_INPUT_PREFIX",
+                Value: "batches/_async/inputs",
+              }),
+              Match.objectLike({
+                Name: "ASYNC_OUTPUT_PREFIX",
+                Value: "batches/_async/outputs",
+              }),
+              Match.objectLike({
+                Name: "ASYNC_ERROR_PREFIX",
+                Value: "batches/_async/errors",
+              }),
+              Match.objectLike({
+                Name: "ASYNC_MAX_CONCURRENT",
+                Value: "4",
+              }),
+            ]),
+          }),
+        ]),
+      });
+    });
+
     it("taskDefinition と cluster を公開プロパティとして持つ", () => {
       const { stack } = createStack();
       expect(stack.taskDefinition).toBeDefined();
