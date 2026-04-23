@@ -8,12 +8,23 @@ import { CfnEndpointConfig, CfnModel } from "aws-cdk-lib/aws-sagemaker";
 import { CfnOutput, Stack, type StackProps } from "aws-cdk-lib/core";
 import { NagSuppressions } from "cdk-nag";
 import type { Construct } from "constructs";
+import type { AsyncRuntimeContext } from "./async-runtime-context";
+
+/**
+ * `SagemakerStack` 向けの props。`asyncRuntime` は Task 2.x で
+ * `AsyncInferenceConfig` / `ScalableTarget` の具体パラメータに落とし込まれるが、
+ * Task 1.1 の時点では bin/app.ts → 各スタックに値を伝搬する配管のみ用意する。
+ * 既存テスト互換のため optional として受ける。
+ */
+export interface SagemakerStackProps extends StackProps {
+  readonly asyncRuntime?: AsyncRuntimeContext;
+}
 
 export class SagemakerStack extends Stack {
   public readonly endpointConfigName: string;
   public readonly modelName: string;
 
-  constructor(scope: Construct, id: string, props?: StackProps) {
+  constructor(scope: Construct, id: string, props?: SagemakerStackProps) {
     super(scope, id, props);
 
     const modelPackageArn = this.node.tryGetContext("modelPackageArn") as

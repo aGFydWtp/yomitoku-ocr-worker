@@ -28,6 +28,15 @@ FORBIDDEN_PATTERNS=(
   '"input/{'               # 旧 S3 キーテンプレート（トップレベル input/）
   '"output/{'              # 旧 S3 キーテンプレート（トップレベル output/）
   '"visualizations/{'      # 旧 S3 キーテンプレート（トップレベル visualizations/）
+  # --- SageMaker Async 移行 (Task 1.2) ---
+  # Realtime `InvokeEndpoint` / `DescribeEndpoint` は Async 化後の Task Role では禁止。
+  # 代わりに `InvokeEndpointAsync` を使う。文字列リテラル/IAM Action 表現の両方を網羅する。
+  'sagemaker:InvokeEndpoint"'           # "sagemaker:InvokeEndpoint" (Realtime, 末尾 " で Async と区別)
+  "sagemaker:InvokeEndpoint'"           # 'sagemaker:InvokeEndpoint' (同上、シングルクォート版)
+  'sagemaker:DescribeEndpoint'          # Realtime 前提の DescribeEndpoint (Async ランナーは不要)
+  'OrchestrationStack'                  # 旧 Endpoint lifecycle スタック (Task 7.1 で撤去)
+  'endpoint-control'                    # 旧 Endpoint 起動/停止 Lambda ディレクトリ (Task 7.2 で削除)
+  'EnsureEndpointInService'             # 旧 SFN ステート (Task 4.4 で削除)
 )
 
 # 除外 pathspec（git grep の ':!' 構文）
@@ -46,6 +55,18 @@ EXCLUDES=(
   ':!docs/runbooks/'
   ':!README.md'
   ':!**/README.md'
+  # --- Async 移行中の一時除外 (Task 10.1 で削除) ---
+  # これらのファイルは後続タスクで削除もしくは Async 相当に書き換えるまで、
+  # 旧 Realtime / OrchestrationStack 識別子を含み続ける。
+  #   - lib/orchestration-stack.ts / lambda/endpoint-control/: Task 7.1 / 7.2 で削除
+  #   - lib/batch-execution-stack.ts: Task 4.1 / 4.4 で書き換え
+  #   - bin/app.ts: Task 7.1 で OrchestrationStack 参照を除去
+  #   - YomiToku-Pro_AWS構築検討.md: 設計検討資料 (履歴保持)
+  ':!lib/orchestration-stack.ts'
+  ':!lambda/endpoint-control/'
+  ':!lib/batch-execution-stack.ts'
+  ':!bin/app.ts'
+  ':!YomiToku-Pro_AWS構築検討.md'
 )
 
 FOUND=0

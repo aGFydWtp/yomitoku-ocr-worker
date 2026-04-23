@@ -31,6 +31,13 @@ export interface MonitoringStackProps extends StackProps {
   readonly filesFailedThreshold?: number;
   /** `BatchDurationSeconds` アラームの閾値 (秒, 既定: 7200)。 */
   readonly batchMaxDurationSec?: number;
+  /**
+   * Async Endpoint 名。Task 6.x で
+   * `HasBacklogWithoutCapacity` / `ApproximateAgeOfOldestRequest`
+   * アラームの `Dimension.EndpointName` として参照する。
+   * Task 1.1 時点では配管のみ用意し optional で受ける。
+   */
+  readonly endpointName?: string;
 }
 
 const METRIC_NAMESPACE = "YomiToku/Batch";

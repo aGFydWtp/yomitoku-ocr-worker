@@ -43,6 +43,7 @@ import {
 } from "aws-cdk-lib/core";
 import { NagSuppressions } from "cdk-nag";
 import type { Construct } from "constructs";
+import type { AsyncRuntimeContext } from "./async-runtime-context";
 
 /** RunBatchTask (.sync) の task timeout。BatchRunner の最大実行時間 2 時間に合わせる。 */
 export const BATCH_TASK_TIMEOUT_SECONDS = 7200;
@@ -82,6 +83,12 @@ export interface BatchExecutionStackProps extends StackProps {
    * 本番 (bin/app.ts) では省略し、Dockerfile を `ContainerImage.fromAsset` でビルドする。
    */
   containerImage?: ContainerImage;
+  /**
+   * Async 運用パラメータ。Task 4.3 で TaskDefinition の
+   * `ASYNC_MAX_CONCURRENT` 環境変数として消費する予定で、
+   * Task 1.1 の時点では配管のみ用意する (optional)。
+   */
+  readonly asyncRuntime?: AsyncRuntimeContext;
 }
 
 export class BatchExecutionStack extends Stack {

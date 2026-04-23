@@ -1,3 +1,7 @@
 pytest>=8.0,<9
 pytest-asyncio>=0.24,<1
-moto[s3,dynamodb]>=5.0,<6
+# Async 移行 (Task 1.3) で SNS/SQS をモックするため、moto に sns/sqs extras を追加する。
+# s3/dynamodb は既存 (BatchTable / ControlTable / batches prefix テスト) で使用中。
+moto[s3,dynamodb,sns,sqs]>=5.0,<6
+# boto3 の型補完 (sqs/sns) は lambda コンテナには不要だが、開発時の IDE 補完 / mypy に有用。
+boto3-stubs[sqs,sns,s3,dynamodb,sagemaker-runtime]>=1.34,<2

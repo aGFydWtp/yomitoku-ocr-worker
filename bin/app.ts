@@ -2,6 +2,7 @@
 import { App, Aspects } from "aws-cdk-lib/core";
 import { AwsSolutionsChecks } from "cdk-nag";
 import { ApiStack } from "../lib/api-stack";
+import { resolveAsyncRuntimeContext } from "../lib/async-runtime-context";
 import { BatchExecutionStack } from "../lib/batch-execution-stack";
 import { MonitoringStack } from "../lib/monitoring-stack";
 import { OrchestrationStack } from "../lib/orchestration-stack";
@@ -46,8 +47,13 @@ if (!endpointConfigName) {
   );
 }
 
+// SageMaker Async 運用パラメータは 3 スタック (Sagemaker / BatchExecution / Monitoring)
+// で共有する必要があるため、app レベルで 1 度だけ解決する。
+const asyncRuntime = resolveAsyncRuntimeContext(app.node);
+
 new SagemakerStack(app, "SagemakerStack", {
   env: { region, account },
+  asyncRuntime,
 });
 
 const processingStack = new ProcessingStack(app, "ProcessingStack", {
@@ -70,6 +76,7 @@ const batchExecutionStack = new BatchExecutionStack(
     controlTable: processingStack.controlTable,
     bucket: processingStack.bucket,
     endpointName,
+    asyncRuntime,
   },
 );
 
@@ -84,6 +91,7 @@ new ApiStack(app, "ApiStack", {
 
 new MonitoringStack(app, "MonitoringStack", {
   env: { region, account },
+  endpointName,
 });
 
 Aspects.of(app).add(new AwsSolutionsChecks({ verbose: true }));

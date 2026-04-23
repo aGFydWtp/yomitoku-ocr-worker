@@ -17,6 +17,10 @@
   "context": {
     "endpointName": "yomitoku-pro-endpoint",
     "endpointConfigName": "yomitoku-pro-config",
+    "asyncMaxCapacity": 1,
+    "maxConcurrentInvocationsPerInstance": 4,
+    "invocationTimeoutSeconds": 3600,
+    "scaleInCooldownSeconds": 900,
     "@aws-cdk/aws-signer:signingProfileNamePassedToCfn": true,
     "@aws-cdk/aws-ecs-patterns:secGroupsDisablesImplicitOpenListener": true,
     "@aws-cdk/aws-lambda:recognizeLayerVersion": true,
