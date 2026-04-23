@@ -124,7 +124,7 @@
   - _Requirements: 3.3_
   - _Boundary: async_invoker.py_
 
-- [ ] 3.4 AsyncInvoker のユニットテスト一式を整備する
+- [x] 3.4 AsyncInvoker のユニットテスト一式を整備する
   - 4xx ValidationException の即時失敗パス
   - Async タイムアウト (ErrorTopic 経由) の `failureReason` 記録パス
   - SQS at-least-once 重複配信の idempotent 処理

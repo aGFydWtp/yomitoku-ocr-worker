@@ -16,6 +16,14 @@ Task 3.3 追補:
     - deadline 超過で未完了 InferenceId が `in_flight_timeout` に落ちる
     - 同期 4xx ClientError を即時 `failed_files` へ積む
 
+Task 3.4 追補 (``run_batch`` 統合シナリオ):
+    - Async Endpoint 側タイムアウト (ErrorTopic 経由) の ``failureReason``
+      記録パス
+    - SQS at-least-once 重複配信 (同一 `InferenceId` が 2 度届く) の
+      idempotent 処理
+    - 2 バッチ分のメッセージが共通 SuccessQueue に混在した場合の
+      自バッチ限定処理 (他バッチは ``ChangeMessageVisibility=0`` で返却)
+
 テスト用依存:
     - moto[s3,sqs] で S3 / SQS をモック
     - sagemaker-runtime は moto が未対応のため ``botocore.stub.Stubber`` で
@@ -652,3 +660,168 @@ def test_run_batch_records_4xx_as_immediate_failure(full_aws_env, tmp_path: Path
     assert "ValidationException" in reason
     assert result.in_flight_timeout == []
     stubber.assert_no_pending_responses()
+
+
+# --------------------------------------------------------------------------
+# Task 3.4: run_batch レベルの追加シナリオ (Async timeout / 重複配信 / 混在)
+# --------------------------------------------------------------------------
+def _failure_body_with_reason(inference_id: str, reason: str) -> dict:
+    """任意 `failureReason` で FailureQueue 用 body を作る (Async タイムアウト等)。"""
+    body = _failure_body(inference_id)
+    body["failureReason"] = reason
+    return body
+
+
+def test_run_batch_records_async_timeout_failure_reason(
+    full_aws_env, tmp_path: Path
+) -> None:
+    """Async Endpoint 側のタイムアウトは FailureQueue 経由で
+    `failed_files` に `failureReason` が記録される。
+
+    SageMaker Async Inference は `InvocationTimeoutSeconds` (既定 3600s) を
+    超えると ErrorTopic → FailureQueue に `failureReason` 付きで通知する。
+    ここではそれと等価なメッセージを直接投入して経路を検証する。
+    """
+    env = full_aws_env
+    invoker = _make_invoker(env, max_concurrent=2)
+
+    file_slow = _write_input(tmp_path, "slow.pdf")
+
+    timeout_reason = (
+        "ModelInvocationTimeout: Invocation exceeded InvocationTimeoutSeconds=3600"
+    )
+    env["sqs"].send_message(
+        QueueUrl=env["failure_url"],
+        MessageBody=_sns_wrap(
+            _failure_body_with_reason(f"{BATCH_JOB_ID}:slow", timeout_reason)
+        ),
+    )
+
+    stubber = env["stubber"]
+    stubber.add_response(
+        "invoke_endpoint_async",
+        {"InferenceId": f"{BATCH_JOB_ID}:slow", "OutputLocation": "s3://x/y"},
+    )
+    stubber.activate()
+
+    result = asyncio.run(
+        invoker.run_batch(
+            batch_job_id=BATCH_JOB_ID,
+            input_files=[file_slow],
+            output_dir=tmp_path / "out",
+            log_path=tmp_path / "log.jsonl",
+            deadline_seconds=30.0,
+        )
+    )
+
+    assert result.succeeded_files == []
+    assert len(result.failed_files) == 1
+    stem, reason = result.failed_files[0]
+    assert stem == "slow"
+    assert "InvocationTimeoutSeconds" in reason
+    assert result.in_flight_timeout == []
+    stubber.assert_no_pending_responses()
+
+
+def test_run_batch_idempotent_on_sqs_duplicate_delivery(
+    full_aws_env, tmp_path: Path
+) -> None:
+    """SQS at-least-once により同一 InferenceId が 2 度届いても、
+    succeeded_files への重複加算 / 例外は発生しない。
+
+    SuccessQueue に 2 通同じ成功通知を投入し、2 回目は
+    ``in_flight.pop()`` が ``None`` を返す分岐で握りつぶされることを確認する。
+    """
+    env = full_aws_env
+    invoker = _make_invoker(env, max_concurrent=2)
+
+    file_ok = _write_input(tmp_path, "ok.pdf")
+
+    body = _sns_wrap(_success_body(f"{BATCH_JOB_ID}:ok"))
+    # 同一メッセージを 2 通送信 (重複配信をシミュレート)
+    env["sqs"].send_message(QueueUrl=env["success_url"], MessageBody=body)
+    env["sqs"].send_message(QueueUrl=env["success_url"], MessageBody=body)
+
+    stubber = env["stubber"]
+    stubber.add_response(
+        "invoke_endpoint_async",
+        {"InferenceId": f"{BATCH_JOB_ID}:ok", "OutputLocation": "s3://x/y"},
+    )
+    stubber.activate()
+
+    result = asyncio.run(
+        invoker.run_batch(
+            batch_job_id=BATCH_JOB_ID,
+            input_files=[file_ok],
+            output_dir=tmp_path / "out",
+            log_path=tmp_path / "log.jsonl",
+            deadline_seconds=30.0,
+        )
+    )
+
+    # 1 件のみ集計され、失敗もタイムアウトも無い
+    assert result.succeeded_files == ["ok"]
+    assert result.failed_files == []
+    assert result.in_flight_timeout == []
+    stubber.assert_no_pending_responses()
+
+
+def test_run_batch_ignores_other_batch_messages_in_shared_queue(
+    full_aws_env, tmp_path: Path
+) -> None:
+    """共通 SuccessQueue に 2 バッチ分の成功通知が混在する場合、
+    ``run_batch`` は自バッチ分だけを消費し、他バッチ分は Visibility=0 で
+    即時返却する (他ランナーが拾える状態を維持)。
+    """
+    env = full_aws_env
+    invoker = _make_invoker(env, max_concurrent=2)
+
+    file_ok = _write_input(tmp_path, "ok.pdf")
+
+    other_batch = "batch-async-999"
+    # 自バッチの成功通知 + 他バッチの成功通知を同一 SuccessQueue に投入
+    env["sqs"].send_message(
+        QueueUrl=env["success_url"],
+        MessageBody=_sns_wrap(_success_body(f"{BATCH_JOB_ID}:ok")),
+    )
+    env["sqs"].send_message(
+        QueueUrl=env["success_url"],
+        MessageBody=_sns_wrap(_success_body(f"{other_batch}:other")),
+    )
+
+    stubber = env["stubber"]
+    stubber.add_response(
+        "invoke_endpoint_async",
+        {"InferenceId": f"{BATCH_JOB_ID}:ok", "OutputLocation": "s3://x/y"},
+    )
+    stubber.activate()
+
+    result = asyncio.run(
+        invoker.run_batch(
+            batch_job_id=BATCH_JOB_ID,
+            input_files=[file_ok],
+            output_dir=tmp_path / "out",
+            log_path=tmp_path / "log.jsonl",
+            deadline_seconds=30.0,
+        )
+    )
+
+    # 自バッチだけ成功集計
+    assert result.succeeded_files == ["ok"]
+    assert result.failed_files == []
+    assert result.in_flight_timeout == []
+    stubber.assert_no_pending_responses()
+
+    # 他バッチのメッセージは ChangeMessageVisibility=0 で即座に
+    # 再受信可能な状態で Queue に残っている
+    leftover = env["sqs"].receive_message(
+        QueueUrl=env["success_url"],
+        MaxNumberOfMessages=10,
+        WaitTimeSeconds=0,
+        VisibilityTimeout=0,
+    )
+    messages = leftover.get("Messages", [])
+    assert len(messages) == 1
+    leftover_inner = json.loads(messages[0]["Body"])
+    inner = json.loads(leftover_inner["Message"])
+    assert inner["inferenceId"] == f"{other_batch}:other"
