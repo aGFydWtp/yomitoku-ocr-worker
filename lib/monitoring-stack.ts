@@ -7,7 +7,13 @@ import {
 import { SnsAction } from "aws-cdk-lib/aws-cloudwatch-actions";
 import { Alias } from "aws-cdk-lib/aws-kms";
 import { Topic } from "aws-cdk-lib/aws-sns";
-import { CfnOutput, Duration, Stack, type StackProps } from "aws-cdk-lib/core";
+import {
+  CfnOutput,
+  Duration,
+  Stack,
+  type StackProps,
+  Tags,
+} from "aws-cdk-lib/core";
 import { NagSuppressions } from "cdk-nag";
 import type { Construct } from "constructs";
 // M6: BatchExecutionStack の RunBatchTask 側タイムアウトと常に一致させるため
@@ -52,6 +58,12 @@ export class MonitoringStack extends Stack {
 
   constructor(scope: Construct, id: string, props: MonitoringStackProps = {}) {
     super(scope, id, props);
+
+    // Cost Explorer 用タグ戦略 (Task 7.4, Req 9.2)。
+    // 本スタックの AlarmTopic / CloudWatch Alarm 群をまとめて
+    // `yomitoku:component=monitoring` として分類する。
+    Tags.of(this).add("yomitoku:stack", "sagemaker-async");
+    Tags.of(this).add("yomitoku:component", "monitoring");
 
     // M3: SNS トピックを AWS 管理 KMS キー (alias/aws/sns) で保管時暗号化する。
     // 監視通知のペイロードにはバッチ ID や失敗件数が含まれるため、

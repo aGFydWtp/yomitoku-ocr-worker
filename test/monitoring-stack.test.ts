@@ -179,9 +179,38 @@ describe("MonitoringStack (batch + async endpoint observability)", () => {
       const { template } = createStack();
       const alarms = template.findResources("AWS::CloudWatch::Alarm");
       const serialized = JSON.stringify(alarms);
-      expect(serialized).not.toContain("\"MetricName\":\"Invocations\"");
+      expect(serialized).not.toContain('"MetricName":"Invocations"');
       expect(serialized).not.toContain("ModelLatency");
       expect(serialized).not.toContain("OverheadLatency");
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Cost Explorer タグ戦略 (Task 7.4, Req 9.2)
+  // ---------------------------------------------------------------------------
+  describe("Cost Explorer タグ戦略 (Task 7.4)", () => {
+    const hasTag = (tags: unknown, key: string, value: string): boolean => {
+      if (!Array.isArray(tags)) return false;
+      return tags.some(
+        (t) =>
+          typeof t === "object" &&
+          t !== null &&
+          (t as { Key?: unknown }).Key === key &&
+          (t as { Value?: unknown }).Value === value,
+      );
+    };
+
+    it("AlarmTopic (SNS) に yomitoku:stack=sagemaker-async と yomitoku:component=monitoring が付く", () => {
+      const { template } = createStack({
+        endpointName: "yomitoku-pro-endpoint",
+      });
+      const topics = template.findResources("AWS::SNS::Topic");
+      const topicList = Object.values(topics);
+      expect(topicList.length).toBe(1);
+      const tags = (topicList[0] as { Properties?: { Tags?: unknown } })
+        .Properties?.Tags;
+      expect(hasTag(tags, "yomitoku:stack", "sagemaker-async")).toBe(true);
+      expect(hasTag(tags, "yomitoku:component", "monitoring")).toBe(true);
     });
   });
 });

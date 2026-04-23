@@ -240,7 +240,7 @@
   - 観測可能条件: `pnpm test -- api-stack` が新 props で green、`lambda/api` ユニットテストの公開レスポンスが不変
   - _Requirements: 10.1, 10.3_
 
-- [ ] 7.4 Cost Explorer 用タグ戦略を `Tags.of(this)` で適用する
+- [x] 7.4 Cost Explorer 用タグ戦略を `Tags.of(this)` で適用する
   - `yomitoku:stack=sagemaker-async` / `yomitoku:component=<endpoint|autoscaling|sns|sqs|monitoring|batch>` を Sagemaker / BatchExecution / Monitoring の各スタックに付与
   - 観測可能条件: `cdk synth` の新リソース Tags にキー/値が再帰的に伝搬
   - _Requirements: 9.2_

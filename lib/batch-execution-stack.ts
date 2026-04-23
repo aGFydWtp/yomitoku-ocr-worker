@@ -38,6 +38,7 @@ import {
   RemovalPolicy,
   Stack,
   type StackProps,
+  Tags,
 } from "aws-cdk-lib/core";
 import { NagSuppressions } from "cdk-nag";
 import type { Construct } from "constructs";
@@ -114,6 +115,12 @@ export class BatchExecutionStack extends Stack {
 
   constructor(scope: Construct, id: string, props: BatchExecutionStackProps) {
     super(scope, id, props);
+
+    // Cost Explorer 用タグ戦略 (Task 7.4, Req 9.2)。
+    // 本スタックが所有する ECS Cluster / TaskDefinition / LogGroup /
+    // StateMachine にまとめて `yomitoku:component=batch` を付ける。
+    Tags.of(this).add("yomitoku:stack", "sagemaker-async");
+    Tags.of(this).add("yomitoku:component", "batch");
 
     const {
       batchTable,

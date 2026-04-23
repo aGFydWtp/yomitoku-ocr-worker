@@ -18,7 +18,13 @@ import {
 import { type ITopic, Topic } from "aws-cdk-lib/aws-sns";
 import { SqsSubscription } from "aws-cdk-lib/aws-sns-subscriptions";
 import { type IQueue, Queue, QueueEncryption } from "aws-cdk-lib/aws-sqs";
-import { CfnOutput, Duration, Stack, type StackProps } from "aws-cdk-lib/core";
+import {
+  CfnOutput,
+  Duration,
+  Stack,
+  type StackProps,
+  Tags,
+} from "aws-cdk-lib/core";
 import { NagSuppressions } from "cdk-nag";
 import type { Construct } from "constructs";
 import type { AsyncRuntimeContext } from "./async-runtime-context";
@@ -58,6 +64,12 @@ export class SagemakerStack extends Stack {
 
   constructor(scope: Construct, id: string, props: SagemakerStackProps) {
     super(scope, id, props);
+
+    // Cost Explorer 用タグ戦略 (Task 7.4, Req 9.2)
+    // スタック既定 = `yomitoku:component=endpoint`。子 construct (SNS/SQS/AutoScaling)
+    // 側で個別に上書きする。
+    Tags.of(this).add("yomitoku:stack", "sagemaker-async");
+    Tags.of(this).add("yomitoku:component", "endpoint");
 
     const { bucket, endpointName, asyncRuntime } = props;
 
@@ -215,6 +227,10 @@ export class SagemakerStack extends Stack {
       displayName: "YomiToku Async Error",
       masterKey: snsManagedKey,
     });
+    // Cost Explorer 分類: SNS Topic 個別 component
+    for (const topic of [successTopic, errorTopic]) {
+      Tags.of(topic).add("yomitoku:component", "sns");
+    }
 
     const endpointArn = `arn:aws:sagemaker:${this.region}:${this.account}:endpoint/${endpointName}`;
     for (const topic of [successTopic, errorTopic]) {
@@ -268,6 +284,11 @@ export class SagemakerStack extends Stack {
     // resource policy (SendMessage を Topic ARN 条件付きで許可) を自動で配線する。
     successTopic.addSubscription(new SqsSubscription(successQueue));
     errorTopic.addSubscription(new SqsSubscription(failureQueue));
+
+    // Cost Explorer 分類: SQS Queue 個別 component (DLQ も sqs 扱い)
+    for (const queue of [successQueue, failureQueue, successDlq, failureDlq]) {
+      Tags.of(queue).add("yomitoku:component", "sqs");
+    }
 
     // -----------------------------------------------------------------------
     // 5. CfnEndpointConfig with AsyncInferenceConfig (Task 2.1)
@@ -328,25 +349,36 @@ export class SagemakerStack extends Stack {
     });
     // Endpoint InService 後に登録する (Task 2.4 観測可能条件)。
     scalableTarget.addDependency(endpoint);
+    // Cost Explorer 分類: AutoScaling 個別 component (CfnScalableTarget /
+    // CfnScalingPolicy は `AWS::CloudFormation::Tag` を Properties.Tags に
+    // 持たないため、ここで Tags.of() を呼んでも CFN テンプレートには出ない。
+    // ただし CDK の Aspect 走査で Node metadata としては記録され、将来
+    // Tags をサポートする Resource が子に追加された場合にも一貫して伝搬する。
+    Tags.of(scalableTarget).add("yomitoku:component", "autoscaling");
 
-    new CfnScalingPolicy(this, "AsyncBacklogScalingPolicy", {
-      policyName: "AsyncBacklogTargetTracking",
-      policyType: "TargetTrackingScaling",
-      scalingTargetId: scalableTarget.ref,
-      targetTrackingScalingPolicyConfiguration: {
-        // backlog per instance = 5 を越えたら scale-out。小さすぎると flapping、
-        // 大きすぎると待ち時間悪化。PoC で調整する前提で保守的な初期値を設定。
-        targetValue: 5,
-        customizedMetricSpecification: {
-          metricName: "ApproximateBacklogSizePerInstance",
-          namespace: "AWS/SageMaker",
-          statistic: "Average",
-          dimensions: [{ name: "EndpointName", value: endpointName }],
+    const scalingPolicy = new CfnScalingPolicy(
+      this,
+      "AsyncBacklogScalingPolicy",
+      {
+        policyName: "AsyncBacklogTargetTracking",
+        policyType: "TargetTrackingScaling",
+        scalingTargetId: scalableTarget.ref,
+        targetTrackingScalingPolicyConfiguration: {
+          // backlog per instance = 5 を越えたら scale-out。小さすぎると flapping、
+          // 大きすぎると待ち時間悪化。PoC で調整する前提で保守的な初期値を設定。
+          targetValue: 5,
+          customizedMetricSpecification: {
+            metricName: "ApproximateBacklogSizePerInstance",
+            namespace: "AWS/SageMaker",
+            statistic: "Average",
+            dimensions: [{ name: "EndpointName", value: endpointName }],
+          },
+          scaleInCooldown: asyncRuntime.scaleInCooldownSeconds,
+          scaleOutCooldown: 60,
         },
-        scaleInCooldown: asyncRuntime.scaleInCooldownSeconds,
-        scaleOutCooldown: 60,
       },
-    });
+    );
+    Tags.of(scalingPolicy).add("yomitoku:component", "autoscaling");
 
     // -----------------------------------------------------------------------
     // Public exports

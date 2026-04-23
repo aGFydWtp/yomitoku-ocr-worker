@@ -543,6 +543,59 @@ describe("SagemakerStack", () => {
   });
 
   // -------------------------------------------------------------------------
+  // Cost Explorer タグ戦略 (Task 7.4, Req 9.2)
+  // -------------------------------------------------------------------------
+  describe("Cost Explorer タグ戦略 (Task 7.4)", () => {
+    const hasTag = (tags: unknown, key: string, value: string): boolean => {
+      if (!Array.isArray(tags)) return false;
+      return tags.some(
+        (t) =>
+          typeof t === "object" &&
+          t !== null &&
+          (t as { Key?: unknown }).Key === key &&
+          (t as { Value?: unknown }).Value === value,
+      );
+    };
+
+    it("SNS Topic に yomitoku:stack=sagemaker-async と yomitoku:component=sns が付く", () => {
+      const { template } = createStack();
+      const topics = template.findResources("AWS::SNS::Topic");
+      const topicList = Object.values(topics);
+      expect(topicList.length).toBe(2);
+      for (const topic of topicList) {
+        const tags = (topic as { Properties?: { Tags?: unknown } }).Properties
+          ?.Tags;
+        expect(hasTag(tags, "yomitoku:stack", "sagemaker-async")).toBe(true);
+        expect(hasTag(tags, "yomitoku:component", "sns")).toBe(true);
+      }
+    });
+
+    it("SQS Queue (DLQ 含む) に yomitoku:stack=sagemaker-async と yomitoku:component=sqs が付く", () => {
+      const { template } = createStack();
+      const queues = template.findResources("AWS::SQS::Queue");
+      const queueList = Object.values(queues);
+      expect(queueList.length).toBe(4);
+      for (const queue of queueList) {
+        const tags = (queue as { Properties?: { Tags?: unknown } }).Properties
+          ?.Tags;
+        expect(hasTag(tags, "yomitoku:stack", "sagemaker-async")).toBe(true);
+        expect(hasTag(tags, "yomitoku:component", "sqs")).toBe(true);
+      }
+    });
+
+    it("SageMaker Endpoint は component=endpoint (スタック既定) を継承", () => {
+      const { template } = createStack();
+      const endpoints = template.findResources("AWS::SageMaker::Endpoint");
+      const endpointList = Object.values(endpoints);
+      expect(endpointList.length).toBe(1);
+      const tags = (endpointList[0] as { Properties?: { Tags?: unknown } })
+        .Properties?.Tags;
+      expect(hasTag(tags, "yomitoku:stack", "sagemaker-async")).toBe(true);
+      expect(hasTag(tags, "yomitoku:component", "endpoint")).toBe(true);
+    });
+  });
+
+  // -------------------------------------------------------------------------
   // Stack Outputs
   // -------------------------------------------------------------------------
   describe("Stack Outputs", () => {

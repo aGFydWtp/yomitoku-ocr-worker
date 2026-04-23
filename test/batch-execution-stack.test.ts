@@ -635,4 +635,40 @@ describe("BatchExecutionStack", () => {
       }).toThrow(/endpointName/);
     });
   });
+
+  // ---------------------------------------------------------------------------
+  // Cost Explorer タグ戦略 (Task 7.4, Req 9.2)
+  // ---------------------------------------------------------------------------
+  describe("Cost Explorer タグ戦略 (Task 7.4)", () => {
+    const hasTag = (tags: unknown, key: string, value: string): boolean => {
+      if (!Array.isArray(tags)) return false;
+      return tags.some(
+        (t) =>
+          typeof t === "object" &&
+          t !== null &&
+          (t as { Key?: unknown }).Key === key &&
+          (t as { Value?: unknown }).Value === value,
+      );
+    };
+
+    it("ECS Cluster / TaskDefinition / LogGroup / StateMachine に yomitoku:stack=sagemaker-async と yomitoku:component=batch が付く", () => {
+      const { template } = createStack();
+      for (const type of [
+        "AWS::ECS::Cluster",
+        "AWS::ECS::TaskDefinition",
+        "AWS::Logs::LogGroup",
+        "AWS::StepFunctions::StateMachine",
+      ]) {
+        const resources = template.findResources(type);
+        const list = Object.values(resources);
+        expect(list.length).toBeGreaterThan(0);
+        for (const res of list) {
+          const tags = (res as { Properties?: { Tags?: unknown } }).Properties
+            ?.Tags;
+          expect(hasTag(tags, "yomitoku:stack", "sagemaker-async")).toBe(true);
+          expect(hasTag(tags, "yomitoku:component", "batch")).toBe(true);
+        }
+      }
+    });
+  });
 });
