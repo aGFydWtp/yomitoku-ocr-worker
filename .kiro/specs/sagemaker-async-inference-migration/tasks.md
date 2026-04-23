@@ -181,7 +181,7 @@
   - 観測可能条件: `pytest lambda/batch-runner/tests/test_runner.py` で `run_async_batch` 経路のみが起動し Realtime API 呼び出しが発生しない
   - _Requirements: 3.1, 3.6, 10.2_
 
-- [ ] 5.2 `settings.py` に Async フィールドを追加しバリデーションを整える
+- [x] 5.2 `settings.py` に Async フィールドを追加しバリデーションを整える
   - `success_queue_url`, `failure_queue_url`, `async_input_prefix`, `async_output_prefix`, `async_error_prefix`, `async_max_concurrent`
   - 既存 `endpoint_name` の用途を Async 用に置換
   - Pydantic Settings で missing 時に fail-fast

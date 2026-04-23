@@ -31,6 +31,11 @@ class TestBatchRunnerSettings:
             "BATCH_TABLE_NAME": "BatchTable",
             "CONTROL_TABLE_NAME": "ControlTable",
             "ENDPOINT_NAME": "yomitoku-endpoint",
+            "SUCCESS_QUEUE_URL": "https://sqs.ap-northeast-1.amazonaws.com/0/success",
+            "FAILURE_QUEUE_URL": "https://sqs.ap-northeast-1.amazonaws.com/0/failure",
+            "ASYNC_INPUT_PREFIX": "batches/_async/inputs",
+            "ASYNC_OUTPUT_PREFIX": "batches/_async/outputs",
+            "ASYNC_ERROR_PREFIX": "batches/_async/errors",
         }
         for key, val in self.required_env.items():
             os.environ[key] = val
@@ -43,6 +48,12 @@ class TestBatchRunnerSettings:
             "BATCH_TABLE_NAME",
             "CONTROL_TABLE_NAME",
             "ENDPOINT_NAME",
+            "SUCCESS_QUEUE_URL",
+            "FAILURE_QUEUE_URL",
+            "ASYNC_INPUT_PREFIX",
+            "ASYNC_OUTPUT_PREFIX",
+            "ASYNC_ERROR_PREFIX",
+            "ASYNC_MAX_CONCURRENT",
             "MAX_FILE_CONCURRENCY",
             "MAX_PAGE_CONCURRENCY",
             "MAX_RETRIES",
@@ -187,12 +198,93 @@ class TestBatchRunnerSettings:
         expected = {
             "batch_job_id", "bucket_name", "batch_table_name",
             "control_table_name", "endpoint_name",
+            "success_queue_url", "failure_queue_url",
+            "async_input_prefix", "async_output_prefix", "async_error_prefix",
+            "async_max_concurrent",
             "max_file_concurrency", "max_page_concurrency",
             "max_retries", "read_timeout",
             "circuit_threshold", "circuit_cooldown",
             "batch_max_duration_sec", "extra_formats",
         }
         assert expected == field_names
+
+    def test_async_fields_loaded(self):
+        """Async 用の必須フィールドが環境変数から読み込まれる。"""
+        import sys
+        sys.path.insert(0, str(pytest.importorskip("pathlib").Path(__file__).parent.parent))
+        import importlib
+        sys.modules.pop("settings", None)
+        import settings
+        importlib.reload(settings)
+
+        s = settings.BatchRunnerSettings.from_env()
+        assert s.success_queue_url.endswith("/success")
+        assert s.failure_queue_url.endswith("/failure")
+        assert s.async_input_prefix == "batches/_async/inputs"
+        assert s.async_output_prefix == "batches/_async/outputs"
+        assert s.async_error_prefix == "batches/_async/errors"
+
+    def test_async_max_concurrent_default(self):
+        """ASYNC_MAX_CONCURRENT 未設定時のデフォルトは 4 (BatchExecutionStack と揃える)。"""
+        os.environ.pop("ASYNC_MAX_CONCURRENT", None)
+        import sys
+        sys.path.insert(0, str(pytest.importorskip("pathlib").Path(__file__).parent.parent))
+        import importlib
+        sys.modules.pop("settings", None)
+        import settings
+        importlib.reload(settings)
+
+        s = settings.BatchRunnerSettings.from_env()
+        assert s.async_max_concurrent == 4
+
+    def test_async_max_concurrent_override(self):
+        """ASYNC_MAX_CONCURRENT が整数オーバーライドされる。"""
+        os.environ["ASYNC_MAX_CONCURRENT"] = "8"
+        import sys
+        sys.path.insert(0, str(pytest.importorskip("pathlib").Path(__file__).parent.parent))
+        import importlib
+        sys.modules.pop("settings", None)
+        import settings
+        importlib.reload(settings)
+
+        s = settings.BatchRunnerSettings.from_env()
+        assert s.async_max_concurrent == 8
+
+    @pytest.mark.parametrize(
+        "missing_key",
+        [
+            "SUCCESS_QUEUE_URL",
+            "FAILURE_QUEUE_URL",
+            "ASYNC_INPUT_PREFIX",
+            "ASYNC_OUTPUT_PREFIX",
+            "ASYNC_ERROR_PREFIX",
+        ],
+    )
+    def test_missing_async_required_raises_value_error(self, missing_key: str):
+        """Async 必須環境変数が欠けると fail-fast する。"""
+        os.environ.pop(missing_key)
+        import sys
+        sys.path.insert(0, str(pytest.importorskip("pathlib").Path(__file__).parent.parent))
+        import importlib
+        sys.modules.pop("settings", None)
+        import settings
+        importlib.reload(settings)
+
+        with pytest.raises(ValueError, match=missing_key):
+            settings.BatchRunnerSettings.from_env()
+
+    def test_invalid_async_max_concurrent_raises_value_error(self):
+        """ASYNC_MAX_CONCURRENT が数値にパースできないと fail-fast する。"""
+        os.environ["ASYNC_MAX_CONCURRENT"] = "not-an-int"
+        import sys
+        sys.path.insert(0, str(pytest.importorskip("pathlib").Path(__file__).parent.parent))
+        import importlib
+        sys.modules.pop("settings", None)
+        import settings
+        importlib.reload(settings)
+
+        with pytest.raises(ValueError, match="ASYNC_MAX_CONCURRENT"):
+            settings.BatchRunnerSettings.from_env()
 
 
 class TestMainDryRun:
@@ -204,12 +296,25 @@ class TestMainDryRun:
         os.environ["BATCH_TABLE_NAME"] = "BatchTable"
         os.environ["CONTROL_TABLE_NAME"] = "ControlTable"
         os.environ["ENDPOINT_NAME"] = "test-endpoint"
+        os.environ["SUCCESS_QUEUE_URL"] = (
+            "https://sqs.ap-northeast-1.amazonaws.com/0/success"
+        )
+        os.environ["FAILURE_QUEUE_URL"] = (
+            "https://sqs.ap-northeast-1.amazonaws.com/0/failure"
+        )
+        os.environ["ASYNC_INPUT_PREFIX"] = "batches/_async/inputs"
+        os.environ["ASYNC_OUTPUT_PREFIX"] = "batches/_async/outputs"
+        os.environ["ASYNC_ERROR_PREFIX"] = "batches/_async/errors"
         os.environ["DRY_RUN"] = "true"
 
     def teardown_method(self):
         for key in [
             "BATCH_JOB_ID", "BUCKET_NAME", "BATCH_TABLE_NAME",
-            "CONTROL_TABLE_NAME", "ENDPOINT_NAME", "DRY_RUN",
+            "CONTROL_TABLE_NAME", "ENDPOINT_NAME",
+            "SUCCESS_QUEUE_URL", "FAILURE_QUEUE_URL",
+            "ASYNC_INPUT_PREFIX", "ASYNC_OUTPUT_PREFIX", "ASYNC_ERROR_PREFIX",
+            "ASYNC_MAX_CONCURRENT",
+            "DRY_RUN",
         ]:
             os.environ.pop(key, None)
 

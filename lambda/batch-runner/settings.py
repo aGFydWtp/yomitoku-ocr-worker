@@ -31,11 +31,29 @@ class BatchRunnerSettings:
     """ControlTable（エンドポイント制御ロック）の DynamoDB テーブル名。"""
 
     endpoint_name: str
-    """SageMaker エンドポイント名。"""
+    """SageMaker Asynchronous Inference Endpoint 名。"""
+
+    success_queue_url: str
+    """Async 成功通知 SQS キューの URL (SNS → SQS 配送)。"""
+
+    failure_queue_url: str
+    """Async 失敗通知 SQS キューの URL (SNS → SQS 配送)。"""
+
+    async_input_prefix: str
+    """Async 入力用 S3 prefix。末尾スラッシュ無し (例: ``batches/_async/inputs``)。"""
+
+    async_output_prefix: str
+    """Async 推論結果 (OutputLocation) 用 S3 prefix。末尾スラッシュ無し。"""
+
+    async_error_prefix: str
+    """Async 失敗ペイロード (FailureLocation) 用 S3 prefix。末尾スラッシュ無し。"""
 
     # -----------------------------------------------------------------------
     # 省略可能フィールド（デフォルト値あり）
     # -----------------------------------------------------------------------
+    async_max_concurrent: int = 4
+    """AsyncInvoker の in-flight 上限。既定値は BatchExecutionStack と揃える。"""
+
     max_file_concurrency: int = 2
     """ファイル並列処理数。yomitoku-client に渡す max_file_concurrency。"""
 
@@ -69,6 +87,11 @@ class BatchRunnerSettings:
         "BATCH_TABLE_NAME",
         "CONTROL_TABLE_NAME",
         "ENDPOINT_NAME",
+        "SUCCESS_QUEUE_URL",
+        "FAILURE_QUEUE_URL",
+        "ASYNC_INPUT_PREFIX",
+        "ASYNC_OUTPUT_PREFIX",
+        "ASYNC_ERROR_PREFIX",
     )
 
     # -----------------------------------------------------------------------
@@ -116,6 +139,12 @@ class BatchRunnerSettings:
             batch_table_name=os.environ["BATCH_TABLE_NAME"],
             control_table_name=os.environ["CONTROL_TABLE_NAME"],
             endpoint_name=os.environ["ENDPOINT_NAME"],
+            success_queue_url=os.environ["SUCCESS_QUEUE_URL"],
+            failure_queue_url=os.environ["FAILURE_QUEUE_URL"],
+            async_input_prefix=os.environ["ASYNC_INPUT_PREFIX"],
+            async_output_prefix=os.environ["ASYNC_OUTPUT_PREFIX"],
+            async_error_prefix=os.environ["ASYNC_ERROR_PREFIX"],
+            async_max_concurrent=_int("ASYNC_MAX_CONCURRENT", 4),
             max_file_concurrency=_int("MAX_FILE_CONCURRENCY", 2),
             max_page_concurrency=_int("MAX_PAGE_CONCURRENCY", 2),
             max_retries=_int("MAX_RETRIES", 3),
