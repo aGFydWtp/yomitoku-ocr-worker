@@ -27,6 +27,17 @@ describe("上限定数", () => {
     expect(Number.isInteger(MAX_FILES_PER_BATCH)).toBe(true);
   });
 
+  it("MAX_FILES_PER_BATCH + 1 META item が DynamoDB TransactWriteItems 上限 100 items を超えない", () => {
+    // putBatchWithFiles は ``[1 META, ...N FILE]`` を 1 回の TransactWriteItems
+    // で送るため、N+1 が 100 を超えないことを強制する。AWS DynamoDB の
+    // TransactWriteItems は 100 items/call が上限 (2022-03 までは 25)。
+    const META_ITEM = 1;
+    const TRANSACT_WRITE_ITEMS_LIMIT = 100;
+    expect(MAX_FILES_PER_BATCH + META_ITEM).toBeLessThanOrEqual(
+      TRANSACT_WRITE_ITEMS_LIMIT,
+    );
+  });
+
   it("MAX_TOTAL_BYTES が正の整数である", () => {
     expect(MAX_TOTAL_BYTES).toBeGreaterThan(0);
     expect(Number.isInteger(MAX_TOTAL_BYTES)).toBe(true);

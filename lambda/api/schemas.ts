@@ -27,9 +27,25 @@ export type FileStatus = (typeof FILE_STATUSES)[number];
 // 上限定数
 // ---------------------------------------------------------------------------
 
-export const MAX_FILES_PER_BATCH = 100;
-export const MAX_TOTAL_BYTES = 500 * 1024 * 1024; // 500 MB
-export const MAX_FILE_BYTES = 50 * 1024 * 1024; // 50 MB
+// 1 バッチあたりのファイル上限。``BatchStore.putBatchWithFiles`` は
+// ``TransactWriteItems`` で `1 META + N FILE` を 1 回にまとめて送るため、
+// DynamoDB の TransactWriteItems 100 items/call 制約に抵触しないように
+// ``MAX_FILES_PER_BATCH + 1 <= 100`` を守る必要がある。1000 ファイル対応は
+// ``batch-scale-out`` spec で DDB 書き込みを再設計したうえで引き上げる。
+export const MAX_FILES_PER_BATCH = 99;
+// 1 バッチあたりの合計サイズ目安。Fargate の ephemeral storage 50 GiB
+// (``lib/batch-execution-stack.ts::BatchTaskDef.ephemeralStorageGiB``) を
+// 入力 + 出力 + visualization + ログで分け合う前提で 10 GB を上限値として
+// OpenAPI description に表示する。API 層では強制していない
+// (PUT 後の S3 サイズを API が知る手段がないため)。超過すると Fargate の
+// ``No space left on device`` で task が落ちる。
+export const MAX_TOTAL_BYTES = 10 * 1024 * 1024 * 1024; // 10 GB
+// SageMaker Async Inference の入力 payload ハードリミットに合わせて 1 GB。
+// ``MAX_FILE_BYTES`` は本コード上は ``description`` 文字列の生成にのみ
+// 使われており、API 層では強制していない (クライアントがアップロードする
+// 前に byte size を API に伝えないため検証不能)。超過した場合は実行時に
+// SageMaker 側が ``PayloadTooLargeException`` を返す。
+export const MAX_FILE_BYTES = 1024 * 1024 * 1024; // 1 GB
 export const ALLOWED_EXTENSIONS = [".pdf"] as const;
 
 // ---------------------------------------------------------------------------
