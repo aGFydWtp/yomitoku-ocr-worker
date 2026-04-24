@@ -141,6 +141,73 @@ describe("BatchQuery", () => {
         JSON.parse(Buffer.from(cursor, "base64url").toString()),
       ).not.toThrow();
     });
+
+    it("GSI1 が KEYS_ONLY projection を返しても全属性を解決して返す", async () => {
+      // 本番 GSI1 は ``projectionType: KEYS_ONLY`` で、Query レスポンスは
+      // ``PK`` / ``SK`` / ``GSI1PK`` / ``GSI1SK`` のみ。``batchJobId`` /
+      // ``status`` / ``totals`` / ``basePath`` 等は含まれないため、追加の
+      // BatchGetItem で本体を取得する必要がある。
+      mockSend
+        .mockResolvedValueOnce({
+          // 1st call: GSI1 Query — keys のみ
+          Items: [
+            {
+              PK: "BATCH#batch-001",
+              SK: "META",
+              GSI1PK: "STATUS#COMPLETED#202604",
+              GSI1SK: "2026-04-22T00:00:00Z",
+            },
+          ],
+          LastEvaluatedKey: undefined,
+        })
+        .mockResolvedValueOnce({
+          // 2nd call: BatchGetCommand — 本体属性を含むフル META
+          Responses: {
+            [TABLE]: [
+              {
+                PK: "BATCH#batch-001",
+                SK: "META",
+                entityType: "BATCH",
+                batchJobId: "batch-001",
+                status: "COMPLETED",
+                totals: { total: 2, succeeded: 2, failed: 0, inProgress: 0 },
+                basePath: "project/2026",
+                createdAt: "2026-04-22T00:00:00Z",
+                startedAt: "2026-04-22T00:00:10Z",
+                updatedAt: "2026-04-22T00:10:00Z",
+                parentBatchJobId: null,
+              },
+            ],
+          },
+        });
+
+      const result = await query.listBatchesByStatus("COMPLETED", "202604");
+      expect(result.items).toHaveLength(1);
+      expect(result.items[0]).toEqual({
+        batchJobId: "batch-001",
+        status: "COMPLETED",
+        totals: { total: 2, succeeded: 2, failed: 0, inProgress: 0 },
+        basePath: "project/2026",
+        createdAt: "2026-04-22T00:00:00Z",
+        startedAt: "2026-04-22T00:00:10Z",
+        updatedAt: "2026-04-22T00:10:00Z",
+        parentBatchJobId: null,
+      });
+      // 2 回呼ばれる (Query + BatchGetItem)
+      expect(mockSend).toHaveBeenCalledTimes(2);
+    });
+
+    it("GSI1 が空なら BatchGetItem は呼ばず空リストを返す", async () => {
+      mockSend.mockResolvedValueOnce({
+        Items: [],
+        LastEvaluatedKey: undefined,
+      });
+      const result = await query.listBatchesByStatus("PENDING", "202604");
+      expect(result.items).toEqual([]);
+      expect(result.cursor).toBeNull();
+      // Query 1 回のみ (BatchGetCommand は発行されない)
+      expect(mockSend).toHaveBeenCalledTimes(1);
+    });
   });
 
   // --- listChildBatches ---
@@ -155,6 +222,45 @@ describe("BatchQuery", () => {
       expect(cmd.input.ExpressionAttributeValues[":gsi2pk"]).toBe(
         "PARENT#parent-batch-001",
       );
+    });
+
+    it("GSI2 が KEYS_ONLY projection を返しても全属性を解決して返す", async () => {
+      mockSend
+        .mockResolvedValueOnce({
+          Items: [
+            {
+              PK: "BATCH#child-001",
+              SK: "META",
+              GSI2PK: "PARENT#parent-batch-001",
+              GSI2SK: "2026-04-22T00:00:00Z",
+            },
+          ],
+        })
+        .mockResolvedValueOnce({
+          Responses: {
+            [TABLE]: [
+              {
+                PK: "BATCH#child-001",
+                SK: "META",
+                entityType: "BATCH",
+                batchJobId: "child-001",
+                status: "PENDING",
+                totals: { total: 1, succeeded: 0, failed: 0, inProgress: 1 },
+                basePath: "project/2026",
+                createdAt: "2026-04-22T00:00:00Z",
+                startedAt: null,
+                updatedAt: "2026-04-22T00:00:00Z",
+                parentBatchJobId: "parent-batch-001",
+              },
+            ],
+          },
+        });
+
+      const result = await query.listChildBatches("parent-batch-001");
+      expect(result).toHaveLength(1);
+      expect(result[0].batchJobId).toBe("child-001");
+      expect(result[0].parentBatchJobId).toBe("parent-batch-001");
+      expect(mockSend).toHaveBeenCalledTimes(2);
     });
   });
 });
