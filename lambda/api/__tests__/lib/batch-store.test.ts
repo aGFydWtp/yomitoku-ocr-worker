@@ -28,7 +28,7 @@ describe("BatchStore (write-path)", () => {
 
       await store.putBatchWithFiles({
         batchJobId: "batch-001",
-        basePath: "project/2026",
+        batchLabel: "project/2026",
         files: [{ filename: "a.pdf" }, { filename: "b.pdf" }],
         bucket: BUCKET,
       });
@@ -43,7 +43,7 @@ describe("BatchStore (write-path)", () => {
 
       await store.putBatchWithFiles({
         batchJobId: "batch-001",
-        basePath: "project/2026",
+        batchLabel: "project/2026",
         files: [{ filename: "a.pdf" }],
         bucket: BUCKET,
       });
@@ -68,7 +68,7 @@ describe("BatchStore (write-path)", () => {
 
       await store.putBatchWithFiles({
         batchJobId: "batch-001",
-        basePath: "project/2026",
+        batchLabel: "project/2026",
         files: [{ filename: "sample.pdf" }],
         bucket: BUCKET,
       });
@@ -87,7 +87,7 @@ describe("BatchStore (write-path)", () => {
 
       await store.putBatchWithFiles({
         batchJobId: "batch-002",
-        basePath: "project/2026",
+        batchLabel: "project/2026",
         files: [{ filename: "a.pdf" }],
         bucket: BUCKET,
         parentBatchJobId: "batch-001",
@@ -97,6 +97,34 @@ describe("BatchStore (write-path)", () => {
       const metaItem = cmd.input.TransactItems[0].Put.Item;
       expect(metaItem.parentBatchJobId).toBe("batch-001");
       expect(metaItem.GSI2PK).toBe("PARENT#batch-001");
+    });
+
+    it("batchLabel 省略時は META に batchLabel 属性を書き込まない (optional, Q3: null 許容)", async () => {
+      mockSend.mockResolvedValue({});
+
+      await store.putBatchWithFiles({
+        batchJobId: "batch-003",
+        files: [{ filename: "a.pdf" }],
+        bucket: BUCKET,
+      });
+
+      const cmd: AnyRecord = mockSend.mock.calls[0][0];
+      const metaItem = cmd.input.TransactItems[0].Put.Item;
+      expect(metaItem).not.toHaveProperty("batchLabel");
+      // 後方互換用の legacy 名でも書き込まないこと
+      expect(metaItem).not.toHaveProperty("basePath");
+    });
+
+    it("batchLabel 明示的な空文字は ValidationError (malformed input)", async () => {
+      await expect(
+        store.putBatchWithFiles({
+          batchJobId: "batch-004",
+          batchLabel: "",
+          files: [{ filename: "a.pdf" }],
+          bucket: BUCKET,
+        }),
+      ).rejects.toThrow("batchLabel must not be empty");
+      expect(mockSend).not.toHaveBeenCalled();
     });
   });
 

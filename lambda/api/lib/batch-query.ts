@@ -6,6 +6,23 @@ import { docClient } from "./dynamodb";
 import { decodeBatchCursor, encodeBatchCursor } from "./validate";
 
 /**
+ * Raw DDB META アイテム (docClient unmarshalled) から ``batchLabel`` を取り出す。
+ * 新属性 ``batchLabel`` が無い場合、レガシー名 ``basePath`` にフォールバック
+ * する (Q2: read-time coalesce)。どちらも未設定なら ``null`` を返す。
+ *
+ * basePath → batchLabel リネーム前に作成された META は ``basePath`` のみを
+ * 保持しており、PITR を保ったまま属性名を書き換えるコストと TTL/自然消滅で
+ * やがて消える性質を踏まえ、読み出し時の互換に倒している。
+ */
+function resolveBatchLabel(i: Record<string, unknown>): string | null {
+  const modern = i.batchLabel;
+  if (typeof modern === "string" && modern.length > 0) return modern;
+  const legacy = i.basePath;
+  if (typeof legacy === "string" && legacy.length > 0) return legacy;
+  return null;
+}
+
+/**
  * Raw DDB META アイテム (docClient unmarshalled) から型付き ``BatchMeta`` を
  * 抽出する。``listBatchesByStatus`` (GSI1 経由) と ``listChildBatches``
  * (GSI2 経由) で共有する。
@@ -15,7 +32,7 @@ function metaItemToBatchMeta(i: Record<string, unknown>): BatchMeta {
     batchJobId: i.batchJobId as string,
     status: i.status as BatchStatus,
     totals: i.totals as BatchMeta["totals"],
-    basePath: i.basePath as string,
+    batchLabel: resolveBatchLabel(i),
     createdAt: i.createdAt as string,
     startedAt: (i.startedAt as string | null) ?? null,
     updatedAt: i.updatedAt as string,
@@ -70,7 +87,7 @@ export class BatchQuery {
       batchJobId: meta.batchJobId as string,
       status: meta.status as BatchStatus,
       totals: meta.totals as BatchMeta["totals"],
-      basePath: meta.basePath as string,
+      batchLabel: resolveBatchLabel(meta),
       createdAt: meta.createdAt as string,
       startedAt: (meta.startedAt as string | null) ?? null,
       updatedAt: meta.updatedAt as string,

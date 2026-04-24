@@ -14,32 +14,39 @@ export function assertValidStateMachineArn(arn: string): void {
 }
 
 /**
- * basePath をトリム・検証し、正規化された文字列を返す。
- * null/undefined の場合は undefined を返す。
+ * batchLabel をトリム・検証し、正規化された文字列を返す。
+ * null/undefined の場合は undefined を返す (optional フィールド)。
+ * 明示的に空文字 / "//" 等が渡された場合は malformed input として throw する。
+ *
+ * 履歴: 旧 API では ``basePath`` 必須フィールドだった (S3 キー prefix として
+ * 使う設計)。バッチ移行で ``batches/{batchJobId}/...`` レイアウトに統一した
+ * 結果、現在は「人間可読なバッチラベル」としての任意フィールドに降格した。
+ * path traversal / 無効文字 / 長さの防御は過剰防衛として残す (将来 key
+ * prefix 用途に昇格しても安全なように)。
  */
-export function validateBasePath(
-  rawBasePath: string | null | undefined,
+export function validateBatchLabel(
+  rawLabel: string | null | undefined,
 ): string | undefined {
-  if (rawBasePath == null) {
+  if (rawLabel == null) {
     return undefined;
   }
 
-  const trimmed = rawBasePath.replace(/^\/+|\/+$/g, "");
+  const trimmed = rawLabel.replace(/^\/+|\/+$/g, "");
   if (!trimmed) {
-    throw new ValidationError("basePath must not be empty");
+    throw new ValidationError("batchLabel must not be empty");
   }
   if (!/^[a-zA-Z0-9\u3000-\u9FFF\u{20000}-\u{2FA1F}\-_./]+$/u.test(trimmed)) {
-    throw new ValidationError("basePath contains invalid characters");
+    throw new ValidationError("batchLabel contains invalid characters");
   }
   // `..` / `.` をパスセグメントとして含めることを禁止する (M4)。
   // 単独の `.` はカレントディレクトリ参照として S3 キーの意味を変え得るため弾く。
   if (/(^|\/)\.{1,2}($|\/)/.test(trimmed)) {
     throw new ValidationError(
-      "basePath must not contain path segments '.' or '..'",
+      "batchLabel must not contain path segments '.' or '..'",
     );
   }
   if (Buffer.byteLength(trimmed, "utf8") > 512) {
-    throw new ValidationError("basePath is too long");
+    throw new ValidationError("batchLabel is too long");
   }
   return trimmed;
 }

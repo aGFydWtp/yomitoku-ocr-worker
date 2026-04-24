@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   decodeBatchCursor,
   encodeBatchCursor,
-  validateBasePath,
+  validateBatchLabel,
 } from "../../lib/validate";
 
 describe("decodeBatchCursor (M2)", () => {
@@ -78,51 +78,57 @@ describe("decodeBatchCursor (M2)", () => {
   });
 });
 
-describe("validateBasePath", () => {
-  it("undefined/null はそのまま undefined を返す", () => {
-    expect(validateBasePath(undefined)).toBeUndefined();
-    expect(validateBasePath(null)).toBeUndefined();
+describe("validateBatchLabel", () => {
+  it("undefined/null はそのまま undefined を返す (optional フィールド)", () => {
+    expect(validateBatchLabel(undefined)).toBeUndefined();
+    expect(validateBatchLabel(null)).toBeUndefined();
   });
 
   it("先頭・末尾のスラッシュをトリムする", () => {
-    expect(validateBasePath("/foo/bar/")).toBe("foo/bar");
-    expect(validateBasePath("///a/b///")).toBe("a/b");
+    expect(validateBatchLabel("/foo/bar/")).toBe("foo/bar");
+    expect(validateBatchLabel("///a/b///")).toBe("a/b");
   });
 
-  it("空文字はエラー", () => {
-    expect(() => validateBasePath("")).toThrow("basePath must not be empty");
-    expect(() => validateBasePath("///")).toThrow("basePath must not be empty");
+  it("明示的に渡された空文字 / スラッシュのみは ValidationError (malformed input)", () => {
+    expect(() => validateBatchLabel("")).toThrow(
+      "batchLabel must not be empty",
+    );
+    expect(() => validateBatchLabel("///")).toThrow(
+      "batchLabel must not be empty",
+    );
   });
 
   it("`..` セグメントを拒否する", () => {
-    expect(() => validateBasePath("foo/../bar")).toThrow(
-      "basePath must not contain path segments",
+    expect(() => validateBatchLabel("foo/../bar")).toThrow(
+      "batchLabel must not contain path segments",
     );
-    expect(() => validateBasePath("../evil")).toThrow();
-    expect(() => validateBasePath("foo/..")).toThrow();
+    expect(() => validateBatchLabel("../evil")).toThrow();
+    expect(() => validateBatchLabel("foo/..")).toThrow();
   });
 
   it("単独 `.` セグメントを拒否する (M4)", () => {
-    expect(() => validateBasePath("foo/./bar")).toThrow(
-      "basePath must not contain path segments",
+    expect(() => validateBatchLabel("foo/./bar")).toThrow(
+      "batchLabel must not contain path segments",
     );
-    expect(() => validateBasePath("./foo")).toThrow();
-    expect(() => validateBasePath("foo/.")).toThrow();
+    expect(() => validateBatchLabel("./foo")).toThrow();
+    expect(() => validateBatchLabel("foo/.")).toThrow();
   });
 
   it("拡張子ドットは許可する (先頭/中間/末尾セグメント単独でない)", () => {
-    expect(validateBasePath("foo.txt")).toBe("foo.txt");
-    expect(validateBasePath("docs/v1.2/readme.md")).toBe("docs/v1.2/readme.md");
+    expect(validateBatchLabel("foo.txt")).toBe("foo.txt");
+    expect(validateBatchLabel("docs/v1.2/readme.md")).toBe(
+      "docs/v1.2/readme.md",
+    );
   });
 
   it("許可外文字はエラー", () => {
-    expect(() => validateBasePath("foo bar")).toThrow(
-      "basePath contains invalid characters",
+    expect(() => validateBatchLabel("foo bar")).toThrow(
+      "batchLabel contains invalid characters",
     );
-    expect(() => validateBasePath("foo<script>")).toThrow();
+    expect(() => validateBatchLabel("foo<script>")).toThrow();
   });
 
   it("日本語 (CJK) は許可する", () => {
-    expect(validateBasePath("資料/2026年")).toBe("資料/2026年");
+    expect(validateBatchLabel("資料/2026年")).toBe("資料/2026年");
   });
 });

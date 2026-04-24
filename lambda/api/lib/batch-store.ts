@@ -2,9 +2,9 @@ import { TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import type { BatchStatus } from "../schemas";
 import { MAX_FILES_PER_BATCH } from "../schemas";
 import { docClient } from "./dynamodb";
-import { ConflictError, ValidationError } from "./errors";
+import { ConflictError } from "./errors";
 import { sanitizeFilename } from "./sanitize";
-import { validateBasePath } from "./validate";
+import { validateBatchLabel } from "./validate";
 
 // ---------------------------------------------------------------------------
 // 定数（batch-query.ts と共有）
@@ -46,7 +46,12 @@ export interface BatchMeta {
     failed: number;
     inProgress: number;
   };
-  basePath: string;
+  /**
+   * 任意の表示用ラベル。省略されたバッチや ``batchLabel`` 導入前に作成された
+   * 古い META (``basePath`` 属性のみ保持) では ``null``。
+   * legacy ``basePath`` は batch-query.ts::metaItemToBatchMeta で coalesce する。
+   */
+  batchLabel: string | null;
   createdAt: string;
   startedAt: string | null;
   updatedAt: string;
@@ -63,7 +68,8 @@ export interface BatchWithFiles extends BatchMeta {
 
 export interface PutBatchWithFilesInput {
   batchJobId: string;
-  basePath: string;
+  /** 任意の表示用ラベル。省略時は META から属性を書き込まない。 */
+  batchLabel?: string | null;
   files: ReadonlyArray<{ filename: string }>;
   bucket: string;
   extraFormats?: ReadonlyArray<string>;
@@ -114,18 +120,15 @@ export class BatchStore {
   async putBatchWithFiles(input: PutBatchWithFilesInput): Promise<void> {
     const {
       batchJobId,
-      basePath,
+      batchLabel,
       files,
       extraFormats,
       parentBatchJobId = null,
     } = input;
 
-    // basePath 検証（パストラバーサル・無効文字を弾く）
-    // validateBasePath は null/undefined のみ undefined を返す。string 入力では trimmed string か例外
-    const safeBasePath = validateBasePath(basePath);
-    if (safeBasePath === undefined) {
-      throw new ValidationError("basePath must not be empty");
-    }
+    // batchLabel 検証（optional）: null/undefined/省略時は undefined。
+    // 明示的な空文字・path traversal・無効文字は ValidationError (400)。
+    const safeLabel = validateBatchLabel(batchLabel);
 
     const now = new Date();
     const iso = now.toISOString();
@@ -137,7 +140,6 @@ export class BatchStore {
       entityType: "BATCH",
       batchJobId,
       status: "PENDING",
-      basePath: safeBasePath,
       totals: { total: files.length, succeeded: 0, failed: 0, inProgress: 0 },
       createdAt: iso,
       updatedAt: iso,
@@ -147,6 +149,11 @@ export class BatchStore {
       GSI1PK: gsi1pk("PENDING", now),
       GSI1SK: iso,
     };
+
+    // batchLabel は省略時 DDB に属性自体を書かない (Q3: null 許容)。
+    if (safeLabel !== undefined) {
+      metaItem.batchLabel = safeLabel;
+    }
 
     if (extraFormats && extraFormats.length > 0) {
       metaItem.extraFormats = extraFormats;

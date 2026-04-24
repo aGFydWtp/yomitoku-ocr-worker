@@ -45,7 +45,7 @@ app.doc("/doc", {
       "BASE=https://<cloudfront>",
       "# 1. バッチ作成",
       "RES=$(curl -sX POST $BASE/batches -H 'content-type: application/json' \\",
-      '  -d \'{"basePath":"demo","files":[{"filename":"a.pdf"}]}\')',
+      '  -d \'{"batchLabel":"demo","files":[{"filename":"a.pdf"}]}\')',
       "BID=$(echo $RES | jq -r .batchJobId)",
       "URL=$(echo $RES | jq -r .uploads[0].uploadUrl)",
       "# 2. アップロード (Content-Type 必須)",

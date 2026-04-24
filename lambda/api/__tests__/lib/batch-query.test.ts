@@ -32,7 +32,7 @@ describe("BatchQuery", () => {
             batchJobId: "batch-001",
             status: "COMPLETED",
             totals: { total: 1, succeeded: 1, failed: 0, inProgress: 0 },
-            basePath: "project",
+            batchLabel: "project",
             createdAt: "2026-04-22T00:00:00Z",
             startedAt: "2026-04-22T00:01:00Z",
             updatedAt: "2026-04-22T00:10:00Z",
@@ -145,7 +145,7 @@ describe("BatchQuery", () => {
     it("GSI1 が KEYS_ONLY projection を返しても全属性を解決して返す", async () => {
       // 本番 GSI1 は ``projectionType: KEYS_ONLY`` で、Query レスポンスは
       // ``PK`` / ``SK`` / ``GSI1PK`` / ``GSI1SK`` のみ。``batchJobId`` /
-      // ``status`` / ``totals`` / ``basePath`` 等は含まれないため、追加の
+      // ``status`` / ``totals`` / ``batchLabel`` 等は含まれないため、追加の
       // BatchGetItem で本体を取得する必要がある。
       mockSend
         .mockResolvedValueOnce({
@@ -171,7 +171,7 @@ describe("BatchQuery", () => {
                 batchJobId: "batch-001",
                 status: "COMPLETED",
                 totals: { total: 2, succeeded: 2, failed: 0, inProgress: 0 },
-                basePath: "project/2026",
+                batchLabel: "project/2026",
                 createdAt: "2026-04-22T00:00:00Z",
                 startedAt: "2026-04-22T00:00:10Z",
                 updatedAt: "2026-04-22T00:10:00Z",
@@ -187,7 +187,7 @@ describe("BatchQuery", () => {
         batchJobId: "batch-001",
         status: "COMPLETED",
         totals: { total: 2, succeeded: 2, failed: 0, inProgress: 0 },
-        basePath: "project/2026",
+        batchLabel: "project/2026",
         createdAt: "2026-04-22T00:00:00Z",
         startedAt: "2026-04-22T00:00:10Z",
         updatedAt: "2026-04-22T00:10:00Z",
@@ -195,6 +195,85 @@ describe("BatchQuery", () => {
       });
       // 2 回呼ばれる (Query + BatchGetItem)
       expect(mockSend).toHaveBeenCalledTimes(2);
+    });
+
+    it("legacy basePath 属性のみを持つ META は batchLabel として coalesce される (Q2: read-time fallback)", async () => {
+      // basePath → batchLabel リネーム前に作成された古い META は
+      // ``batchLabel`` 属性を持たず ``basePath`` だけを持つ。読み出し時に
+      // ``item.batchLabel ?? item.basePath`` で互換する。
+      mockSend
+        .mockResolvedValueOnce({
+          Items: [
+            {
+              PK: "BATCH#legacy-001",
+              SK: "META",
+              GSI1PK: "STATUS#COMPLETED#202604",
+              GSI1SK: "2026-04-01T00:00:00Z",
+            },
+          ],
+          LastEvaluatedKey: undefined,
+        })
+        .mockResolvedValueOnce({
+          Responses: {
+            [TABLE]: [
+              {
+                PK: "BATCH#legacy-001",
+                SK: "META",
+                entityType: "BATCH",
+                batchJobId: "legacy-001",
+                status: "COMPLETED",
+                totals: { total: 1, succeeded: 1, failed: 0, inProgress: 0 },
+                // legacy 名のみ保持 — batchLabel 属性は無い
+                basePath: "legacy/project",
+                createdAt: "2026-04-01T00:00:00Z",
+                startedAt: "2026-04-01T00:00:10Z",
+                updatedAt: "2026-04-01T00:10:00Z",
+                parentBatchJobId: null,
+              },
+            ],
+          },
+        });
+
+      const result = await query.listBatchesByStatus("COMPLETED", "202604");
+      expect(result.items).toHaveLength(1);
+      expect(result.items[0].batchLabel).toBe("legacy/project");
+    });
+
+    it("batchLabel も basePath も無い META は batchLabel: null で返す", async () => {
+      mockSend
+        .mockResolvedValueOnce({
+          Items: [
+            {
+              PK: "BATCH#no-label-001",
+              SK: "META",
+              GSI1PK: "STATUS#COMPLETED#202604",
+              GSI1SK: "2026-04-01T00:00:00Z",
+            },
+          ],
+          LastEvaluatedKey: undefined,
+        })
+        .mockResolvedValueOnce({
+          Responses: {
+            [TABLE]: [
+              {
+                PK: "BATCH#no-label-001",
+                SK: "META",
+                entityType: "BATCH",
+                batchJobId: "no-label-001",
+                status: "COMPLETED",
+                totals: { total: 1, succeeded: 1, failed: 0, inProgress: 0 },
+                // batchLabel / basePath どちらも無い
+                createdAt: "2026-04-01T00:00:00Z",
+                startedAt: "2026-04-01T00:00:10Z",
+                updatedAt: "2026-04-01T00:10:00Z",
+                parentBatchJobId: null,
+              },
+            ],
+          },
+        });
+
+      const result = await query.listBatchesByStatus("COMPLETED", "202604");
+      expect(result.items[0].batchLabel).toBeNull();
     });
 
     it("GSI1 が空なら BatchGetItem は呼ばず空リストを返す", async () => {
@@ -246,7 +325,7 @@ describe("BatchQuery", () => {
                 batchJobId: "child-001",
                 status: "PENDING",
                 totals: { total: 1, succeeded: 0, failed: 0, inProgress: 1 },
-                basePath: "project/2026",
+                batchLabel: "project/2026",
                 createdAt: "2026-04-22T00:00:00Z",
                 startedAt: null,
                 updatedAt: "2026-04-22T00:00:00Z",
