@@ -1,44 +1,68 @@
 import {
-  DeleteObjectCommand,
-  GetObjectCommand,
-  PutObjectCommand,
+  HeadObjectCommand,
+  ListObjectsV2Command,
   S3Client,
 } from "@aws-sdk/client-s3";
-import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 
 const s3Client = new S3Client({});
 
-export const UPLOAD_URL_EXPIRES_IN = 900;
-export const RESULT_URL_EXPIRES_IN = 3600;
-
-export async function createUploadUrl(
+/**
+ * S3 オブジェクトの存在確認。存在すれば true、存在しなければ false を返す。
+ *
+ * M7: NotFound / NoSuchKey 以外のエラー (AccessDenied・スロットリング・
+ * ネットワーク失敗等) を吸い込んで "存在しない" と誤判定しないよう、
+ * それ以外の例外はそのまま throw する。
+ */
+export async function headObject(
   bucket: string,
   key: string,
-): Promise<string> {
-  const command = new PutObjectCommand({
-    Bucket: bucket,
-    Key: key,
-    ContentType: "application/pdf",
-  });
-  return getSignedUrl(s3Client, command, { expiresIn: UPLOAD_URL_EXPIRES_IN });
+): Promise<boolean> {
+  try {
+    await s3Client.send(new HeadObjectCommand({ Bucket: bucket, Key: key }));
+    return true;
+  } catch (err) {
+    if (isS3NotFoundError(err)) {
+      return false;
+    }
+    throw err;
+  }
 }
 
-export async function createResultUrl(
+function isS3NotFoundError(err: unknown): boolean {
+  if (typeof err !== "object" || err === null) return false;
+  const e = err as {
+    name?: string;
+    Code?: string;
+    $metadata?: { httpStatusCode?: number };
+  };
+  if (e.name === "NotFound" || e.name === "NoSuchKey") return true;
+  if (e.Code === "NotFound" || e.Code === "NoSuchKey") return true;
+  if (e.$metadata?.httpStatusCode === 404) return true;
+  return false;
+}
+
+/**
+ * 指定プレフィックス配下のキー一覧を取得する（ページング完結まで走査）。
+ * /batches/:id/start で欠損入力ファイルを判定するための参照系ユーティリティ。
+ */
+export async function listObjectKeys(
   bucket: string,
-  key: string,
-): Promise<string> {
-  const command = new GetObjectCommand({
-    Bucket: bucket,
-    Key: key,
-  });
-  return getSignedUrl(s3Client, command, { expiresIn: RESULT_URL_EXPIRES_IN });
-}
-
-export async function deleteObject(bucket: string, key: string): Promise<void> {
-  await s3Client.send(
-    new DeleteObjectCommand({
-      Bucket: bucket,
-      Key: key,
-    }),
-  );
+  prefix: string,
+): Promise<string[]> {
+  const keys: string[] = [];
+  let continuationToken: string | undefined;
+  do {
+    const res = await s3Client.send(
+      new ListObjectsV2Command({
+        Bucket: bucket,
+        Prefix: prefix,
+        ContinuationToken: continuationToken,
+      }),
+    );
+    for (const obj of res.Contents ?? []) {
+      if (obj.Key) keys.push(obj.Key);
+    }
+    continuationToken = res.IsTruncated ? res.NextContinuationToken : undefined;
+  } while (continuationToken);
+  return keys;
 }

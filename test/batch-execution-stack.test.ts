@@ -1,0 +1,675 @@
+import { Match, Template } from "aws-cdk-lib/assertions";
+import { AttributeType, BillingMode, Table } from "aws-cdk-lib/aws-dynamodb";
+import { ContainerImage } from "aws-cdk-lib/aws-ecs";
+import { Bucket } from "aws-cdk-lib/aws-s3";
+import { Queue } from "aws-cdk-lib/aws-sqs";
+import { App, Stack } from "aws-cdk-lib/core";
+import { describe, expect, it } from "vitest";
+import { BatchExecutionStack } from "../lib/batch-execution-stack";
+
+const TEST_REGION = "ap-northeast-1";
+const TEST_ACCOUNT = "123456789012";
+const TEST_ENDPOINT_NAME = "yomitoku-pro-endpoint";
+
+function createStack(): {
+  app: App;
+  stack: BatchExecutionStack;
+  template: Template;
+} {
+  const app = new App();
+
+  const depStack = new Stack(app, "DepStack", {
+    env: { region: TEST_REGION, account: TEST_ACCOUNT },
+  });
+  const batchTable = new Table(depStack, "BatchTable", {
+    partitionKey: { name: "PK", type: AttributeType.STRING },
+    sortKey: { name: "SK", type: AttributeType.STRING },
+    billingMode: BillingMode.PAY_PER_REQUEST,
+  });
+  const controlTable = new Table(depStack, "ControlTable", {
+    partitionKey: { name: "lock_key", type: AttributeType.STRING },
+    billingMode: BillingMode.PAY_PER_REQUEST,
+  });
+  const bucket = new Bucket(depStack, "DataBucket");
+  const successQueue = new Queue(depStack, "AsyncSuccessQueue");
+  const failureQueue = new Queue(depStack, "AsyncFailureQueue");
+
+  const stack = new BatchExecutionStack(app, "TestBatchExecutionStack", {
+    env: { region: TEST_REGION, account: TEST_ACCOUNT },
+    batchTable,
+    controlTable,
+    bucket,
+    endpointName: TEST_ENDPOINT_NAME,
+    successQueue,
+    failureQueue,
+    // テスト用にプレースホルダイメージを注入（Docker ビルドを避ける）
+    containerImage: ContainerImage.fromRegistry("placeholder:latest"),
+  });
+  const template = Template.fromStack(stack);
+  return { app, stack, template };
+}
+
+describe("BatchExecutionStack", () => {
+  describe("ECS Cluster", () => {
+    it("ECS クラスタが 1 つ存在する", () => {
+      const { template } = createStack();
+      template.resourceCountIs("AWS::ECS::Cluster", 1);
+    });
+  });
+
+  describe("Fargate Task Definition", () => {
+    it("Fargate 互換で 4 vCPU (4096) / 16 GB (16384) のタスク定義が存在する", () => {
+      const { template } = createStack();
+      template.hasResourceProperties("AWS::ECS::TaskDefinition", {
+        Cpu: "4096",
+        Memory: "16384",
+        NetworkMode: "awsvpc",
+        RequiresCompatibilities: ["FARGATE"],
+      });
+    });
+
+    it("コンテナ定義に awslogs ログドライバが設定されている", () => {
+      const { template } = createStack();
+      template.hasResourceProperties("AWS::ECS::TaskDefinition", {
+        ContainerDefinitions: Match.arrayWith([
+          Match.objectLike({
+            LogConfiguration: Match.objectLike({
+              LogDriver: "awslogs",
+            }),
+          }),
+        ]),
+      });
+    });
+
+    it("BatchTable/ControlTable/Bucket/Endpoint を参照する環境変数が配線されている", () => {
+      const { template } = createStack();
+      template.hasResourceProperties("AWS::ECS::TaskDefinition", {
+        ContainerDefinitions: Match.arrayWith([
+          Match.objectLike({
+            Environment: Match.arrayWith([
+              Match.objectLike({ Name: "BATCH_TABLE_NAME" }),
+              Match.objectLike({ Name: "CONTROL_TABLE_NAME" }),
+              Match.objectLike({ Name: "BUCKET_NAME" }),
+              Match.objectLike({
+                Name: "ENDPOINT_NAME",
+                Value: TEST_ENDPOINT_NAME,
+              }),
+            ]),
+          }),
+        ]),
+      });
+    });
+
+    it("Async 関連の環境変数 (Queue URL / S3 prefix / MAX_CONCURRENT) が ContainerDefinition に注入される (Task 4.3)", () => {
+      const { template } = createStack();
+      // SUCCESS_QUEUE_URL / FAILURE_QUEUE_URL は CloudFormation Ref によって
+      // Queue の URL に解決されるため、値は anyValue() で検証する。
+      // S3 prefix は static 値 (design.md §Async prefix 命名規約) として
+      // 直接比較し、ASYNC_MAX_CONCURRENT は asyncRuntime デフォルト "4" を期待する。
+      template.hasResourceProperties("AWS::ECS::TaskDefinition", {
+        ContainerDefinitions: Match.arrayWith([
+          Match.objectLike({
+            Environment: Match.arrayWith([
+              Match.objectLike({
+                Name: "SUCCESS_QUEUE_URL",
+                Value: Match.anyValue(),
+              }),
+              Match.objectLike({
+                Name: "FAILURE_QUEUE_URL",
+                Value: Match.anyValue(),
+              }),
+              Match.objectLike({
+                Name: "ASYNC_INPUT_PREFIX",
+                Value: "batches/_async/inputs",
+              }),
+              Match.objectLike({
+                Name: "ASYNC_OUTPUT_PREFIX",
+                Value: "batches/_async/outputs",
+              }),
+              Match.objectLike({
+                Name: "ASYNC_ERROR_PREFIX",
+                Value: "batches/_async/errors",
+              }),
+              Match.objectLike({
+                Name: "ASYNC_MAX_CONCURRENT",
+                Value: "4",
+              }),
+            ]),
+          }),
+        ]),
+      });
+    });
+
+    it("taskDefinition と cluster を公開プロパティとして持つ", () => {
+      const { stack } = createStack();
+      expect(stack.taskDefinition).toBeDefined();
+      expect(stack.cluster).toBeDefined();
+      expect(stack.containerName).toBeDefined();
+    });
+  });
+
+  describe("CloudWatch Logs", () => {
+    it("LogGroup が作成され保持期間が設定されている", () => {
+      const { template } = createStack();
+      template.resourceCountIs("AWS::Logs::LogGroup", 1);
+      template.hasResourceProperties(
+        "AWS::Logs::LogGroup",
+        Match.objectLike({ RetentionInDays: Match.anyValue() }),
+      );
+    });
+  });
+
+  describe("Task Role IAM", () => {
+    it("Task Role が BatchTable への DDB 更新系 Action (grantReadWriteData) を持つ", () => {
+      const { template } = createStack();
+      // BatchTable は grantReadWriteData のままなので
+      // Query/GetItem/PutItem/UpdateItem/DeleteItem を含むステートメントが存在する。
+      const requiredActions = [
+        "dynamodb:Query",
+        "dynamodb:GetItem",
+        "dynamodb:PutItem",
+        "dynamodb:UpdateItem",
+        "dynamodb:DeleteItem",
+      ];
+      template.hasResourceProperties(
+        "AWS::IAM::Policy",
+        Match.objectLike({
+          PolicyDocument: Match.objectLike({
+            Statement: Match.arrayWith([
+              Match.objectLike({
+                Action: Match.arrayWith(requiredActions),
+                Effect: "Allow",
+              }),
+            ]),
+          }),
+        }),
+      );
+    });
+
+    it("Task Role が ControlTable の heartbeat 用アクションのみを持ち、GetItem/Query を含まない (M1)", () => {
+      const { template } = createStack();
+      // ControlTable は heartbeat の Put/Update/Delete のみ使用するため
+      // `grantReadWriteData` より狭い PolicyStatement(BatchControlTableHeartbeat) で付与している。
+      template.hasResourceProperties(
+        "AWS::IAM::Policy",
+        Match.objectLike({
+          PolicyDocument: Match.objectLike({
+            Statement: Match.arrayWith([
+              Match.objectLike({
+                Sid: "BatchControlTableHeartbeat",
+                Effect: "Allow",
+                Action: [
+                  "dynamodb:PutItem",
+                  "dynamodb:UpdateItem",
+                  "dynamodb:DeleteItem",
+                  "dynamodb:ConditionCheckItem",
+                ],
+              }),
+            ]),
+          }),
+        }),
+      );
+    });
+
+    it("Task Role が S3 batches/* prefix への Get/Put/Delete/AbortMultipartUpload を持つ", () => {
+      const { template } = createStack();
+      // Match.arrayWith は subsequence セマンティクスなので、CDK が生成する
+      // 宣言順 (GetObject → PutObject → DeleteObject → AbortMultipartUpload) に合わせる。
+      template.hasResourceProperties(
+        "AWS::IAM::Policy",
+        Match.objectLike({
+          PolicyDocument: Match.objectLike({
+            Statement: Match.arrayWith([
+              Match.objectLike({
+                Action: Match.arrayWith([
+                  "s3:GetObject",
+                  "s3:PutObject",
+                  "s3:DeleteObject",
+                  "s3:AbortMultipartUpload",
+                ]),
+                Effect: "Allow",
+                Sid: "BatchS3Access",
+                // batches/* prefix 付きリソース (Fn::Join 生成)
+                Resource: Match.objectLike({
+                  "Fn::Join": Match.arrayWith([
+                    Match.arrayWith([Match.stringLikeRegexp("/batches/\\*")]),
+                  ]),
+                }),
+              }),
+            ]),
+          }),
+        }),
+      );
+    });
+
+    it("Task Role が S3 ListBucket を batches/* prefix 条件付きで持つ", () => {
+      const { template } = createStack();
+      // ListBucket はバケット全体 ARN が対象のため、prefix 条件による絞り込みが必須。
+      template.hasResourceProperties(
+        "AWS::IAM::Policy",
+        Match.objectLike({
+          PolicyDocument: Match.objectLike({
+            Statement: Match.arrayWith([
+              Match.objectLike({
+                Action: "s3:ListBucket",
+                Effect: "Allow",
+                Sid: "BatchS3List",
+                Condition: Match.objectLike({
+                  StringLike: Match.objectLike({
+                    "s3:prefix": ["batches/*"],
+                  }),
+                }),
+              }),
+            ]),
+          }),
+        }),
+      );
+    });
+
+    it("Task Role が SuccessQueue / FailureQueue に対する SQS 受信系アクションを持つ", () => {
+      const { template } = createStack();
+      // SuccessQueue (AsyncCompletionQueue) への 4 アクション
+      template.hasResourceProperties(
+        "AWS::IAM::Policy",
+        Match.objectLike({
+          PolicyDocument: Match.objectLike({
+            Statement: Match.arrayWith([
+              Match.objectLike({
+                Sid: "BatchSQSAsyncSuccessQueue",
+                Action: Match.arrayWith([
+                  "sqs:ReceiveMessage",
+                  "sqs:DeleteMessage",
+                  "sqs:ChangeMessageVisibility",
+                  "sqs:GetQueueAttributes",
+                ]),
+                Effect: "Allow",
+              }),
+            ]),
+          }),
+        }),
+      );
+      // FailureQueue (AsyncFailureQueue) への 4 アクション
+      template.hasResourceProperties(
+        "AWS::IAM::Policy",
+        Match.objectLike({
+          PolicyDocument: Match.objectLike({
+            Statement: Match.arrayWith([
+              Match.objectLike({
+                Sid: "BatchSQSAsyncFailureQueue",
+                Action: Match.arrayWith([
+                  "sqs:ReceiveMessage",
+                  "sqs:DeleteMessage",
+                  "sqs:ChangeMessageVisibility",
+                  "sqs:GetQueueAttributes",
+                ]),
+                Effect: "Allow",
+              }),
+            ]),
+          }),
+        }),
+      );
+    });
+
+    it("Task Role が batches/_async prefix 配下の S3 アクセスを明示的に持つ", () => {
+      const { template } = createStack();
+      // batches/_async/inputs/* に Get/Put
+      template.hasResourceProperties(
+        "AWS::IAM::Policy",
+        Match.objectLike({
+          PolicyDocument: Match.objectLike({
+            Statement: Match.arrayWith([
+              Match.objectLike({
+                Sid: "BatchS3AsyncInputs",
+                Action: Match.arrayWith(["s3:GetObject", "s3:PutObject"]),
+                Effect: "Allow",
+              }),
+            ]),
+          }),
+        }),
+      );
+      // batches/_async/outputs/* に Get
+      template.hasResourceProperties(
+        "AWS::IAM::Policy",
+        Match.objectLike({
+          PolicyDocument: Match.objectLike({
+            Statement: Match.arrayWith([
+              Match.objectLike({
+                Sid: "BatchS3AsyncOutputs",
+                Action: "s3:GetObject",
+                Effect: "Allow",
+              }),
+            ]),
+          }),
+        }),
+      );
+      // batches/_async/errors/* に Get
+      template.hasResourceProperties(
+        "AWS::IAM::Policy",
+        Match.objectLike({
+          PolicyDocument: Match.objectLike({
+            Statement: Match.arrayWith([
+              Match.objectLike({
+                Sid: "BatchS3AsyncErrors",
+                Action: "s3:GetObject",
+                Effect: "Allow",
+              }),
+            ]),
+          }),
+        }),
+      );
+
+      // Resource が _async prefix に限定されていること (全体の JSON に含まれる)
+      const policies = template.findResources("AWS::IAM::Policy");
+      const json = JSON.stringify(policies);
+      expect(json).toContain("batches/_async/inputs/*");
+      expect(json).toContain("batches/_async/outputs/*");
+      expect(json).toContain("batches/_async/errors/*");
+    });
+
+    it("Task Role が SageMaker InvokeEndpointAsync のみを Endpoint ARN 限定で持つ (Realtime action 削除)", () => {
+      const { template } = createStack();
+      // InvokeEndpointAsync が付与されている
+      template.hasResourceProperties(
+        "AWS::IAM::Policy",
+        Match.objectLike({
+          PolicyDocument: Match.objectLike({
+            Statement: Match.arrayWith([
+              Match.objectLike({
+                Action: "sagemaker:InvokeEndpointAsync",
+                Effect: "Allow",
+              }),
+            ]),
+          }),
+        }),
+      );
+
+      // Realtime 系 action (InvokeEndpoint / DescribeEndpoint) は Task Role から削除されている。
+      // SFN 実行ロールの DescribeEndpoint は別ポリシーのため、Task Role に紐づく
+      // "TaskRoleDefaultPolicy" を対象に文字列検査する。
+      const policies = template.findResources("AWS::IAM::Policy");
+      const taskRolePolicies = Object.entries(policies).filter(([name]) =>
+        name.includes("TaskRoleDefaultPolicy"),
+      );
+      expect(taskRolePolicies.length).toBeGreaterThan(0);
+      const taskRoleJson = JSON.stringify(taskRolePolicies);
+      expect(taskRoleJson).not.toContain('"sagemaker:InvokeEndpoint"');
+      expect(taskRoleJson).not.toContain('"sagemaker:DescribeEndpoint"');
+    });
+  });
+
+  describe("Outputs", () => {
+    it("TaskDefinition ARN と Cluster 名を CfnOutput で公開する", () => {
+      const { template } = createStack();
+      const outputs = template.findOutputs("*");
+      const keys = Object.keys(outputs);
+      expect(keys.some((k) => /TaskDefinition/i.test(k))).toBe(true);
+      expect(keys.some((k) => /Cluster/i.test(k))).toBe(true);
+    });
+
+    it("StateMachine ARN を CfnOutput で公開する", () => {
+      const { template } = createStack();
+      const outputs = template.findOutputs("*");
+      const keys = Object.keys(outputs);
+      expect(keys.some((k) => /BatchStateMachine/i.test(k))).toBe(true);
+    });
+  });
+
+  describe("BatchExecutionStateMachine", () => {
+    it("Step Functions ステートマシンが 1 つ存在する", () => {
+      const { template } = createStack();
+      template.resourceCountIs("AWS::StepFunctions::StateMachine", 1);
+    });
+
+    it("stateMachine を公開プロパティとして持つ", () => {
+      const { stack } = createStack();
+      expect(stack.stateMachine).toBeDefined();
+      expect(stack.stateMachine.stateMachineArn).toBeDefined();
+    });
+
+    it("定義に主要ステート名が含まれる", () => {
+      const { template } = createStack();
+      const sm = template.findResources("AWS::StepFunctions::StateMachine");
+      const defStr = JSON.stringify(sm);
+      for (const s of [
+        "AcquireBatchLock",
+        "RunBatchTask",
+        "AggregateResults",
+        "MarkCompleted",
+        "MarkPartial",
+        "MarkFailed",
+        "MarkFailedForced",
+        "ReleaseBatchLock",
+        "ReleaseBatchLockOnError",
+      ]) {
+        expect(defStr).toContain(s);
+      }
+    });
+
+    it("Endpoint lifecycle 管理ステップ (EnsureEndpointInService / WaitEndpoint / EndpointReady? / DescribeEndpoint) が定義から撤去されている (Task 4.4)", () => {
+      const { template } = createStack();
+      const sm = template.findResources("AWS::StepFunctions::StateMachine");
+      const defStr = JSON.stringify(sm);
+      expect(defStr).not.toContain("EnsureEndpointInService");
+      expect(defStr).not.toContain("WaitEndpoint");
+      expect(defStr).not.toContain("EndpointReady?");
+      // CallAwsService は action を camelCase 化した文字列として定義に残るため、
+      // describeEndpoint (小文字先頭) の存在でも検出する。
+      expect(defStr).not.toContain("describeEndpoint");
+    });
+
+    it("AcquireBatchLock が RunBatchTask に直結する (Task 4.4)", () => {
+      const { template } = createStack();
+      const sm = template.findResources("AWS::StepFunctions::StateMachine");
+      const defStr = JSON.stringify(sm);
+      // AcquireBatchLock ステート内の "Next":"RunBatchTask" を直接検出する。
+      // エスケープされた JSON 文字列として state machine の DefinitionString に含まれる。
+      expect(defStr).toMatch(
+        /AcquireBatchLock[\s\S]*?\\"Next\\":\\"RunBatchTask\\"/,
+      );
+    });
+
+    it("StopBatchTask ステートは定義されない (SFN .sync が自動停止するため; H3)", () => {
+      const { template } = createStack();
+      const sm = template.findResources("AWS::StepFunctions::StateMachine");
+      const defStr = JSON.stringify(sm);
+      // 明示的な StopBatchTask ステートを削除済み
+      expect(defStr).not.toContain("StopBatchTask");
+      // 失敗経路が直接 MarkFailedForced に遷移する
+      expect(defStr).toContain(
+        '\\"ErrorEquals\\":[\\"States.Timeout\\",\\"States.TaskFailed\\"],\\"ResultPath\\":\\"$.errorInfo\\",\\"Next\\":\\"MarkFailedForced\\"',
+      );
+      expect(defStr).toContain(
+        '\\"ErrorEquals\\":[\\"States.ALL\\"],\\"ResultPath\\":\\"$.errorInfo\\",\\"Next\\":\\"MarkFailedForced\\"',
+      );
+    });
+
+    it("RunBatchTask が ecs:runTask.sync を利用し TimeoutSeconds=7200 で動作する", () => {
+      const { template } = createStack();
+      const sm = template.findResources("AWS::StepFunctions::StateMachine");
+      const defStr = JSON.stringify(sm);
+      // ECS RunTask の .sync integration pattern
+      expect(defStr).toMatch(/ecs:runTask\.sync/);
+      // TimeoutSeconds=7200 が SFN 定義に直列化されている
+      expect(defStr).toMatch(/\\"TimeoutSeconds\\":\s*7200/);
+    });
+
+    it("RunBatchTask が Public subnet + AssignPublicIp=ENABLED で起動する", () => {
+      const { template } = createStack();
+      const sm = template.findResources("AWS::StepFunctions::StateMachine");
+      const defStr = JSON.stringify(sm);
+      // EcsRunTask の NetworkConfiguration / AwsvpcConfiguration が
+      // AssignPublicIp=ENABLED で直列化されていること
+      expect(defStr).toMatch(/\\"AssignPublicIp\\":\\"ENABLED\\"/);
+    });
+
+    it("Catch: States.Timeout / States.TaskFailed が定義されている", () => {
+      const { template } = createStack();
+      const sm = template.findResources("AWS::StepFunctions::StateMachine");
+      const defStr = JSON.stringify(sm);
+      expect(defStr).toContain("States.Timeout");
+      expect(defStr).toContain("States.TaskFailed");
+      // SFN が .sync (RUN_JOB) で自動的にタスクを停止するため、
+      // SFN 実行ロールには ecs:StopTask が自動付与される (IAM テスト参照)
+    });
+
+    it("AcquireBatchLock が ControlTable への putItem を ConditionExpression 付きで発行する", () => {
+      const { template } = createStack();
+      const sm = template.findResources("AWS::StepFunctions::StateMachine");
+      const defStr = JSON.stringify(sm);
+      expect(defStr).toMatch(/dynamodb:putItem/);
+      expect(defStr).toMatch(/attribute_not_exists/);
+      expect(defStr).toMatch(/BATCH_EXEC_LOCK/);
+    });
+
+    it("SFN 実行ロールが ECS RunTask と StopTask 権限を持つ", () => {
+      const { template } = createStack();
+      template.hasResourceProperties(
+        "AWS::IAM::Policy",
+        Match.objectLike({
+          PolicyDocument: Match.objectLike({
+            Statement: Match.arrayWith([
+              Match.objectLike({ Action: "ecs:RunTask" }),
+            ]),
+          }),
+        }),
+      );
+      // StopTask は describeEndpoint / stopTask 用 CallAwsService が追加するポリシーに含まれる
+      template.hasResourceProperties(
+        "AWS::IAM::Policy",
+        Match.objectLike({
+          PolicyDocument: Match.objectLike({
+            Statement: Match.arrayWith([
+              Match.objectLike({
+                Action: Match.arrayWith(["ecs:StopTask"]),
+              }),
+            ]),
+          }),
+        }),
+      );
+    });
+
+    it("SFN 実行ロールが SageMaker describeEndpoint 権限を持たない (Task 4.4)", () => {
+      const { template } = createStack();
+      // Task 4.4 で EnsureEndpointInService state を撤去したため、
+      // CallAwsService が自動生成していた sagemaker:describeEndpoint も消滅する。
+      const policies = template.findResources("AWS::IAM::Policy");
+      expect(JSON.stringify(policies)).not.toContain(
+        "sagemaker:describeEndpoint",
+      );
+    });
+  });
+
+  describe("Async 移行の観測可能条件 (Task 4.5 契約スナップショット)", () => {
+    // Task 4.5 のタスク完了条件を一箇所で可視化する契約テスト。
+    // ここが落ちる場合は、Task 4.1-4.4 のいずれかが後続変更でリグレッションした
+    // 可能性が高いので、個別のテストセクションを確認すること。
+    it("Realtime 系 action 不在 / Async action 存在 / _async prefix 限定 / Queue URL 環境変数 / Public subnet が同時に成立する", () => {
+      const { template } = createStack();
+      const policies = template.findResources("AWS::IAM::Policy");
+      const policiesJson = JSON.stringify(policies);
+      const sm = template.findResources("AWS::StepFunctions::StateMachine");
+      const smJson = JSON.stringify(sm);
+      const td = template.findResources("AWS::ECS::TaskDefinition");
+      const tdJson = JSON.stringify(td);
+
+      // 1. Task Role Realtime action 不在
+      const taskRolePolicies = Object.entries(policies).filter(([name]) =>
+        name.includes("TaskRoleDefaultPolicy"),
+      );
+      const taskRoleJson = JSON.stringify(taskRolePolicies);
+      expect(taskRoleJson).not.toContain('"sagemaker:InvokeEndpoint"');
+      expect(taskRoleJson).not.toContain('"sagemaker:DescribeEndpoint"');
+
+      // 2. Task Role Async action 存在
+      expect(policiesJson).toContain("sagemaker:InvokeEndpointAsync");
+
+      // 3. SQS / S3 _async prefix 限定
+      expect(policiesJson).toContain("sqs:ReceiveMessage");
+      expect(policiesJson).toContain("batches/_async/inputs/*");
+      expect(policiesJson).toContain("batches/_async/outputs/*");
+      expect(policiesJson).toContain("batches/_async/errors/*");
+
+      // 4. SFN Endpoint lifecycle 撤去
+      expect(smJson).not.toContain("EnsureEndpointInService");
+      expect(smJson).not.toContain("WaitEndpoint");
+      expect(smJson).not.toContain("describeEndpoint");
+
+      // 5. ContainerDefinition に Queue URL / Async prefix 環境変数が注入済
+      expect(tdJson).toContain("SUCCESS_QUEUE_URL");
+      expect(tdJson).toContain("FAILURE_QUEUE_URL");
+      expect(tdJson).toContain("ASYNC_MAX_CONCURRENT");
+
+      // 6. Public subnet + assignPublicIp=ENABLED 維持
+      expect(smJson).toContain('\\"AssignPublicIp\\":\\"ENABLED\\"');
+    });
+  });
+
+  describe("Props validation", () => {
+    it("endpointName が空文字 / 未指定の場合エラーになる", () => {
+      const app = new App();
+      const depStack = new Stack(app, "DepStack", {
+        env: { region: TEST_REGION, account: TEST_ACCOUNT },
+      });
+      const batchTable = new Table(depStack, "B", {
+        partitionKey: { name: "PK", type: AttributeType.STRING },
+        billingMode: BillingMode.PAY_PER_REQUEST,
+      });
+      const controlTable = new Table(depStack, "C", {
+        partitionKey: { name: "lock_key", type: AttributeType.STRING },
+        billingMode: BillingMode.PAY_PER_REQUEST,
+      });
+      const bucket = new Bucket(depStack, "D");
+      const successQueue = new Queue(depStack, "AsyncSuccessQueueBad");
+      const failureQueue = new Queue(depStack, "AsyncFailureQueueBad");
+
+      expect(() => {
+        new BatchExecutionStack(app, "Bad", {
+          env: { region: TEST_REGION, account: TEST_ACCOUNT },
+          batchTable,
+          controlTable,
+          bucket,
+          endpointName: "",
+          successQueue,
+          failureQueue,
+          containerImage: ContainerImage.fromRegistry("placeholder:latest"),
+        });
+      }).toThrow(/endpointName/);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Cost Explorer タグ戦略 (Task 7.4, Req 9.2)
+  // ---------------------------------------------------------------------------
+  describe("Cost Explorer タグ戦略 (Task 7.4)", () => {
+    const hasTag = (tags: unknown, key: string, value: string): boolean => {
+      if (!Array.isArray(tags)) return false;
+      return tags.some(
+        (t) =>
+          typeof t === "object" &&
+          t !== null &&
+          (t as { Key?: unknown }).Key === key &&
+          (t as { Value?: unknown }).Value === value,
+      );
+    };
+
+    it("ECS Cluster / TaskDefinition / LogGroup / StateMachine に yomitoku:stack=sagemaker-async と yomitoku:component=batch が付く", () => {
+      const { template } = createStack();
+      for (const type of [
+        "AWS::ECS::Cluster",
+        "AWS::ECS::TaskDefinition",
+        "AWS::Logs::LogGroup",
+        "AWS::StepFunctions::StateMachine",
+      ]) {
+        const resources = template.findResources(type);
+        const list = Object.values(resources);
+        expect(list.length).toBeGreaterThan(0);
+        for (const res of list) {
+          const tags = (res as { Properties?: { Tags?: unknown } }).Properties
+            ?.Tags;
+          expect(hasTag(tags, "yomitoku:stack", "sagemaker-async")).toBe(true);
+          expect(hasTag(tags, "yomitoku:component", "batch")).toBe(true);
+        }
+      }
+    });
+  });
+});

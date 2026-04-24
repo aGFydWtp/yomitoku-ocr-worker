@@ -1,0 +1,4 @@
+yomitoku-client==0.2.0
+boto3>=1.34,<2
+opencv-python-headless>=4.8,<5
+numpy>=1.26,<3

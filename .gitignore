@@ -18,3 +18,13 @@ pnpm-debug.log
 __pycache__/
 *.pyc
 .coverage
+
+# IDE / tool local state
+.claude/
+.serena/
+
+# macOS
+.DS_Store
+
+# E2E/smoke test fixtures (personal data, keep local only)
+sample-pdf/

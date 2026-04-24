@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import {
   AccessLogFormat,
   CfnAccount,
@@ -15,7 +14,7 @@ import {
   ViewerProtocolPolicy,
 } from "aws-cdk-lib/aws-cloudfront";
 import { RestApiOrigin } from "aws-cdk-lib/aws-cloudfront-origins";
-import type { ITable, Table } from "aws-cdk-lib/aws-dynamodb";
+import type { ITable } from "aws-cdk-lib/aws-dynamodb";
 import {
   AnyPrincipal,
   Effect,
@@ -28,24 +27,42 @@ import { Runtime } from "aws-cdk-lib/aws-lambda";
 import { NodejsFunction } from "aws-cdk-lib/aws-lambda-nodejs";
 import { LogGroup, RetentionDays } from "aws-cdk-lib/aws-logs";
 import type { Bucket } from "aws-cdk-lib/aws-s3";
+import { Secret } from "aws-cdk-lib/aws-secretsmanager";
 import type { IStateMachine } from "aws-cdk-lib/aws-stepfunctions";
 import type { StackProps } from "aws-cdk-lib/core";
 import { CfnOutput, Duration, Stack } from "aws-cdk-lib/core";
 import { NagSuppressions } from "cdk-nag";
 import type { Construct } from "constructs";
 
+/**
+ * ApiStack: バッチ API のエントリポイント。
+ *
+ * Task 7.3 で旧エンドポイント lifecycle スタック依存を撤去:
+ *   - EndpointControl 由来の `stateMachine` prop を削除し、
+ *     `batchExecutionStateMachine` のみを受け取る
+ *   - `STATE_MACHINE_ARN` 環境変数を撤廃 (Async Inference + AutoScaling 化で
+ *     エンドポイント自動起動フローが不要になったため)
+ *   - ControlTable は Fargate 側 heartbeat / last_batch_completed_at の
+ *     参照用として read 権限のみ維持
+ *
+ * 既存 `/batches` API 契約 (パス / スキーマ / HTTP ステータス) は不変。
+ *   - `/batches` POST は 503 (endpoint 未起動) 経路を持たなくなるが、
+ *     SageMaker AsyncInvoke が自動スケールで吸収するため問題なし。
+ */
 export interface ApiStackProps extends StackProps {
   bucket: Bucket;
-  statusTable: Table;
   controlTable: ITable;
-  stateMachine: IStateMachine;
+  batchTable: ITable;
+  /** BatchExecutionStateMachine — /batches/:id/start 実行用 */
+  batchExecutionStateMachine: IStateMachine;
 }
 
 export class ApiStack extends Stack {
   constructor(scope: Construct, id: string, props: ApiStackProps) {
     super(scope, id, props);
 
-    const { bucket, statusTable, controlTable, stateMachine } = props;
+    const { bucket, controlTable, batchTable, batchExecutionStateMachine } =
+      props;
 
     const fn = new NodejsFunction(this, "ApiFunction", {
       entry: "lambda/api/index.ts",
@@ -57,21 +74,56 @@ export class ApiStack extends Stack {
         minify: true,
       },
       environment: {
-        STATUS_TABLE_NAME: statusTable.tableName,
         BUCKET_NAME: bucket.bucketName,
         CONTROL_TABLE_NAME: controlTable.tableName,
-        STATE_MACHINE_ARN: stateMachine.stateMachineArn,
+        BATCH_TABLE_NAME: batchTable.tableName,
+        BATCH_EXECUTION_STATE_MACHINE_ARN:
+          batchExecutionStateMachine.stateMachineArn,
       },
     });
 
-    // --- IAM 権限 ---
-    statusTable.grantReadWriteData(fn);
+    // --- IAM 権限 (Task 6.2: batch-first scope / Task 7.3: orchestration 剥離) ---
     controlTable.grantReadData(fn);
-    stateMachine.grantStartExecution(fn);
-    bucket.grantPut(fn, "input/*");
-    bucket.grantRead(fn, "output/*");
-    bucket.grantRead(fn, "visualizations/*");
-    bucket.grantDelete(fn, "input/*");
+    batchExecutionStateMachine.grantStartExecution(fn);
+
+    // BatchTable: META/FILE アイテムの CRUD + GSI1/GSI2 の Query + 反解析時の
+    // 原子的コピーに必要な TransactWriteItems。
+    fn.addToRolePolicy(
+      new PolicyStatement({
+        effect: Effect.ALLOW,
+        actions: [
+          "dynamodb:GetItem",
+          "dynamodb:PutItem",
+          "dynamodb:UpdateItem",
+          "dynamodb:Query",
+          "dynamodb:TransactWriteItems",
+        ],
+        resources: [batchTable.tableArn, `${batchTable.tableArn}/index/*`],
+      }),
+    );
+
+    // S3: `batches/*` プレフィックスのみ。署名付き URL 発行のため Put/Get/Delete
+    // と List（prefix 条件付き）を付与。ListBucket は bucket ルートを対象に
+    // し、`s3:prefix` 条件で batches/* に限定する。
+    fn.addToRolePolicy(
+      new PolicyStatement({
+        effect: Effect.ALLOW,
+        actions: ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"],
+        resources: [`${bucket.bucketArn}/batches/*`],
+      }),
+    );
+    fn.addToRolePolicy(
+      new PolicyStatement({
+        effect: Effect.ALLOW,
+        actions: ["s3:ListBucket"],
+        resources: [bucket.bucketArn],
+        conditions: {
+          StringLike: {
+            "s3:prefix": ["batches/*"],
+          },
+        },
+      }),
+    );
 
     // --- API Gateway アカウント設定（CloudWatch ログ用） ---
     const apiGatewayRole = new Role(this, "ApiGatewayCloudWatchRole", {
@@ -108,10 +160,19 @@ export class ApiStack extends Stack {
       description: "API Gateway URL",
     });
 
-    // --- CloudFront Distribution ---
-    const originVerifySecret = createHash("sha256")
-      .update(`${this.stackName}-origin-verify`)
-      .digest("hex");
+    // --- Origin Verify Secret (H1) ---
+    // CloudFront → API Gateway 間の共有シークレット。スタック名由来のハッシュだと
+    // スタック名が既知であれば誰でも再現可能になるため、Secrets Manager で
+    // 高エントロピーな値を生成し、CFN 動的参照でデプロイ時に解決する。
+    const originVerifySecretResource = new Secret(this, "OriginVerifySecret", {
+      description: `Origin verify secret for ${this.stackName} CloudFront → API Gateway auth`,
+      generateSecretString: {
+        passwordLength: 64,
+        excludePunctuation: true,
+      },
+    });
+    const originVerifySecret =
+      originVerifySecretResource.secretValue.unsafeUnwrap();
 
     const wafWebAclId = this.node.tryGetContext("wafWebAclId") as
       | string
@@ -201,24 +262,11 @@ export class ApiStack extends Stack {
         {
           id: "AwsSolutions-IAM5",
           reason:
-            "S3 grantPut/grantRead/grantDelete use wildcard actions " +
-            "(s3:GetObject*, s3:GetBucket*, s3:List*, s3:Abort*, s3:DeleteObject*) " +
-            "scoped to specific prefixes (input/*, output/*). " +
-            "DynamoDB grantReadWriteData includes index/* for GSI access. " +
-            "controlTable.grantReadData and stateMachine.grantStartExecution " +
-            "generate minimum CDK L2 grant permissions.",
-          appliesTo: [
-            "Action::s3:Abort*",
-            "Action::s3:DeleteObject*",
-            "Action::s3:GetBucket*",
-            "Action::s3:GetObject*",
-            "Action::s3:List*",
-            "Resource::<DataBucketE3889A50.Arn>/input/*",
-            "Resource::<DataBucketE3889A50.Arn>/output/*",
-            "Resource::<DataBucketE3889A50.Arn>/visualizations/*",
-            "Resource::<StatusTable0F76785B.Arn>/index/*",
-            "Resource::<ControlTableB3A8D1BC.Arn>/index/*",
-          ],
+            "Wildcard usages are intentional and bounded: " +
+            "(a) BatchTable index/* for GSI1/GSI2 Query access, " +
+            "(b) S3 batches/* prefix for scoped object CRUD + presign, " +
+            "(c) ListBucket is restricted via s3:prefix condition to batches/*, " +
+            "(d) stateMachine.grantStartExecution uses CDK L2 minimum permissions.",
         },
       ],
       true,
@@ -292,5 +340,17 @@ export class ApiStack extends Stack {
       distribution,
       cfDistributionSuppressions,
     );
+
+    // Origin verify secret は CloudFront/API Gateway 両方に static に埋め込まれる
+    // ため自動ローテーションは不可。ローテーションにはスタック再デプロイが必要。
+    NagSuppressions.addResourceSuppressions(originVerifySecretResource, [
+      {
+        id: "AwsSolutions-SMG4",
+        reason:
+          "This secret is injected into CloudFront origin custom headers and " +
+          "API Gateway resource policy at synth time. Rotation requires full " +
+          "stack redeploy and will be handled manually when needed.",
+      },
+    ]);
   }
 }
