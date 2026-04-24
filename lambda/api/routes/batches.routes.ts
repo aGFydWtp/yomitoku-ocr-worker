@@ -26,10 +26,6 @@ export const createBatchRoute = createRoute({
     "1. `POST /batches` でバッチを作成し `batchJobId` と `uploadUrls` を取得",
     "2. 各 `uploadUrl` に PDF を PUT（有効期限 15 分）",
     "3. `POST /batches/:batchJobId/start` でバッチ実行を開始",
-    "",
-    "Task 7.3 以降、SageMaker Async Inference + AutoScaling により",
-    "エンドポイントは自動スケールアウトされるため、本エンドポイントは",
-    "エンドポイント状態に関わらず常に `201` を返します (旧 `503` 経路は撤去)。",
   ].join("\n"),
   request: {
     body: {
@@ -90,6 +86,14 @@ export const getBatchRoute = createRoute({
   method: "get",
   path: "/:batchJobId",
   summary: "バッチ詳細",
+  description: [
+    "バッチの現在のステータスと totals (total / succeeded / failed / inProgress) を返します。",
+    "",
+    "## ポーリング推奨",
+    "- 間隔: **15〜30 秒**。より短く叩いても SageMaker の処理は早くなりません。",
+    "- 終端状態: `COMPLETED` / `PARTIAL` / `FAILED` / `CANCELLED`。これらを検知したらポーリングを停止してください。",
+    "- cold start 初回は合計 5〜10 分 `PROCESSING` のまま推移することがあります (Scale-from-Zero + モデルロード時間)。",
+  ].join("\n"),
   request: {
     params: z.object({ batchJobId: z.string().uuid() }),
   },
@@ -166,6 +170,11 @@ export const startBatchRoute = createRoute({
   summary: "バッチ実行開始",
   description: [
     "PENDING 状態のバッチを PROCESSING へ遷移させ、BatchExecutionStateMachine を起動します。",
+    "",
+    "## 処理時間の目安",
+    "- **直前にバッチが流れた warm 状態**: 本エンドポイント応答 (202) から数秒〜数分で `COMPLETED` に到達",
+    "- **アイドル状態からの cold start**: Scale-from-Zero (〜3 分) + モデルロード (〜5 分) + OCR 処理、合計 **5〜10 分** を目安に",
+    "- 本エンドポイントは Step Functions の起動のみで応答するため常に数秒で返ります。以降の進捗は `GET /batches/{batchJobId}` をポーリングしてください (15〜30 秒間隔推奨)",
     "",
     "## 制約",
     "- PENDING 以外のステータスでは `409` を返します。",
