@@ -45,7 +45,10 @@ describe("Task 6.1 — /jobs 系ルートの撤去", () => {
   });
 
   it("lambda/api/routes に jobs.ts / jobs.routes.ts が存在しない", async () => {
-    await expect(import("../routes/jobs")).rejects.toThrow();
+    // 意図的に存在しないモジュールを import して throw を検証する負テスト。
+    // ``../routes/jobs`` / ``../routes/jobs.routes`` は撤去済みなので
+    // TS2307 "モジュールが見つかりません" を ``as string`` で抑止する。
+    await expect(import("../routes/jobs" as string)).rejects.toThrow();
     await expect(import("../routes/jobs.routes" as string)).rejects.toThrow();
   });
 
