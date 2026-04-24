@@ -76,7 +76,7 @@ function createApp() {
 }
 
 const VALID_BODY = {
-  basePath: "project/2026/test",
+  batchLabel: "project/2026/test",
   files: [{ filename: "a.pdf" }, { filename: "b.pdf" }],
 };
 
@@ -99,7 +99,7 @@ const MOCK_BATCH_META = {
   batchJobId: "00000000-0000-4000-8000-000000000001",
   status: "COMPLETED" as const,
   totals: { total: 2, succeeded: 2, failed: 0, inProgress: 0 },
-  basePath: "project/2026/test",
+  batchLabel: "project/2026/test",
   createdAt: "2026-04-22T00:00:00Z",
   startedAt: "2026-04-22T00:01:00Z",
   updatedAt: "2026-04-22T00:10:00Z",
@@ -166,9 +166,25 @@ describe("POST /batches", () => {
 
     expect(mockPutBatchWithFiles).toHaveBeenCalledOnce();
     const args = mockPutBatchWithFiles.mock.calls[0][0];
-    expect(args.basePath).toBe("project/2026/test");
+    expect(args.batchLabel).toBe("project/2026/test");
     expect(args.files).toHaveLength(2);
     expect(args.bucket).toBe("test-bucket");
+  });
+
+  it("正常系: batchLabel 省略でも 201 を返す (optional フィールド)", async () => {
+    mockPutBatchWithFiles.mockResolvedValue(undefined);
+    mockCreateUploadUrls.mockResolvedValue([UPLOAD_RESULTS[0]]);
+
+    const app = createApp();
+    const res = await app.request("/batches", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ files: [{ filename: "a.pdf" }] }),
+    });
+
+    expect(res.status).toBe(201);
+    const args = mockPutBatchWithFiles.mock.calls[0][0];
+    expect(args.batchLabel).toBeUndefined();
   });
 
   it("正常系: extraFormats が指定されると BatchStore に渡される", async () => {
@@ -180,7 +196,7 @@ describe("POST /batches", () => {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        basePath: "project",
+        batchLabel: "project",
         files: [{ filename: "a.pdf" }],
         extraFormats: ["markdown", "csv"],
       }),
@@ -210,7 +226,7 @@ describe("POST /batches", () => {
     const res = await app.request("/batches", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ basePath: "project", files: [] }),
+      body: JSON.stringify({ batchLabel: "project", files: [] }),
     });
     expect(res.status).toBe(400);
   });
@@ -221,19 +237,19 @@ describe("POST /batches", () => {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        basePath: "project",
+        batchLabel: "project",
         files: [{ filename: "malware.exe" }],
       }),
     });
     expect(res.status).toBe(400);
   });
 
-  it("400: basePath が空文字は拒否される", async () => {
+  it("400: batchLabel が空文字は拒否される", async () => {
     const app = createApp();
     const res = await app.request("/batches", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ basePath: "", files: [{ filename: "a.pdf" }] }),
+      body: JSON.stringify({ batchLabel: "", files: [{ filename: "a.pdf" }] }),
     });
     expect(res.status).toBe(400);
   });
@@ -244,7 +260,7 @@ describe("POST /batches", () => {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        basePath: "project",
+        batchLabel: "project",
         files: [{ filename: "a.pdf", contentType: "application/x-msdownload" }],
       }),
     });
@@ -260,7 +276,7 @@ describe("POST /batches", () => {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        basePath: "project",
+        batchLabel: "project",
         files: [{ filename: "a.pdf", contentType: "application/octet-stream" }],
       }),
     });
@@ -617,6 +633,29 @@ describe("POST /batches/:batchJobId/reanalyze", () => {
     expect(storeArgs.parentBatchJobId).toBe(
       "00000000-0000-4000-8000-000000000001",
     );
+    // 親バッチの batchLabel が子バッチに継承されること
+    expect(storeArgs.batchLabel).toBe("project/2026/test");
+  });
+
+  it("正常系: 親バッチの batchLabel が null (legacy 未設定) でも 201 を返し、子は undefined を受け取る", async () => {
+    mockGetBatchWithFiles.mockResolvedValue({
+      ...MOCK_BATCH_WITH_FILES,
+      batchLabel: null,
+    });
+    mockHeadObject.mockResolvedValue(true);
+    mockListFailedFiles.mockResolvedValue(FAILED_FILES);
+    mockPutBatchWithFiles.mockResolvedValue(undefined);
+    mockCreateUploadUrls.mockResolvedValue([UPLOAD_RESULTS[1]]);
+
+    const app = createApp();
+    const res = await app.request(
+      "/batches/00000000-0000-4000-8000-000000000001/reanalyze",
+      { method: "POST" },
+    );
+    expect(res.status).toBe(201);
+    const storeArgs = mockPutBatchWithFiles.mock.calls[0][0];
+    // null 親からは undefined が渡り、DDB 側で batchLabel 属性が書かれない
+    expect(storeArgs.batchLabel).toBeUndefined();
   });
 
   it("404: 存在しないバッチは 404 を返す", async () => {

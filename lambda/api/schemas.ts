@@ -76,11 +76,15 @@ const allowedExtensionRegex = new RegExp(
 
 export const CreateBatchBodySchema = z
   .object({
-    basePath: z.string().min(1, "basePath must not be empty").openapi({
-      description:
-        "バッチの論理的なグルーピング名。S3 key や DynamoDB には含まれず、人間がバッチ一覧で識別するためのラベル。",
-      example: "project/2026/batch1",
-    }),
+    batchLabel: z
+      .string()
+      .min(1, "batchLabel must not be empty")
+      .optional()
+      .openapi({
+        description:
+          "バッチの論理的なグルーピング名。**任意フィールド**。S3 key や DynamoDB PK/SK には含まれず、人間がバッチ一覧で識別するための表示用ラベル。省略時はレスポンスで `null` になる。",
+        example: "project/2026/batch1",
+      }),
     files: z
       .array(
         z.object({
@@ -118,7 +122,7 @@ export const CreateBatchBodySchema = z
   })
   .openapi("CreateBatchBody", {
     example: {
-      basePath: "project/2026/batch1",
+      batchLabel: "project/2026/batch1",
       files: [
         { filename: "invoice-001.pdf" },
         { filename: "invoice-002.pdf", contentType: "application/pdf" },
@@ -199,7 +203,10 @@ export const BatchDetailSchema = z
       ].join("\n"),
     }),
     totals: BatchTotalsSchema,
-    basePath: z.string(),
+    batchLabel: z.string().nullable().openapi({
+      description:
+        "作成時に指定された任意の表示用ラベル。未指定のバッチや `batchLabel` 導入前に作られた古いバッチでは `null`。",
+    }),
     createdAt: z.string().datetime(),
     startedAt: z.string().datetime().nullable().openapi({
       description:

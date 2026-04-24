@@ -55,12 +55,18 @@ describe("上限定数", () => {
 
 describe("CreateBatchBodySchema", () => {
   const validInput = {
-    basePath: "project/2026/doc",
+    batchLabel: "project/2026/doc",
     files: [{ filename: "sample.pdf" }, { filename: "other.pdf" }],
   };
 
   it("正常系: 有効な入力を受け付ける", () => {
     const result = CreateBatchBodySchema.safeParse(validInput);
+    expect(result.success).toBe(true);
+  });
+
+  it("正常系: batchLabel 省略でも受け付ける (optional フィールド)", () => {
+    const { batchLabel: _omitted, ...withoutLabel } = validInput;
+    const result = CreateBatchBodySchema.safeParse(withoutLabel);
     expect(result.success).toBe(true);
   });
 
@@ -72,10 +78,10 @@ describe("CreateBatchBodySchema", () => {
     expect(result.success).toBe(true);
   });
 
-  it("異常系: basePath が空文字は拒否される", () => {
+  it("異常系: batchLabel が空文字は拒否される", () => {
     const result = CreateBatchBodySchema.safeParse({
       ...validInput,
-      basePath: "",
+      batchLabel: "",
     });
     expect(result.success).toBe(false);
   });

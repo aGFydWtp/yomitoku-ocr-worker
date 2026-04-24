@@ -79,7 +79,7 @@ batchesRoutes.openapi(createBatchRoute, async (c) => {
 
   await store.putBatchWithFiles({
     batchJobId,
-    basePath: body.basePath,
+    batchLabel: body.batchLabel,
     files: body.files,
     bucket: bucketName,
     extraFormats: body.extraFormats,
@@ -258,7 +258,9 @@ batchesRoutes.openapi(reanalyzeBatchRoute, async (c) => {
   const store = new BatchStore(batchTableName);
   await store.putBatchWithFiles({
     batchJobId: newBatchJobId,
-    basePath: parentBatch.basePath,
+    // parentBatch.batchLabel は string | null (legacy 未設定で null)。
+    // putBatchWithFiles は string | undefined を期待するため明示変換する。
+    batchLabel: parentBatch.batchLabel ?? undefined,
     files: filesToReanalyze,
     bucket: bucketName,
     parentBatchJobId: batchJobId,
@@ -323,7 +325,7 @@ batchesRoutes.openapi(startBatchRoute, async (c) => {
   });
 
   // SFN 起動。入力には batchJobId のみを渡す（BatchExecution 側で BatchTable
-  // から basePath/extraFormats/files を参照する設計）。
+  // から extraFormats/files を参照する設計）。
   const result = await sfnClient.send(
     new StartExecutionCommand({
       stateMachineArn: batchExecStateMachineArn,

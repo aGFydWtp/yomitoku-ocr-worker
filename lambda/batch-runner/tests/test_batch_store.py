@@ -58,7 +58,7 @@ def _seed_batch(table, batch_id: str, files: list[str], status: str = "PROCESSIN
         "entityType": "BATCH",
         "batchJobId": batch_id,
         "status": status,
-        "basePath": "samples",
+        "batchLabel": "samples",
         "totals": {"total": len(files), "succeeded": 0, "failed": 0, "inProgress": len(files)},
         "createdAt": "2026-04-22T09:00:00.000Z",
         "updatedAt": "2026-04-22T09:00:00.000Z",
