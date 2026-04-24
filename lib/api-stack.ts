@@ -88,11 +88,14 @@ export class ApiStack extends Stack {
 
     // BatchTable: META/FILE アイテムの CRUD + GSI1/GSI2 の Query + 反解析時の
     // 原子的コピーに必要な TransactWriteItems。
+    // ``BatchGetItem`` は GSI1/GSI2 が KEYS_ONLY projection のため、Query の
+    // 返り keys から META 本体を引き直すのに必要 (``BatchQuery.fetchMetasByKeys``)。
     fn.addToRolePolicy(
       new PolicyStatement({
         effect: Effect.ALLOW,
         actions: [
           "dynamodb:GetItem",
+          "dynamodb:BatchGetItem",
           "dynamodb:PutItem",
           "dynamodb:UpdateItem",
           "dynamodb:Query",
