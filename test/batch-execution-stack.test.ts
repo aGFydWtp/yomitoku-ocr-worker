@@ -68,6 +68,17 @@ describe("BatchExecutionStack", () => {
       });
     });
 
+    it("Ephemeral storage が 50 GiB 以上 (P2 MAX_TOTAL_BYTES 10 GB 運用の前提)", () => {
+      // batch-runner は入力 PDF を ``/tmp`` に全 DL して処理する。Fargate の
+      // ephemeral storage 既定 20 GB では ``MAX_TOTAL_BYTES`` 10 GB 運用で
+      // 入力 + 出力 + visualization + process_log の合計余裕が不足するため、
+      // 50 GiB 以上を確保しておく (最大 200 GB まで拡張可能)。
+      const { template } = createStack();
+      template.hasResourceProperties("AWS::ECS::TaskDefinition", {
+        EphemeralStorage: Match.objectLike({ SizeInGiB: 50 }),
+      });
+    });
+
     it("コンテナ定義に awslogs ログドライバが設定されている", () => {
       const { template } = createStack();
       template.hasResourceProperties("AWS::ECS::TaskDefinition", {

@@ -163,10 +163,15 @@ export class BatchExecutionStack extends Stack {
       removalPolicy: RemovalPolicy.RETAIN,
     });
 
-    // --- Fargate Task Definition (4 vCPU / 16 GB) ---
+    // --- Fargate Task Definition (4 vCPU / 16 GB, ephemeral 50 GiB) ---
+    // batch-runner は入力 PDF を /tmp に全 DL し output / visualization /
+    // process_log をローカル展開する。Fargate 既定 20 GB だと
+    // ``MAX_TOTAL_BYTES`` 10 GB 運用で余裕が不足するため 50 GiB に拡張。
+    // 1000 ファイル対応 (spec: batch-scale-out) ではさらに引き上げ検討。
     this.taskDefinition = new FargateTaskDefinition(this, "BatchTaskDef", {
       cpu: 4096,
       memoryLimitMiB: 16384,
+      ephemeralStorageGiB: 50,
       runtimePlatform: {
         cpuArchitecture: CpuArchitecture.X86_64,
         operatingSystemFamily: OperatingSystemFamily.LINUX,
