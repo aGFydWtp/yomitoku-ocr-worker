@@ -1,9 +1,27 @@
-import { QueryCommand } from "@aws-sdk/lib-dynamodb";
+import { BatchGetCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
 import type { BatchStatus } from "../schemas";
 import type { BatchMeta, BatchWithFiles, FileItem } from "./batch-store";
 import { BATCH_LIST_LIMIT, QUERY_LIMIT } from "./batch-store";
 import { docClient } from "./dynamodb";
 import { decodeBatchCursor, encodeBatchCursor } from "./validate";
+
+/**
+ * Raw DDB META アイテム (docClient unmarshalled) から型付き ``BatchMeta`` を
+ * 抽出する。``listBatchesByStatus`` (GSI1 経由) と ``listChildBatches``
+ * (GSI2 経由) で共有する。
+ */
+function metaItemToBatchMeta(i: Record<string, unknown>): BatchMeta {
+  return {
+    batchJobId: i.batchJobId as string,
+    status: i.status as BatchStatus,
+    totals: i.totals as BatchMeta["totals"],
+    basePath: i.basePath as string,
+    createdAt: i.createdAt as string,
+    startedAt: (i.startedAt as string | null) ?? null,
+    updatedAt: i.updatedAt as string,
+    parentBatchJobId: (i.parentBatchJobId as string | null) ?? null,
+  };
+}
 
 // ---------------------------------------------------------------------------
 // BatchQuery — 読み取り専用クラス
@@ -95,6 +113,41 @@ export class BatchQuery {
   }
 
   // -------------------------------------------------------------------------
+  // fetchMetasByKeys — GSI1/GSI2 Query の戻り keys から BatchGetItem で本体解決
+  //
+  // ``processing-stack.ts`` の GSI1/GSI2 は ``projectionType: KEYS_ONLY`` で、
+  // Query レスポンスは PK/SK (+ GSI*PK / GSI*SK) のみを返す。
+  // ``batchJobId`` / ``status`` / ``totals`` 等の META 属性を解決するには
+  // ``BatchGetItem`` で base table を引き直す必要がある。
+  //
+  // BATCH_LIST_LIMIT <= 50 <= BatchGetItem 上限 100 key/call のため常に 1 回で完了。
+  // GSI の結果順序は BatchGetItem の結果順序と必ずしも一致しないため、
+  // 最後に PK で戻って GSI の順序を保つ。
+  // -------------------------------------------------------------------------
+  private async fetchMetasByKeys(
+    keys: Array<{ PK: string; SK: string }>,
+  ): Promise<BatchMeta[]> {
+    if (keys.length === 0) return [];
+    const res = await docClient.send(
+      new BatchGetCommand({
+        RequestItems: {
+          [this.tableName]: { Keys: keys },
+        },
+      }),
+    );
+    const responses = (res.Responses?.[this.tableName] ?? []) as Array<
+      Record<string, unknown>
+    >;
+    // BatchGetItem の返却順は保証されないため、入力 keys の PK 順で並べ直す
+    const byPk = new Map<string, Record<string, unknown>>();
+    for (const r of responses) byPk.set(r.PK as string, r);
+    return keys
+      .map((k) => byPk.get(k.PK))
+      .filter((r): r is Record<string, unknown> => r !== undefined)
+      .map(metaItemToBatchMeta);
+  }
+
+  // -------------------------------------------------------------------------
   // listBatchesByStatus — GSI1 を使ったページング
   // -------------------------------------------------------------------------
   async listBatchesByStatus(
@@ -117,16 +170,11 @@ export class BatchQuery {
       }),
     );
 
-    const items: BatchMeta[] = (res.Items ?? []).map((i) => ({
-      batchJobId: i.batchJobId as string,
-      status: i.status as BatchStatus,
-      totals: i.totals as BatchMeta["totals"],
-      basePath: i.basePath as string,
-      createdAt: i.createdAt as string,
-      startedAt: (i.startedAt as string | null) ?? null,
-      updatedAt: i.updatedAt as string,
-      parentBatchJobId: (i.parentBatchJobId as string | null) ?? null,
+    const keys = (res.Items ?? []).map((i) => ({
+      PK: i.PK as string,
+      SK: i.SK as string,
     }));
+    const items = await this.fetchMetasByKeys(keys);
 
     const nextCursor = res.LastEvaluatedKey
       ? encodeBatchCursor(res.LastEvaluatedKey as Record<string, unknown>)
@@ -154,15 +202,10 @@ export class BatchQuery {
       }),
     );
 
-    return (res.Items ?? []).map((i) => ({
-      batchJobId: i.batchJobId as string,
-      status: i.status as BatchStatus,
-      totals: i.totals as BatchMeta["totals"],
-      basePath: i.basePath as string,
-      createdAt: i.createdAt as string,
-      startedAt: (i.startedAt as string | null) ?? null,
-      updatedAt: i.updatedAt as string,
-      parentBatchJobId: parentBatchJobId,
+    const keys = (res.Items ?? []).map((i) => ({
+      PK: i.PK as string,
+      SK: i.SK as string,
     }));
+    return this.fetchMetasByKeys(keys);
   }
 }

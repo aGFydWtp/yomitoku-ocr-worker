@@ -363,12 +363,14 @@ describe("ApiStack (batch-first IAM / env wiring, Task 6.2)", () => {
       expect(JSON.stringify(s3Resources)).toContain("batches/*");
     });
 
-    it("BatchTable への PutItem / UpdateItem / GetItem / Query / TransactWriteItems 権限を付与している", () => {
+    it("BatchTable への PutItem / UpdateItem / GetItem / BatchGetItem / Query / TransactWriteItems 権限を付与している", () => {
       const { template } = createStack();
       const stmts = extractStatements(template);
       expect(hasAction(stmts, "dynamodb:PutItem")).toBe(true);
       expect(hasAction(stmts, "dynamodb:UpdateItem")).toBe(true);
       expect(hasAction(stmts, "dynamodb:GetItem")).toBe(true);
+      // GSI KEYS_ONLY の返却 keys から META 本体を BatchGetItem で引き直す
+      expect(hasAction(stmts, "dynamodb:BatchGetItem")).toBe(true);
       expect(hasAction(stmts, "dynamodb:Query")).toBe(true);
       expect(hasAction(stmts, "dynamodb:TransactWriteItems")).toBe(true);
     });
