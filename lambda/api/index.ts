@@ -3,6 +3,16 @@ import { OpenAPIHono } from "@hono/zod-openapi";
 import { handle } from "hono/aws-lambda";
 import { handleError } from "./lib/errors";
 import { batchesRoutes } from "./routes/batches";
+import {
+  MAX_FILE_BYTES,
+  MAX_FILES_PER_BATCH,
+  MAX_TOTAL_BYTES,
+} from "./schemas";
+
+const MB = 1024 * 1024;
+const GB = 1024 * 1024 * 1024;
+const formatSize = (bytes: number): string =>
+  bytes >= GB ? `${bytes / GB} GB` : `${bytes / MB} MB`;
 
 const app = new OpenAPIHono();
 
@@ -85,9 +95,9 @@ app.doc("/doc", {
       "- **500 Internal Server Error**: サーバ側の予期せぬ失敗。**最大 3 回まで指数バックオフで再試行**を推奨。",
       "",
       "## 上限値 (ハードリミット)",
-      "- 1 バッチあたり最大 **100 ファイル**",
-      "- 1 バッチあたり合計 **500 MB**",
-      "- 1 ファイルあたり最大 **50 MB**",
+      `- 1 バッチあたり最大 **${MAX_FILES_PER_BATCH} ファイル**`,
+      `- 1 バッチあたり合計 **${formatSize(MAX_TOTAL_BYTES)}**`,
+      `- 1 ファイルあたり最大 **${formatSize(MAX_FILE_BYTES)}**`,
       "- 拡張子は **`.pdf`** のみ (日本語ファイル名可)",
       "- `uploadUrl` 有効期限 **15 分** / `resultUrl` 有効期限 **60 分** (呼び出しごとに再発行)",
     ].join("\n"),
