@@ -71,12 +71,9 @@ export const CreateBatchBodySchema = z
           filename: z
             .string()
             .min(1, "filename must not be empty")
-            .refine(
-              (name) => allowedExtensionRegex.test(name),
-              (name) => ({
-                message: `filename "${name}" has unsupported extension. Allowed: ${ALLOWED_EXTENSIONS.join(", ")}`,
-              }),
-            )
+            .refine((name) => allowedExtensionRegex.test(name), {
+              error: `filename has unsupported extension. Allowed: ${ALLOWED_EXTENSIONS.join(", ")}`,
+            })
             .openapi({
               description: `拡張子は ${ALLOWED_EXTENSIONS.join(" / ")} のみ許可。日本語ファイル名も可。`,
               example: "document.pdf",
