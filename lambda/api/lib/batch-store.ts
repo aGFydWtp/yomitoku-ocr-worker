@@ -68,8 +68,12 @@ export interface BatchWithFiles extends BatchMeta {
 
 export interface PutBatchWithFilesInput {
   batchJobId: string;
-  /** 任意の表示用ラベル。省略時は META から属性を書き込まない。 */
-  batchLabel?: string | null;
+  /**
+   * 任意の表示用ラベル。省略または undefined の場合は META から属性を書き込まない。
+   * ``BatchMeta.batchLabel`` は ``string | null`` だが、呼び出し側 (reanalyze 等)
+   * は ``?? undefined`` で渡すことで「未設定」の意図を明示する。
+   */
+  batchLabel?: string;
   files: ReadonlyArray<{ filename: string }>;
   bucket: string;
   extraFormats?: ReadonlyArray<string>;
@@ -126,7 +130,7 @@ export class BatchStore {
       parentBatchJobId = null,
     } = input;
 
-    // batchLabel 検証（optional）: null/undefined/省略時は undefined。
+    // batchLabel 検証（optional）: undefined/省略時は undefined のまま通過。
     // 明示的な空文字・path traversal・無効文字は ValidationError (400)。
     const safeLabel = validateBatchLabel(batchLabel);
 

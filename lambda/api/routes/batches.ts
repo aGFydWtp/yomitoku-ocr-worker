@@ -258,7 +258,9 @@ batchesRoutes.openapi(reanalyzeBatchRoute, async (c) => {
   const store = new BatchStore(batchTableName);
   await store.putBatchWithFiles({
     batchJobId: newBatchJobId,
-    batchLabel: parentBatch.batchLabel,
+    // parentBatch.batchLabel は string | null (legacy 未設定で null)。
+    // putBatchWithFiles は string | undefined を期待するため明示変換する。
+    batchLabel: parentBatch.batchLabel ?? undefined,
     files: filesToReanalyze,
     bucket: bucketName,
     parentBatchJobId: batchJobId,

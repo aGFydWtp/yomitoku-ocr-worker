@@ -633,6 +633,29 @@ describe("POST /batches/:batchJobId/reanalyze", () => {
     expect(storeArgs.parentBatchJobId).toBe(
       "00000000-0000-4000-8000-000000000001",
     );
+    // 親バッチの batchLabel が子バッチに継承されること
+    expect(storeArgs.batchLabel).toBe("project/2026/test");
+  });
+
+  it("正常系: 親バッチの batchLabel が null (legacy 未設定) でも 201 を返し、子は undefined を受け取る", async () => {
+    mockGetBatchWithFiles.mockResolvedValue({
+      ...MOCK_BATCH_WITH_FILES,
+      batchLabel: null,
+    });
+    mockHeadObject.mockResolvedValue(true);
+    mockListFailedFiles.mockResolvedValue(FAILED_FILES);
+    mockPutBatchWithFiles.mockResolvedValue(undefined);
+    mockCreateUploadUrls.mockResolvedValue([UPLOAD_RESULTS[1]]);
+
+    const app = createApp();
+    const res = await app.request(
+      "/batches/00000000-0000-4000-8000-000000000001/reanalyze",
+      { method: "POST" },
+    );
+    expect(res.status).toBe(201);
+    const storeArgs = mockPutBatchWithFiles.mock.calls[0][0];
+    // null 親からは undefined が渡り、DDB 側で batchLabel 属性が書かれない
+    expect(storeArgs.batchLabel).toBeUndefined();
   });
 
   it("404: 存在しないバッチは 404 を返す", async () => {
