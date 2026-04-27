@@ -1,0 +1,219 @@
+# Implementation Plan
+
+## Phase 1: Foundation (環境とスキーマ定数)
+
+- [ ] 1. Foundation: API スキーマ定数 / sanitize / Python 設定 / Docker image を Office 形式対応に更新
+- [ ] 1.1 API スキーマ定数を Office 形式対応に拡張
+  - `ALLOWED_EXTENSIONS` を `[".pdf", ".pptx", ".docx", ".xlsx"]` に変更
+  - `contentType` enum に OOXML MIME 3 種 (`application/vnd.openxmlformats-officedocument.{presentationml.presentation,wordprocessingml.document,spreadsheetml.sheet}`) を追加
+  - `CreateBatchBodySchema.files[].filename` の OpenAPI description / `files` 配列の description / `UploadItemSchema.uploadUrl` description を Office 形式対応の文言に更新 (Content-Type が拡張子別に決まる旨を含める)
+  - `MAX_TOTAL_BYTES` (10 GB 既存) と `MAX_FILE_BYTES` (1 GB 既存) の description 文言に Office 形式の使い方を追記
+  - 完了時に `ALLOWED_EXTENSIONS` を import するすべての箇所がコンパイル可能、`pnpm test --filter ./lambda/api -- schemas` が allowlist 拡張のみで失敗しない (refine 追加は 2.2 で行う)
+  - _Requirements: 1.1, 1.4, 1.5, 6.1, 6.3, 7.3_
+- [ ] 1.2 sanitize.ts を ALLOWED_EXTENSIONS ベースの fail-fast 化
+  - `?.trim() || "document.pdf"` の silent fallback を廃止し、空文字 → `ValidationError("Filename is empty after sanitization")` で throw に統一
+  - `cleaned === ".pdf"` 特例 (拡張子のみ → `document.pdf` 化け) を廃止し、`ALLOWED_EXTENSIONS` のいずれかと完全一致する場合は `ValidationError("Filename has no basename (only extension)")` を throw
+  - `endsWith(".pdf")` チェックを `ALLOWED_EXTENSIONS.some(ext => lower.endsWith(ext))` に一般化、throw メッセージを `Filename must end with one of: .pdf, .pptx, .docx, .xlsx` に更新
+  - `ALLOWED_EXTENSIONS` を `../schemas` から import して定数を単一情報源化、循環依存が発生しないことを `pnpm tsc --noEmit` で確認
+  - 完了時に `sanitizeFilename(".pptx")` / `sanitizeFilename("")` / `sanitizeFilename("test.pptx")` の実行で前者 2 件は throw、後者は `"test.pptx"` を返す (REPL or 既存 test 実行で確認)
+  - _Requirements: 1.1, 1.3, 7.3_
+  - _Depends: 1.1_
+- [ ] 1.3 (P) Python BatchRunnerSettings に Office 変換用 env を追加
+  - `OFFICE_CONVERT_TIMEOUT_SEC` (int, default=300)、`OFFICE_CONVERT_MAX_CONCURRENT` (int, default=4 = Fargate vCPU)、`MAX_CONVERTED_FILE_BYTES` (int, default=1073741824 = 1 GiB) を `BatchRunnerSettings` frozen dataclass に追加
+  - `from_env()` のロジックは欠落時 default を使う (既存必須 env と異なり ValueError raise しない、本 spec の運用切替リスクを下げるため)
+  - 完了時に `pytest lambda/batch-runner/tests/test_settings.py` が新フィールド含めて pass し、`BatchRunnerSettings.from_env()` を素の env で呼ぶと 3 つの新フィールドに default 値が入る
+  - _Requirements: 2.4, 4.6, 5.2_
+  - _Boundary: settings.py_
+- [ ] 1.4 (P) Dockerfile に LibreOffice + CJK フォント、requirements.txt に msoffcrypto-tool を追加
+  - `lambda/batch-runner/Dockerfile` に `WORKDIR /app` 直後 (COPY requirements.txt の前) で `apt-get install -y --no-install-recommends libreoffice-core libreoffice-impress libreoffice-writer libreoffice-calc fonts-noto-cjk fonts-ipaexfont` を実行 (USER 切替前、root 権限で)、末尾に `rm -rf /var/lib/apt/lists/*`
+  - `msoffcrypto-tool` は **APT には含めない** (Debian package 名は `python3-msoffcrypto` で `msoffcrypto-tool` という APT 名は存在しないため build が失敗する)。代わりに `lambda/batch-runner/requirements.txt` に `msoffcrypto-tool>=5,<6` を追記
+  - 完了時に `docker build --platform linux/amd64 -t batch-runner-test lambda/batch-runner` が成功し、`docker run --rm batch-runner-test soffice --version` が exit 0 を返し、`docker run --rm batch-runner-test python -c "import msoffcrypto"` が exit 0 を返す
+  - image size 増分を計測 (許容予算 +700–900 MB)、commit message に記録
+  - _Requirements: 2.5, 4.5_
+  - _Boundary: Dockerfile, requirements.txt_
+
+## Phase 2: API Core (TS Lambda 層)
+
+- [ ] 2. Core: API 層に Office 形式受理 / stem 一意性 / errorCategory / OpenAPI description 反映
+- [ ] 2.1 (P) batch-presign.ts に拡張子別の既定 Content-Type マッピングを実装
+  - `EXTENSION_TO_CONTENT_TYPE: Record<string, string>` を新設し、`.pdf` / `.pptx` / `.docx` / `.xlsx` を各 OOXML MIME / PDF MIME に対応付け
+  - `createUploadUrls()` 内で `f.contentType ?? defaultContentType(safeFilename)` の形に変更 (未指定時は拡張子 lookup、未知拡張子は `application/octet-stream` フォールバック)
+  - 完了時に `pptx` ファイル名で `contentType` 未指定の入力を `createUploadUrls()` に渡すと、署名 URL の `X-Amz-SignedHeaders` に `content-type` が含まれ署名対象 Content-Type が OOXML MIME になる (test で assert)
+  - _Requirements: 1.2_
+  - _Boundary: batch-presign.ts_
+  - _Depends: 1.1_
+- [ ] 2.2 (P) schemas.ts CreateBatchBodySchema に stem 一意性 refine を追加
+  - `files` 配列レベルで `.refine()` を追加し、各 `f.filename` に対して `sanitizeFilename` (try/catch ラップ) → `path.parse(name).name.toLowerCase()` で stem を取得し `Set` 比較で重複検出
+  - 重複検出時のエラーメッセージは `Duplicate stem detected. Conflicting files: [<filename>, <filename>, ...]` の形式で重複した stem 値と該当ファイル名を含める
+  - sanitize 由来の throw が refine 内で起きた場合は `false` を返して 500 化を防ぐ (前段の `allowedExtensionRegex` と Zod `.min(1)` で大半は弾かれる前提)
+  - 完了時に `report.pdf` + `report.pptx` を含むリクエストが 400 を返し、レスポンス body に重複 stem `report` と両ファイル名が含まれる
+  - _Requirements: 3.4, 3.5_
+  - _Boundary: schemas.ts_
+  - _Depends: 1.2_
+- [ ] 2.3 (P) batch-store.ts (TS) に FileItem.errorCategory フィールドを追加
+  - `FileItem` 型に `errorCategory?: "CONVERSION_FAILED" | "OCR_FAILED"` を optional で追加
+  - `updateFileResult()` の `UpdateExpression` に `errorCategory` を `SET` (引数 None なら属性 set しない)、`getFile()` で読み出して FileItem に展開
+  - `BatchFileSchema` (Zod) に対応する `.optional()` フィールドを追加し、API レスポンスで expose
+  - 完了時に DDB に `errorCategory: "CONVERSION_FAILED"` を持つ FILE アイテムを書き込み、`GET /batches/{id}/files` のレスポンス JSON に `errorCategory` フィールドが含まれる (既存 FILE アイテムは未指定で読み出し時 undefined)
+  - _Requirements: 4.2, 4.3_
+  - _Boundary: batch-store.ts (TS)_
+  - _Depends: 1.1_
+- [ ] 2.4 (P) index.ts の OpenAPI info.description を Office 形式対応に更新
+  - `:37` の "PDF を `PUT`" → "PDF / PPTX / DOCX / XLSX を `PUT`" + Content-Type は拡張子別 MIME に変更
+  - `:48` 利用例 body に PPTX 例 (`{"filename":"slides.pptx"}`) を追加して PDF + PPTX 混在を提示
+  - `:52` curl サンプルの直後に PPTX 用 `-H 'content-type: application/vnd.openxmlformats-officedocument.presentationml.presentation' --data-binary @slides.pptx "$URL"` を追記
+  - `:82` smoke の文言に「Office 形式 (PPTX / DOCX / XLSX) は内部 PDF 変換で +1–3 秒/ファイル程度のオーバーヘッド」を併記
+  - `:101` 「拡張子は **`.pdf`** のみ」 → 「拡張子は **`.pdf` / `.pptx` / `.docx` / `.xlsx`** (日本語ファイル名可)。Office 形式は内部で LibreOffice により PDF 化されてから OCR にかかる」
+  - 完了時に `curl http://localhost/openapi.json | jq '.info.description'` 出力 (or 同等の vitest スナップショット) に Office 形式の文言が 5 箇所すべて含まれる
+  - _Requirements: 1.5_
+  - _Boundary: index.ts_
+  - _Depends: 1.1_
+
+## Phase 3: Batch Runner Core (Python Fargate 層)
+
+- [ ] 3. Core: Office → PDF 変換層と process_log の error_category 連携
+- [ ] 3.1 office_converter.py を新規実装
+  - public API: `is_office_format(filename) -> bool` (`.pptx` / `.docx` / `.xlsx` を True、`.pdf` / その他は False) / `is_password_protected(path) -> bool` (`msoffcrypto.OfficeFile(file).is_encrypted()` を try/except で wrap、open 不能は False) / `convert_office_to_pdf(input_path, work_dir, timeout_sec) -> Path` (LibreOffice subprocess 呼び出し、成功時に PDF パス返す、失敗は 5 種の専用例外を raise) / `validate_converted_size(pdf_path, max_bytes) -> None` (上限超過なら `ConversionOversizeError`) / `convert_office_files(input_dir, *, timeout_sec, max_concurrent, max_converted_bytes) -> ConvertResult` (semaphore 並列 + 成功時の Office 原本ローカル削除)
+  - LibreOffice CLI: `["soffice", "--headless", "--invisible", "--nodefault", "--nofirststartwizard", "--norestore", "--nolockcheck", f"-env:UserInstallation=file:///tmp/lo_profile_{uuid.uuid4().hex}/", "--convert-to", "pdf", "--outdir", str(work_dir), str(input_path)]`
+  - subprocess は `Popen(start_new_session=True)` + timeout 経過時に `os.killpg(os.getpgid(p.pid), signal.SIGKILL)` で zombie 防止
+  - silent fail 検知: `pdf.exists() and pdf.stat().st_size > 0` を必須チェック (pptx_to_pdf_sample.py の既往実装パターン流用)
+  - profile dir cleanup: `try/finally` で `shutil.rmtree(profile_dir, ignore_errors=True)`
+  - 例外型: `ConversionEncryptedError` / `ConversionTimeoutError` / `ConversionExitCodeError` / `ConversionSilentFailError` / `ConversionOversizeError` をモジュール内に定義
+  - dataclass: `ConvertedFile(original_path, pdf_path)` / `ConvertFailure(original_path, reason, detail)` / `ConvertResult(succeeded, failed)` を frozen で定義
+  - 完了時に Python REPL で `convert_office_files(Path("/tmp/test"), timeout_sec=60, max_concurrent=2, max_converted_bytes=10**9)` を呼ぶと、PPTX を 1 件含むディレクトリで `ConvertResult.succeeded` に PDF パスが入り Office 原本がローカルから消える
+  - _Requirements: 2.1, 2.2, 2.3, 2.4, 4.5, 4.6, 4.7, 5.1, 5.2, 5.3, 7.2, 9.2, 9.3_
+  - _Boundary: office_converter.py_
+  - _Depends: 1.3, 1.4_
+- [ ] 3.2 (P) ProcessLogEntry に error_category フィールドを追加し read_process_log で読み出す
+  - `ProcessLogEntry` dataclass に `error_category: str | None = None` を追加
+  - `read_process_log()` の dict → dataclass 変換で `data.get("error_category")` を呼ぶ (欠落時 `None`、後方互換維持)
+  - 完了時に `error_category` フィールドが無い旧形式の jsonl 行を読み込んでも例外を出さず `error_category=None` の `ProcessLogEntry` が yield される
+  - _Requirements: 4.2, 4.4_
+  - _Boundary: process_log_reader.py_
+- [ ] 3.3 batch_store.py apply_process_log で errorCategory を DDB に書き、OCR_FAILED を導出
+  - `update_file_result()` に `error_category: str | None = None` 引数を追加し、`UpdateExpression` で `errorCategory` を `SET` (None なら属性更新しない、TS 側 `batch-store.ts:errorCategory` と同名 attribute)
+  - `apply_process_log()` で `entry.success is False` のとき:
+    - `entry.error_category == "CONVERSION_FAILED"` ならそのまま採用
+    - `entry.error_category is None` なら `"OCR_FAILED"` に正規化して `update_file_result(error_category="OCR_FAILED", ...)` を呼ぶ
+  - 完了時に test fixture 経由で `success=False, error_category="CONVERSION_FAILED"` のエントリが DDB に `errorCategory=CONVERSION_FAILED` として書き込まれ、`success=False, error_category=None` は `errorCategory=OCR_FAILED` として書き込まれる
+  - _Requirements: 4.2, 4.3_
+  - _Boundary: batch_store.py (Py)_
+  - _Depends: 3.2_
+
+## Phase 4: Integration (オーケストレーションと CDK 配線)
+
+- [ ] 4. Integration: main.py 変換フェーズ挿入と CDK env 配線
+- [ ] 4.1 main.py に convert_office_files フェーズを挿入し process_log に CONVERSION_FAILED を追記
+  - `download_inputs` の直後、`asyncio.run(run_async_batch(...))` の前に分岐ロジックを配置:
+    - `office_files_present = any(is_office_format(p.name) for p in downloaded)` で早期判定
+    - `office_files_present == False` なら変換層を起動せず既存フローへ (R7.1 充足)
+    - `office_files_present == True` なら `convert_result = convert_office_files(input_dir, timeout_sec=settings.office_convert_timeout_sec, max_concurrent=settings.office_convert_max_concurrent, max_converted_bytes=settings.max_converted_file_bytes)` を呼ぶ
+  - `convert_result.failed` の各エントリを `process_log.jsonl` に直接追記する private helper `_append_conversion_failures_to_log(log_path, failed)` を実装。各エントリは `{"timestamp": iso, "file_path": str, "filename": ..., "success": false, "error": detail, "error_category": "CONVERSION_FAILED"}` の形
+  - 変換成功で原本がローカルから消えると input_dir には PDF のみ残り、`run_async_batch` / `generate_all_visualizations` / `s3_sync.upload_outputs` は形式に関わらず既存ロジックでそのまま動く (R3.1 / R3.2 / R3.3 / R8.1 / R8.2 / R8.3 / R7.2 / R9.2 / R9.3 充足)
+  - S3 input prefix への副作用なし (S3 オブジェクト delete API を呼ばない、R9.1 維持)
+  - 完了時に PDF + PPTX 混在のローカル input_dir を作って `main.run(settings)` を mock 経由で 1 周し、`process_log.jsonl` に成功と CONVERSION_FAILED が混在し、DDB FILE アイテムが `errorCategory` 含めて期待通り更新される (test_main.py で確認、5.8 で詳細)
+  - _Requirements: 2.1, 2.3, 3.1, 3.2, 4.1, 4.2, 7.1, 8.1, 8.2, 8.3, 9.1, 9.2, 9.3_
+  - _Depends: 3.1, 3.2, 3.3_
+- [ ] 4.2 (P) batch-execution-stack.ts TaskDefinition env に OFFICE_CONVERT_* を配線
+  - 既存 `containerOverrides` ではなく `TaskDefinition.containerDefinitions[].environment` の static 部に 3 つ追加: `OFFICE_CONVERT_TIMEOUT_SEC: "300"`, `OFFICE_CONVERT_MAX_CONCURRENT: "4"`, `MAX_CONVERTED_FILE_BYTES: String(1024 * 1024 * 1024)`
+  - 値はビルド時定数 (CDK synth 時に固定)、将来 SSM Parameter Store 化したくなれば別途 spec
+  - 完了時に `pnpm cdk synth BatchExecutionStack` の出力 CFN テンプレート JSON を `jq '.Resources[].Properties.ContainerDefinitions[].Environment'` で確認し 3 つの環境変数が含まれる
+  - _Requirements: 2.4, 4.6, 5.2_
+  - _Depends: 1.3_
+
+## Phase 5: Validation (Unit / Integration / E2E / Manual)
+
+- [ ] 5. Validation: 単体 / 統合 / E2E テストと CJK 描画の手動検証
+- [ ] 5.1 (P) office_converter の単体テスト (5 失敗経路 + 並列実行 + 暗号化)
+  - `is_office_format()` が `.pptx` / `.docx` / `.xlsx` で True、`.pdf` / `.txt` / 拡張子なしで False を返す
+  - `is_password_protected()` を暗号化 fixture (`msoffcrypto.OfficeFile.encrypt` で生成) で True、平文 fixture で False、壊れたバイト列で False (open 不能を吸収)
+  - `convert_office_to_pdf()` で `subprocess.run` を `unittest.mock.patch` で stub し、success / `TimeoutExpired` / non-zero exit / silent fail (PDF 未生成) / 変換後 PDF が生成されたが 0 byte の 5 ケースをそれぞれの専用例外で raise されることを確認
+  - `validate_converted_size()` が境界 (= max) と境界 +1 で動作分岐
+  - `convert_office_files()` で `subprocess.run` の call 順序が semaphore 制約 (max_concurrent=2 で同時 3 ファイル投入時に 2 件並列実行→ 1 件待機) を満たすことを assert
+  - 完了時に `pytest lambda/batch-runner/tests/test_office_converter.py -v` がすべて pass し coverage が `office_converter.py` 全 public 関数を網羅
+  - _Requirements: 2.2, 2.4, 4.5, 4.6, 4.7, 5.1, 5.2, 5.3_
+  - _Boundary: test_office_converter.py_
+  - _Depends: 3.1_
+- [ ] 5.2 (P) sanitize.test.ts の更新 (Office 通過 + fail-fast throw 4 経路)
+  - `.pptx` / `.docx` / `.xlsx` の正常 sanitize 通過 (旧テストの `.pdf` ケースに 3 種を追加)
+  - 空名 (`""`) / whitespace のみ (`"   "`) / 制御文字 only で `ValidationError("Filename is empty after sanitization")` throw (silent rename 廃止の確認)
+  - 拡張子のみ (`.pdf` / `.pptx` / `.docx` / `.xlsx`) で `ValidationError("Filename has no basename (only extension)")` throw
+  - 不正拡張子 (`.txt` / `.zip`) で `ValidationError("Filename must end with one of: .pdf, .pptx, .docx, .xlsx")` throw (旧 throw メッセージ `"Filename must end with .pdf"` の更新確認)
+  - 既存の 255 byte 超過 throw / Unicode スラッシュ正規化 / path-traversal 除去の挙動を非退行で維持
+  - 完了時に `pnpm vitest --filter ./lambda/api -- lib/sanitize` がすべて pass し、旧 `.toBe("document.pdf")` 系 fallback assertion がすべて throw assertion に置換済
+  - _Requirements: 1.1, 1.3, 7.3_
+  - _Boundary: sanitize.test.ts_
+  - _Depends: 1.2_
+- [ ] 5.3 (P) schemas.test.ts の更新 (Office 受理 / 不正拡張子 / contentType mismatch / stem 重複)
+  - `.pptx` / `.docx` / `.xlsx` を含む CreateBatch リクエストが受理される (R1.1)
+  - `.txt` などで 400 (R1.3)、`.pptx` に `application/pdf` で 400 (R1.4)、contentType 未指定で拡張子別既定値が適用される
+  - `report.pdf` + `report.pptx` の組合せで 400、エラー本文に重複 stem `report` と両ファイル名が含まれる (R3.4 / R3.5)
+  - `Report.pdf` + `report.pptx` のような大文字小文字違いも reject される (case-insensitive)
+  - 3 件以上の重複 (`a.pdf` + `a.pptx` + `a.docx`) でも reject される (boundary)
+  - OpenAPI 生成スナップショット (もしあれば) に Office MIME enum と Office 文言が含まれる
+  - 完了時に `pnpm vitest --filter ./lambda/api -- schemas` がすべて pass
+  - _Requirements: 1.1, 1.2, 1.3, 1.4, 1.5, 3.4, 3.5_
+  - _Boundary: schemas.test.ts_
+  - _Depends: 1.1, 2.2_
+- [ ] 5.4 (P) batch-presign.test.ts の更新 (拡張子別 contentType の署名検証)
+  - `.pptx` ファイルを `contentType` 未指定で投げると、署名 URL の Content-Type が `application/vnd.openxmlformats-officedocument.presentationml.presentation` で署名されている (URL クエリ or `aws-sdk-js` mock の signed headers で確認)
+  - `.docx` / `.xlsx` も同様に確認
+  - `.pdf` で contentType 未指定の既存挙動 (`application/pdf`) が非退行
+  - 不明拡張子 (もし通過した場合) はフォールバックで `application/octet-stream`
+  - 完了時に `pnpm vitest --filter ./lambda/api -- lib/batch-presign` がすべて pass
+  - _Requirements: 1.2_
+  - _Boundary: batch-presign.test.ts_
+  - _Depends: 2.1_
+- [ ] 5.5 (P) Python テストの更新 (process_log_reader / batch_store の error_category 連携)
+  - `test_process_log_reader.py`: `error_category` を含む新形式 jsonl 行が読める / 欠落 fixture が `None` で読める (後方互換)
+  - `test_batch_store.py`: `apply_process_log` が `success=False && error_category=None → OCR_FAILED` に正規化、`error_category="CONVERSION_FAILED"` はそのまま保持、DDB UpdateItem の attribute に `errorCategory` が含まれる (moto で実 DDB 動作確認)
+  - 完了時に `pytest lambda/batch-runner/tests/test_process_log_reader.py lambda/batch-runner/tests/test_batch_store.py -v` がすべて pass
+  - _Requirements: 4.2, 4.3, 4.4_
+  - _Boundary: test_process_log_reader.py, test_batch_store.py_
+  - _Depends: 3.2, 3.3_
+- [ ] 5.6 (P) batch-store.test.ts (TS) で errorCategory R/W coverage を追加
+  - `updateFileResult({ errorCategory: "CONVERSION_FAILED" })` が DDB UpdateItem の `UpdateExpression` に `#errorCategory = :errorCategory` を含めることを mock で assert
+  - `updateFileResult({ errorCategory: undefined })` のときは `errorCategory` 属性を SET しない (旧データ汚染防止)
+  - `getFile()` が `errorCategory` を含むアイテムを正しく FileItem 型に展開 / 含まないアイテムでは undefined
+  - `BatchFileSchema` (Zod) で `errorCategory` が optional として valid
+  - 完了時に `pnpm vitest --filter ./lambda/api -- lib/batch-store` がすべて pass
+  - _Requirements: 4.2, 4.3_
+  - _Boundary: batch-store.test.ts (TS)_
+  - _Depends: 2.3_
+- [ ] 5.7 (P) batch-execution-stack.test.ts に OFFICE_CONVERT_* env と非退行 assert を追加
+  - 新 env 3 件 (`OFFICE_CONVERT_TIMEOUT_SEC` / `OFFICE_CONVERT_MAX_CONCURRENT` / `MAX_CONVERTED_FILE_BYTES`) が `Template.fromStack(stack)` の `Resources[].ContainerDefinitions[].Environment` に含まれることを `Template.hasResourceProperties` で assert
+  - 既存 `ephemeralStorageGiB: 50` / cpu / memory が非退行 (R6.4 / R6.5 の非リグレッション保証)
+  - 完了時に `pnpm test --filter . -- batch-execution-stack` がすべて pass
+  - _Requirements: 2.4, 4.6, 5.2, 6.4, 6.5_
+  - _Boundary: batch-execution-stack.test.ts_
+  - _Depends: 4.2_
+- [ ] 5.8 main.py の混在バッチ統合テスト (test_main.py 拡張)
+  - `download_inputs` を mock し PDF + PPTX が input_dir に並ぶ状態を作る、`office_converter.convert_office_files` を mock して 1 件成功 + 1 件 CONVERSION_FAILED (encrypted 等) を返す、`asyncio.run(run_async_batch)` を mock して残り PDF を success させる
+  - main pipeline 完走後に `process_log.jsonl` に 3 件 (PDF success / 変換成功 PDF success / 変換失敗 CONVERSION_FAILED) が並ぶこと、DDB FILE が `errorCategory` 含めて正しく更新されること、META.status が PARTIAL になること
+  - PDF only バッチで `office_converter.convert_office_files` が **呼ばれない** ことを mock の call_count で assert (R7.1)
+  - 完了時に `pytest lambda/batch-runner/tests/test_main.py -v -k "mixed_batch or pdf_only or convert_skipped"` がすべて pass
+  - _Requirements: 3.1, 3.3, 4.1, 4.2, 4.8, 7.1_
+  - _Depends: 4.1_
+- [ ] 5.9 (P) test_runner.py で可視化が変換後 PDF を読みに行くこと (R8 非退行)
+  - `runner.py:170-171` の `pdf_path = in_path / f"{basename}.pdf"` 解決が、Office 原本が削除済 + 変換後 PDF が並置された状態で正しく PDF を見つけて可視化を生成
+  - 既存 PDF 入力との振る舞いが変わらない (regression check)
+  - 完了時に `pytest lambda/batch-runner/tests/test_runner.py -v -k "visualize"` がすべて pass
+  - _Requirements: 8.1, 8.2, 8.3_
+  - _Boundary: test_runner.py_
+  - _Depends: 4.1_
+- [ ] 5.10 E2E: test_run_async_batch_e2e.py に PDF + PPTX 混在ケースを追加
+  - moto + Stubber で SNS / SQS / S3 / SageMaker をすべて立て、`subprocess.run` を mock した office_converter で PPTX 1 件 + PDF 1 件 + 失敗 PPTX 1 件の混在バッチを 1 周流す
+  - `BatchResult.succeeded_files` / `failed_files` が期待通り、`process_log.jsonl` の出力、DDB FILE 全件 (PDF / 変換成功 / 変換失敗) のステータスと `errorCategory` を最終的に検証
+  - SageMaker invoke は変換後 PDF (拡張子 .pdf、Content-Type application/pdf) のみを受信 (R7.2 確認)
+  - 完了時に `pytest lambda/batch-runner/tests/test_run_async_batch_e2e.py -v -k "mixed"` が pass
+  - _Requirements: 2.1, 3.1, 3.2, 3.3, 7.2, 9.1_
+  - _Boundary: test_run_async_batch_e2e.py_
+  - _Depends: 4.1, 5.1_
+- [ ] 5.11 Manual: built image で日本語 PPTX を実 LibreOffice 変換し CJK 描画を目視確認
+  - `sample-pdf/` (gitignore 配下) に日本語混在の `.pptx` (≥ 50 ページ目安、ひらがな / カタカナ / 漢字 / 英字) を 1 件配置し、ローカル `docker run` で `office_converter.convert_office_to_pdf` を呼んで生成 PDF を取得
+  - 生成 PDF を PDF Viewer で開き、日本語が `□` (豆腐) や `?` に置換されていないことを目視確認 (R2.5)
+  - SageMaker stub or 実 endpoint で OCR を流し、結果 JSON 内に元 PPTX に含まれていた日本語文字列が含まれることを `jq` で確認
+  - 確認結果と生成 PDF のサンプル page をスクリーンショット付きで `commit message` または PR description に貼付
+  - 完了時に CJK 文字の代替化が観測されないことを記録
+  - _Requirements: 2.5_
+  - _Depends: 1.4, 4.1_
