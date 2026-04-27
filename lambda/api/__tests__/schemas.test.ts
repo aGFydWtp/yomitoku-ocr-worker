@@ -51,6 +51,13 @@ describe("上限定数", () => {
   it("ALLOWED_EXTENSIONS に .pdf が含まれる", () => {
     expect(ALLOWED_EXTENSIONS).toContain(".pdf");
   });
+
+  it("ALLOWED_EXTENSIONS に Office 形式 (.pptx / .docx / .xlsx) が含まれる", () => {
+    // R1.1, R1.5: API は Office 形式を直接受理する
+    expect(ALLOWED_EXTENSIONS).toContain(".pptx");
+    expect(ALLOWED_EXTENSIONS).toContain(".docx");
+    expect(ALLOWED_EXTENSIONS).toContain(".xlsx");
+  });
 });
 
 describe("CreateBatchBodySchema", () => {
@@ -138,5 +145,98 @@ describe("CreateBatchBodySchema", () => {
       files: exact,
     });
     expect(result.success).toBe(true);
+  });
+
+  it("正常系: .pptx ファイルを受け付ける (R1.1)", () => {
+    const result = CreateBatchBodySchema.safeParse({
+      ...validInput,
+      files: [{ filename: "slides.pptx" }],
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("正常系: .docx ファイルを受け付ける (R1.1)", () => {
+    const result = CreateBatchBodySchema.safeParse({
+      ...validInput,
+      files: [{ filename: "document.docx" }],
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("正常系: .xlsx ファイルを受け付ける (R1.1)", () => {
+    const result = CreateBatchBodySchema.safeParse({
+      ...validInput,
+      files: [{ filename: "spreadsheet.xlsx" }],
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("正常系: PDF と Office 形式の混在を受け付ける (R1.1)", () => {
+    const result = CreateBatchBodySchema.safeParse({
+      ...validInput,
+      files: [
+        { filename: "report.pdf" },
+        { filename: "slides.pptx" },
+        { filename: "memo.docx" },
+        { filename: "data.xlsx" },
+      ],
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("正常系: contentType に PPTX OOXML MIME を指定できる (R1.4)", () => {
+    const result = CreateBatchBodySchema.safeParse({
+      ...validInput,
+      files: [
+        {
+          filename: "slides.pptx",
+          contentType:
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        },
+      ],
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("正常系: contentType に DOCX OOXML MIME を指定できる (R1.4)", () => {
+    const result = CreateBatchBodySchema.safeParse({
+      ...validInput,
+      files: [
+        {
+          filename: "document.docx",
+          contentType:
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        },
+      ],
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("正常系: contentType に XLSX OOXML MIME を指定できる (R1.4)", () => {
+    const result = CreateBatchBodySchema.safeParse({
+      ...validInput,
+      files: [
+        {
+          filename: "spreadsheet.xlsx",
+          contentType:
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        },
+      ],
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("異常系: contentType enum に列挙されていない値は拒否される", () => {
+    const result = CreateBatchBodySchema.safeParse({
+      ...validInput,
+      files: [
+        {
+          filename: "image.pdf",
+          // 画像系 MIME は enum に未登録
+          contentType: "image/png" as unknown as "application/pdf",
+        },
+      ],
+    });
+    expect(result.success).toBe(false);
   });
 });

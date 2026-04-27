@@ -3,7 +3,7 @@
 ## Phase 1: Foundation (環境とスキーマ定数)
 
 - [ ] 1. Foundation: API スキーマ定数 / sanitize / Python 設定 / Docker image を Office 形式対応に更新
-- [ ] 1.1 API スキーマ定数を Office 形式対応に拡張
+- [x] 1.1 API スキーマ定数を Office 形式対応に拡張
   - `ALLOWED_EXTENSIONS` を `[".pdf", ".pptx", ".docx", ".xlsx"]` に変更
   - `contentType` enum に OOXML MIME 3 種 (`application/vnd.openxmlformats-officedocument.{presentationml.presentation,wordprocessingml.document,spreadsheetml.sheet}`) を追加
   - `CreateBatchBodySchema.files[].filename` の OpenAPI description / `files` 配列の description / `UploadItemSchema.uploadUrl` description を Office 形式対応の文言に更新 (Content-Type が拡張子別に決まる旨を含める)

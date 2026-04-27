@@ -38,15 +38,20 @@ export const MAX_FILES_PER_BATCH = 99;
 // 入力 + 出力 + visualization + ログで分け合う前提で 10 GB を上限値として
 // OpenAPI description に表示する。API 層では強制していない
 // (PUT 後の S3 サイズを API が知る手段がないため)。超過すると Fargate の
-// ``No space left on device`` で task が落ちる。
+// ``No space left on device`` で task が落ちる。Office 形式 (.pptx /
+// .docx / .xlsx) は Batch Runner 内で PDF へ変換されるため、変換用の
+// 一時 PDF と LibreOffice 中間ファイルもこの ephemeral storage 内に収まる
+// 必要がある (Office 形式を多数含むバッチでは実効上限が下がる点に注意)。
 export const MAX_TOTAL_BYTES = 10 * 1024 * 1024 * 1024; // 10 GB
 // SageMaker Async Inference の入力 payload ハードリミットに合わせて 1 GB。
 // ``MAX_FILE_BYTES`` は本コード上は ``description`` 文字列の生成にのみ
 // 使われており、API 層では強制していない (クライアントがアップロードする
 // 前に byte size を API に伝えないため検証不能)。超過した場合は実行時に
-// SageMaker 側が ``PayloadTooLargeException`` を返す。
+// SageMaker 側が ``PayloadTooLargeException`` を返す。Office 形式
+// (.pptx / .docx / .xlsx) を入力した場合、変換後 PDF も同じ 1 GB
+// 上限で再検証される (変換後サイズ超過は per-file FAILED)。
 export const MAX_FILE_BYTES = 1024 * 1024 * 1024; // 1 GB
-export const ALLOWED_EXTENSIONS = [".pdf"] as const;
+export const ALLOWED_EXTENSIONS = [".pdf", ".pptx", ".docx", ".xlsx"] as const;
 
 // ---------------------------------------------------------------------------
 // 共通
@@ -95,15 +100,21 @@ export const CreateBatchBodySchema = z
               error: `filename has unsupported extension. Allowed: ${ALLOWED_EXTENSIONS.join(", ")}`,
             })
             .openapi({
-              description: `拡張子は ${ALLOWED_EXTENSIONS.join(" / ")} のみ許可。日本語ファイル名も可。`,
+              description: `拡張子は ${ALLOWED_EXTENSIONS.join(" / ")} のみ許可 (Office 形式は Batch Runner で PDF に自動変換される)。日本語ファイル名も可。Content-Type は拡張子別に決まる: \`.pdf\` → \`application/pdf\` / \`.pptx\` → \`application/vnd.openxmlformats-officedocument.presentationml.presentation\` / \`.docx\` → \`application/vnd.openxmlformats-officedocument.wordprocessingml.document\` / \`.xlsx\` → \`application/vnd.openxmlformats-officedocument.spreadsheetml.sheet\`。`,
               example: "document.pdf",
             }),
           contentType: z
-            .enum(["application/pdf", "application/octet-stream"])
+            .enum([
+              "application/pdf",
+              "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+              "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+              "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+              "application/octet-stream",
+            ])
             .optional()
             .openapi({
               description:
-                "PUT 時に署名される Content-Type。省略時は `application/pdf`。ここで指定した値と PUT リクエストの Content-Type ヘッダは**完全一致している必要あり** (不一致だと S3 が `SignatureDoesNotMatch` で 403)。",
+                "PUT 時に署名される Content-Type。省略時は拡張子から既定値を導出する (`.pdf` → `application/pdf` / `.pptx` → `application/vnd.openxmlformats-officedocument.presentationml.presentation` / `.docx` → `application/vnd.openxmlformats-officedocument.wordprocessingml.document` / `.xlsx` → `application/vnd.openxmlformats-officedocument.spreadsheetml.sheet`)。ここで指定した値と PUT リクエストの Content-Type ヘッダは**完全一致している必要あり** (不一致だと S3 が `SignatureDoesNotMatch` で 403)。",
             }),
         }),
       )
@@ -113,7 +124,7 @@ export const CreateBatchBodySchema = z
         `files must not exceed ${MAX_FILES_PER_BATCH} items`,
       )
       .openapi({
-        description: `1 バッチあたり最大 ${MAX_FILES_PER_BATCH} ファイル。合計 ${MAX_TOTAL_BYTES / 1024 / 1024} MB、1 ファイルあたり ${MAX_FILE_BYTES / 1024 / 1024} MB が上限。`,
+        description: `1 バッチあたり最大 ${MAX_FILES_PER_BATCH} ファイル。合計 ${MAX_TOTAL_BYTES / 1024 / 1024} MB、1 ファイルあたり ${MAX_FILE_BYTES / 1024 / 1024} MB が上限。PDF と Office 形式 (.pptx / .docx / .xlsx) を 1 バッチ内で混在させることが可能 (Office 形式は Batch Runner 内で PDF へ自動変換)。Content-Type は拡張子別に既定値が決まり、各ファイルの \`contentType\` で明示することもできる。`,
       }),
     extraFormats: z.array(z.enum(EXTRA_FORMATS)).optional().openapi({
       description:
@@ -146,12 +157,12 @@ export const UploadItemSchema = z.object({
     .url()
     .openapi({
       description: [
-        "S3 への PDF PUT 用の署名付き URL。以下の制約をすべて満たすこと:",
+        "S3 への PUT 用の署名付き URL (PDF / PPTX / DOCX / XLSX を直接アップロード可能)。以下の制約をすべて満たすこと:",
         "",
         "1. **メソッド**: `PUT` (POST ではない)",
-        "2. **Content-Type ヘッダ**: リクエスト時に指定した `files[].contentType` と完全一致。省略時は `application/pdf`。不一致だと S3 が `SignatureDoesNotMatch` を返して 403。",
+        "2. **Content-Type ヘッダ**: リクエスト時に指定した `files[].contentType` と完全一致。省略時は拡張子別の既定値 (`.pdf` → `application/pdf` / `.pptx` → `application/vnd.openxmlformats-officedocument.presentationml.presentation` / `.docx` → `application/vnd.openxmlformats-officedocument.wordprocessingml.document` / `.xlsx` → `application/vnd.openxmlformats-officedocument.spreadsheetml.sheet`)。不一致だと S3 が `SignatureDoesNotMatch` を返して 403。",
         "3. **有効期限**: 発行から **15 分**。超過した場合は `POST /batches` をやり直して新規 URL を取得してください。",
-        "4. **ボディ**: PDF バイナリをそのまま送信 (multipart/form-data ではない)。",
+        "4. **ボディ**: ファイルバイナリをそのまま送信 (multipart/form-data ではない)。Office 形式は Batch Runner 内で PDF に変換される。",
       ].join("\n"),
       example:
         "https://<bucket>.s3.ap-northeast-1.amazonaws.com/batches/abc-123/input/document.pdf?X-Amz-Algorithm=...",
