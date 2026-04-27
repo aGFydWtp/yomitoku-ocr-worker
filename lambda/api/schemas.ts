@@ -95,6 +95,33 @@ const allowedExtensionRegex = new RegExp(
   "i",
 );
 
+// 拡張子と contentType が一致するか判定。R1.4 の cross-check に使用。
+// `contentType` 未指定 (省略) は cross-check 対象外 (presign 側で拡張子から既定値を導出するため)。
+// `application/octet-stream` も常に許可 (汎用バイナリ MIME はどの拡張子でも合法とする)。
+function isContentTypeCompatible(
+  filename: string,
+  contentType: string,
+): boolean {
+  if (contentType === "application/octet-stream") return true;
+  const idx = filename.lastIndexOf(".");
+  if (idx < 0) return false;
+  const ext = filename.slice(idx).toLowerCase();
+  const expected = EXTENSION_TO_CONTENT_TYPE_MAP[ext];
+  return expected === undefined || expected === contentType;
+}
+
+// schemas.ts 内で完結させるため presign 側 `EXTENSION_TO_CONTENT_TYPE`
+// と同じ map を保持 (将来は共通化を検討)。Office 形式追加に伴う R1.4 の
+// 充足には必要最小限の重複として許容する。
+const EXTENSION_TO_CONTENT_TYPE_MAP: Record<string, string> = {
+  ".pdf": "application/pdf",
+  ".pptx":
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  ".docx":
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+};
+
 // stem 重複検出用ヘルパ。サニタイズ後ベース名を case-insensitive な stem に
 // 落として同一 stem を共有するファイル群を検出し、利用者がリクエストを
 // 修正できるよう「重複していた元ファイル名」を平坦に並べて返す。
@@ -139,31 +166,45 @@ export const CreateBatchBodySchema = z
       }),
     files: z
       .array(
-        z.object({
-          filename: z
-            .string()
-            .min(1, "filename must not be empty")
-            .refine((name) => allowedExtensionRegex.test(name), {
-              error: `filename has unsupported extension. Allowed: ${ALLOWED_EXTENSIONS.join(", ")}`,
-            })
-            .openapi({
-              description: `拡張子は ${ALLOWED_EXTENSIONS.join(" / ")} のみ許可 (Office 形式は Batch Runner で PDF に自動変換される)。日本語ファイル名も可。Content-Type は拡張子別に決まる: \`.pdf\` → \`application/pdf\` / \`.pptx\` → \`application/vnd.openxmlformats-officedocument.presentationml.presentation\` / \`.docx\` → \`application/vnd.openxmlformats-officedocument.wordprocessingml.document\` / \`.xlsx\` → \`application/vnd.openxmlformats-officedocument.spreadsheetml.sheet\`。`,
-              example: "document.pdf",
-            }),
-          contentType: z
-            .enum([
-              "application/pdf",
-              "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-              "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-              "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-              "application/octet-stream",
-            ])
-            .optional()
-            .openapi({
-              description:
-                "PUT 時に署名される Content-Type。省略時は拡張子から既定値を導出する (`.pdf` → `application/pdf` / `.pptx` → `application/vnd.openxmlformats-officedocument.presentationml.presentation` / `.docx` → `application/vnd.openxmlformats-officedocument.wordprocessingml.document` / `.xlsx` → `application/vnd.openxmlformats-officedocument.spreadsheetml.sheet`)。ここで指定した値と PUT リクエストの Content-Type ヘッダは**完全一致している必要あり** (不一致だと S3 が `SignatureDoesNotMatch` で 403)。",
-            }),
-        }),
+        z
+          .object({
+            filename: z
+              .string()
+              .min(1, "filename must not be empty")
+              .refine((name) => allowedExtensionRegex.test(name), {
+                error: `filename has unsupported extension. Allowed: ${ALLOWED_EXTENSIONS.join(", ")}`,
+              })
+              .openapi({
+                description: `拡張子は ${ALLOWED_EXTENSIONS.join(" / ")} のみ許可 (Office 形式は Batch Runner で PDF に自動変換される)。日本語ファイル名も可。Content-Type は拡張子別に決まる: \`.pdf\` → \`application/pdf\` / \`.pptx\` → \`application/vnd.openxmlformats-officedocument.presentationml.presentation\` / \`.docx\` → \`application/vnd.openxmlformats-officedocument.wordprocessingml.document\` / \`.xlsx\` → \`application/vnd.openxmlformats-officedocument.spreadsheetml.sheet\`。`,
+                example: "document.pdf",
+              }),
+            contentType: z
+              .enum([
+                "application/pdf",
+                "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                "application/octet-stream",
+              ])
+              .optional()
+              .openapi({
+                description:
+                  "PUT 時に署名される Content-Type。省略時は拡張子から既定値を導出する (`.pdf` → `application/pdf` / `.pptx` → `application/vnd.openxmlformats-officedocument.presentationml.presentation` / `.docx` → `application/vnd.openxmlformats-officedocument.wordprocessingml.document` / `.xlsx` → `application/vnd.openxmlformats-officedocument.spreadsheetml.sheet`)。ここで指定した値と PUT リクエストの Content-Type ヘッダは**完全一致している必要あり** (不一致だと S3 が `SignatureDoesNotMatch` で 403)。指定した contentType がファイル名拡張子と矛盾する場合 (例: `.pptx` に `application/pdf`) は 400 で reject される。",
+              }),
+          })
+          // R1.4: filename と contentType が両方指定されたとき、拡張子と
+          // contentType が矛盾しないことを cross-check する。
+          // contentType 未指定は presign 側 (`batch-presign.ts`) で既定値を導出するため対象外。
+          // `application/octet-stream` は汎用バイナリ MIME としてどの拡張子でも合法扱い。
+          .refine(
+            (item) =>
+              item.contentType === undefined ||
+              isContentTypeCompatible(item.filename, item.contentType),
+            {
+              error:
+                "contentType does not match filename extension (例: `.pptx` に `application/pdf` を指定するなどの不整合)",
+            },
+          ),
       )
       .min(1, "files must not be empty")
       .max(

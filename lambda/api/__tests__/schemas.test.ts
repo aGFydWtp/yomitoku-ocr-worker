@@ -242,6 +242,96 @@ describe("CreateBatchBodySchema", () => {
     expect(result.success).toBe(false);
   });
 
+  describe("filename ↔ contentType cross-check (R1.4)", () => {
+    it("異常系: .pptx に application/pdf を指定すると 400 で拒否される", () => {
+      const result = CreateBatchBodySchema.safeParse({
+        ...validInput,
+        files: [{ filename: "slides.pptx", contentType: "application/pdf" }],
+      });
+      expect(result.success).toBe(false);
+      const messages = result.success
+        ? []
+        : result.error.issues.map((i) => i.message);
+      expect(messages.join(" ")).toMatch(/contentType does not match/);
+    });
+
+    it("異常系: .pdf に PPTX OOXML MIME を指定すると 400 で拒否される", () => {
+      const result = CreateBatchBodySchema.safeParse({
+        ...validInput,
+        files: [
+          {
+            filename: "doc.pdf",
+            contentType:
+              "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+          },
+        ],
+      });
+      expect(result.success).toBe(false);
+    });
+
+    it("異常系: .docx に XLSX MIME のような Office 内部ミスマッチも 400", () => {
+      const result = CreateBatchBodySchema.safeParse({
+        ...validInput,
+        files: [
+          {
+            filename: "report.docx",
+            contentType:
+              "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+          },
+        ],
+      });
+      expect(result.success).toBe(false);
+    });
+
+    it("正常系: 拡張子と一致する contentType は受理される (PDF / PPTX / DOCX / XLSX)", () => {
+      const result = CreateBatchBodySchema.safeParse({
+        ...validInput,
+        files: [
+          { filename: "a.pdf", contentType: "application/pdf" },
+          {
+            filename: "b.pptx",
+            contentType:
+              "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+          },
+          {
+            filename: "c.docx",
+            contentType:
+              "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+          },
+          {
+            filename: "d.xlsx",
+            contentType:
+              "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+          },
+        ],
+      });
+      expect(result.success).toBe(true);
+    });
+
+    it("正常系: contentType 未指定はどの拡張子でも受理される (presign 側で既定値導出)", () => {
+      const result = CreateBatchBodySchema.safeParse({
+        ...validInput,
+        files: [
+          { filename: "a.pdf" },
+          { filename: "b.pptx" },
+          { filename: "c.docx" },
+          { filename: "d.xlsx" },
+        ],
+      });
+      expect(result.success).toBe(true);
+    });
+
+    it("正常系: application/octet-stream はどの拡張子でも受理される (汎用バイナリ MIME)", () => {
+      const result = CreateBatchBodySchema.safeParse({
+        ...validInput,
+        files: [
+          { filename: "a.pptx", contentType: "application/octet-stream" },
+        ],
+      });
+      expect(result.success).toBe(true);
+    });
+  });
+
   describe("stem 一意性 validation (R3.4 / R3.5)", () => {
     it("異常系: 同一 stem の異拡張子の組合せ (report.pdf + report.pptx) は 400 で拒否される", () => {
       // R3.4: case-insensitive stem 比較で重複検出

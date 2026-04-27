@@ -124,7 +124,7 @@
 ## Phase 5: Validation (Unit / Integration / E2E / Manual)
 
 - [ ] 5. Validation: 単体 / 統合 / E2E テストと CJK 描画の手動検証
-- [ ] 5.1 (P) office_converter の単体テスト (5 失敗経路 + 並列実行 + 暗号化)
+- [x] 5.1 (P) office_converter の単体テスト (5 失敗経路 + 並列実行 + 暗号化)
   - `is_office_format()` が `.pptx` / `.docx` / `.xlsx` で True、`.pdf` / `.txt` / 拡張子なしで False を返す
   - `is_password_protected()` を暗号化 fixture (`msoffcrypto.OfficeFile.encrypt` で生成) で True、平文 fixture で False、壊れたバイト列で False (open 不能を吸収)
   - `convert_office_to_pdf()` で `subprocess.run` を `unittest.mock.patch` で stub し、success / `TimeoutExpired` / non-zero exit / silent fail (PDF 未生成) / 変換後 PDF が生成されたが 0 byte の 5 ケースをそれぞれの専用例外で raise されることを確認
@@ -134,7 +134,7 @@
   - _Requirements: 2.2, 2.4, 4.5, 4.6, 4.7, 5.1, 5.2, 5.3_
   - _Boundary: test_office_converter.py_
   - _Depends: 3.1_
-- [ ] 5.2 (P) sanitize.test.ts の更新 (Office 通過 + fail-fast throw 4 経路)
+- [x] 5.2 (P) sanitize.test.ts の更新 (Office 通過 + fail-fast throw 4 経路)
   - `.pptx` / `.docx` / `.xlsx` の正常 sanitize 通過 (旧テストの `.pdf` ケースに 3 種を追加)
   - 空名 (`""`) / whitespace のみ (`"   "`) / 制御文字 only で `ValidationError("Filename is empty after sanitization")` throw (silent rename 廃止の確認)
   - 拡張子のみ (`.pdf` / `.pptx` / `.docx` / `.xlsx`) で `ValidationError("Filename has no basename (only extension)")` throw
@@ -144,7 +144,7 @@
   - _Requirements: 1.1, 1.3, 7.3_
   - _Boundary: sanitize.test.ts_
   - _Depends: 1.2_
-- [ ] 5.3 (P) schemas.test.ts の更新 (Office 受理 / 不正拡張子 / contentType mismatch / stem 重複)
+- [x] 5.3 (P) schemas.test.ts の更新 (Office 受理 / 不正拡張子 / contentType mismatch / stem 重複)
   - `.pptx` / `.docx` / `.xlsx` を含む CreateBatch リクエストが受理される (R1.1)
   - `.txt` などで 400 (R1.3)、`.pptx` に `application/pdf` で 400 (R1.4)、contentType 未指定で拡張子別既定値が適用される
   - `report.pdf` + `report.pptx` の組合せで 400、エラー本文に重複 stem `report` と両ファイル名が含まれる (R3.4 / R3.5)
@@ -155,7 +155,7 @@
   - _Requirements: 1.1, 1.2, 1.3, 1.4, 1.5, 3.4, 3.5_
   - _Boundary: schemas.test.ts_
   - _Depends: 1.1, 2.2_
-- [ ] 5.4 (P) batch-presign.test.ts の更新 (拡張子別 contentType の署名検証)
+- [x] 5.4 (P) batch-presign.test.ts の更新 (拡張子別 contentType の署名検証)
   - `.pptx` ファイルを `contentType` 未指定で投げると、署名 URL の Content-Type が `application/vnd.openxmlformats-officedocument.presentationml.presentation` で署名されている (URL クエリ or `aws-sdk-js` mock の signed headers で確認)
   - `.docx` / `.xlsx` も同様に確認
   - `.pdf` で contentType 未指定の既存挙動 (`application/pdf`) が非退行
@@ -164,14 +164,14 @@
   - _Requirements: 1.2_
   - _Boundary: batch-presign.test.ts_
   - _Depends: 2.1_
-- [ ] 5.5 (P) Python テストの更新 (process_log_reader / batch_store の error_category 連携)
+- [x] 5.5 (P) Python テストの更新 (process_log_reader / batch_store の error_category 連携)
   - `test_process_log_reader.py`: `error_category` を含む新形式 jsonl 行が読める / 欠落 fixture が `None` で読める (後方互換)
   - `test_batch_store.py`: `apply_process_log` が `success=False && error_category=None → OCR_FAILED` に正規化、`error_category="CONVERSION_FAILED"` はそのまま保持、DDB UpdateItem の attribute に `errorCategory` が含まれる (moto で実 DDB 動作確認)
   - 完了時に `pytest lambda/batch-runner/tests/test_process_log_reader.py lambda/batch-runner/tests/test_batch_store.py -v` がすべて pass
   - _Requirements: 4.2, 4.3, 4.4_
   - _Boundary: test_process_log_reader.py, test_batch_store.py_
   - _Depends: 3.2, 3.3_
-- [ ] 5.6 (P) batch-store.test.ts (TS) で errorCategory R/W coverage を追加
+- [x] 5.6 (P) batch-store.test.ts (TS) で errorCategory R/W coverage を追加
   - `updateFileResult({ errorCategory: "CONVERSION_FAILED" })` が DDB UpdateItem の `UpdateExpression` に `#errorCategory = :errorCategory` を含めることを mock で assert
   - `updateFileResult({ errorCategory: undefined })` のときは `errorCategory` 属性を SET しない (旧データ汚染防止)
   - `getFile()` が `errorCategory` を含むアイテムを正しく FileItem 型に展開 / 含まないアイテムでは undefined
@@ -180,7 +180,7 @@
   - _Requirements: 4.2, 4.3_
   - _Boundary: batch-store.test.ts (TS)_
   - _Depends: 2.3_
-- [ ] 5.7 (P) batch-execution-stack.test.ts に OFFICE_CONVERT_* env と非退行 assert を追加
+- [x] 5.7 (P) batch-execution-stack.test.ts に OFFICE_CONVERT_* env と非退行 assert を追加
   - 新 env 3 件 (`OFFICE_CONVERT_TIMEOUT_SEC` / `OFFICE_CONVERT_MAX_CONCURRENT` / `MAX_CONVERTED_FILE_BYTES`) が `Template.fromStack(stack)` の `Resources[].ContainerDefinitions[].Environment` に含まれることを `Template.hasResourceProperties` で assert
   - 既存 `ephemeralStorageGiB: 50` / cpu / memory が非退行 (R6.4 / R6.5 の非リグレッション保証)
   - 完了時に `pnpm test --filter . -- batch-execution-stack` がすべて pass
