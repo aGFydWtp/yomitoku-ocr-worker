@@ -18,7 +18,7 @@
   - 完了時に `sanitizeFilename(".pptx")` / `sanitizeFilename("")` / `sanitizeFilename("test.pptx")` の実行で前者 2 件は throw、後者は `"test.pptx"` を返す (REPL or 既存 test 実行で確認)
   - _Requirements: 1.1, 1.3, 7.3_
   - _Depends: 1.1_
-- [ ] 1.3 (P) Python BatchRunnerSettings に Office 変換用 env を追加
+- [x] 1.3 (P) Python BatchRunnerSettings に Office 変換用 env を追加
   - `OFFICE_CONVERT_TIMEOUT_SEC` (int, default=300)、`OFFICE_CONVERT_MAX_CONCURRENT` (int, default=4 = Fargate vCPU)、`MAX_CONVERTED_FILE_BYTES` (int, default=1073741824 = 1 GiB) を `BatchRunnerSettings` frozen dataclass に追加
   - `from_env()` のロジックは欠落時 default を使う (既存必須 env と異なり ValueError raise しない、本 spec の運用切替リスクを下げるため)
   - 完了時に `pytest lambda/batch-runner/tests/test_settings.py` が新フィールド含めて pass し、`BatchRunnerSettings.from_env()` を素の env で呼ぶと 3 つの新フィールドに default 値が入る

@@ -62,6 +62,9 @@ class TestBatchRunnerSettings:
             "CIRCUIT_COOLDOWN",
             "BATCH_MAX_DURATION_SEC",
             "EXTRA_FORMATS",
+            "OFFICE_CONVERT_TIMEOUT_SEC",
+            "OFFICE_CONVERT_MAX_CONCURRENT",
+            "MAX_CONVERTED_FILE_BYTES",
         ]
         for key in all_keys:
             os.environ.pop(key, None)
@@ -205,6 +208,8 @@ class TestBatchRunnerSettings:
             "max_retries", "read_timeout",
             "circuit_threshold", "circuit_cooldown",
             "batch_max_duration_sec", "extra_formats",
+            "office_convert_timeout_sec", "office_convert_max_concurrent",
+            "max_converted_file_bytes",
         }
         assert expected == field_names
 
@@ -284,6 +289,89 @@ class TestBatchRunnerSettings:
         importlib.reload(settings)
 
         with pytest.raises(ValueError, match="ASYNC_MAX_CONCURRENT"):
+            settings.BatchRunnerSettings.from_env()
+
+    # ------------------------------------------------------------------
+    # Office 変換用 env (R2.4 / R4.6 / R5.2) — task 1.3
+    # ------------------------------------------------------------------
+    def test_office_convert_fields_have_defaults_when_unset(self):
+        """OFFICE_CONVERT_* / MAX_CONVERTED_FILE_BYTES 未設定時は default を使う (raise しない)。"""
+        for key in (
+            "OFFICE_CONVERT_TIMEOUT_SEC",
+            "OFFICE_CONVERT_MAX_CONCURRENT",
+            "MAX_CONVERTED_FILE_BYTES",
+        ):
+            os.environ.pop(key, None)
+        import sys
+        sys.path.insert(0, str(pytest.importorskip("pathlib").Path(__file__).parent.parent))
+        import importlib
+        sys.modules.pop("settings", None)
+        import settings
+        importlib.reload(settings)
+
+        s = settings.BatchRunnerSettings.from_env()
+        # R4.6: 既定 300 秒/ファイル
+        assert s.office_convert_timeout_sec == 300
+        # R2.4: Fargate 4 vCPU と揃える
+        assert s.office_convert_max_concurrent == 4
+        # R5.2: 1 GiB = SageMaker Async payload 上限
+        assert s.max_converted_file_bytes == 1073741824
+
+    def test_office_convert_fields_overridden_from_env(self):
+        """env 経由で 3 つの新フィールドがオーバーライドされる。"""
+        os.environ["OFFICE_CONVERT_TIMEOUT_SEC"] = "600"
+        os.environ["OFFICE_CONVERT_MAX_CONCURRENT"] = "8"
+        os.environ["MAX_CONVERTED_FILE_BYTES"] = "536870912"  # 512 MiB
+        import sys
+        sys.path.insert(0, str(pytest.importorskip("pathlib").Path(__file__).parent.parent))
+        import importlib
+        sys.modules.pop("settings", None)
+        import settings
+        importlib.reload(settings)
+
+        s = settings.BatchRunnerSettings.from_env()
+        assert s.office_convert_timeout_sec == 600
+        assert s.office_convert_max_concurrent == 8
+        assert s.max_converted_file_bytes == 536870912
+
+    def test_office_convert_fields_missing_does_not_raise(self):
+        """既存必須 env と異なり、Office env 欠落で ValueError を送出しない (運用切替リスク低減)。"""
+        for key in (
+            "OFFICE_CONVERT_TIMEOUT_SEC",
+            "OFFICE_CONVERT_MAX_CONCURRENT",
+            "MAX_CONVERTED_FILE_BYTES",
+        ):
+            os.environ.pop(key, None)
+        import sys
+        sys.path.insert(0, str(pytest.importorskip("pathlib").Path(__file__).parent.parent))
+        import importlib
+        sys.modules.pop("settings", None)
+        import settings
+        importlib.reload(settings)
+
+        # raise しないこと自体が assertion (ValueError が出れば失敗)
+        s = settings.BatchRunnerSettings.from_env()
+        assert s is not None
+
+    @pytest.mark.parametrize(
+        "key",
+        [
+            "OFFICE_CONVERT_TIMEOUT_SEC",
+            "OFFICE_CONVERT_MAX_CONCURRENT",
+            "MAX_CONVERTED_FILE_BYTES",
+        ],
+    )
+    def test_office_convert_invalid_int_raises_descriptive_value_error(self, key: str):
+        """値が指定されているが int に parse できない場合は既存 _int helper と同様に descriptive ValueError を送出する。"""
+        os.environ[key] = "not-an-int"
+        import sys
+        sys.path.insert(0, str(pytest.importorskip("pathlib").Path(__file__).parent.parent))
+        import importlib
+        sys.modules.pop("settings", None)
+        import settings
+        importlib.reload(settings)
+
+        with pytest.raises(ValueError, match=key):
             settings.BatchRunnerSettings.from_env()
 
 

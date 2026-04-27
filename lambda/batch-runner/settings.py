@@ -79,6 +79,19 @@ class BatchRunnerSettings:
     """追加出力フォーマット（例: ["markdown", "csv"]）。空リストで追加なし。"""
 
     # -----------------------------------------------------------------------
+    # Office 変換用フィールド（office-format-ingestion spec / R2.4 / R4.6 / R5.2）
+    # 欠落時は default 値を使い ValueError を送出しない（運用切替リスク低減のため）
+    # -----------------------------------------------------------------------
+    office_convert_timeout_sec: int = 300
+    """Office → PDF 変換の per-file タイムアウト秒数（R4.6、既定 300 秒/ファイル）。"""
+
+    office_convert_max_concurrent: int = 4
+    """Office 変換の並列実行上限（R2.4、既定 4 = Fargate vCPU 数と揃える）。"""
+
+    max_converted_file_bytes: int = 1073741824
+    """変換後 PDF サイズ上限バイト数（R5.2、既定 1 GiB = SageMaker Async payload 上限）。"""
+
+    # -----------------------------------------------------------------------
     # クラス定数
     # -----------------------------------------------------------------------
     _REQUIRED: ClassVar[tuple[str, ...]] = (
@@ -153,4 +166,9 @@ class BatchRunnerSettings:
             circuit_cooldown=_float("CIRCUIT_COOLDOWN", 30.0),
             batch_max_duration_sec=_int("BATCH_MAX_DURATION_SEC", 7200),
             extra_formats=_list("EXTRA_FORMATS"),
+            # Office 変換用 env (R2.4 / R4.6 / R5.2):
+            # 欠落時は default 値を返し ValueError を送出しない (_int の挙動に従う)
+            office_convert_timeout_sec=_int("OFFICE_CONVERT_TIMEOUT_SEC", 300),
+            office_convert_max_concurrent=_int("OFFICE_CONVERT_MAX_CONCURRENT", 4),
+            max_converted_file_bytes=_int("MAX_CONVERTED_FILE_BYTES", 1073741824),
         )
