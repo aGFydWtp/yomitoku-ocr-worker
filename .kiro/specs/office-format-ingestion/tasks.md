@@ -10,7 +10,7 @@
   - `MAX_TOTAL_BYTES` (10 GB 既存) と `MAX_FILE_BYTES` (1 GB 既存) の description 文言に Office 形式の使い方を追記
   - 完了時に `ALLOWED_EXTENSIONS` を import するすべての箇所がコンパイル可能、`pnpm test --filter ./lambda/api -- schemas` が allowlist 拡張のみで失敗しない (refine 追加は 2.2 で行う)
   - _Requirements: 1.1, 1.4, 1.5, 6.1, 6.3, 7.3_
-- [ ] 1.2 sanitize.ts を ALLOWED_EXTENSIONS ベースの fail-fast 化
+- [x] 1.2 sanitize.ts を ALLOWED_EXTENSIONS ベースの fail-fast 化
   - `?.trim() || "document.pdf"` の silent fallback を廃止し、空文字 → `ValidationError("Filename is empty after sanitization")` で throw に統一
   - `cleaned === ".pdf"` 特例 (拡張子のみ → `document.pdf` 化け) を廃止し、`ALLOWED_EXTENSIONS` のいずれかと完全一致する場合は `ValidationError("Filename has no basename (only extension)")` を throw
   - `endsWith(".pdf")` チェックを `ALLOWED_EXTENSIONS.some(ext => lower.endsWith(ext))` に一般化、throw メッセージを `Filename must end with one of: .pdf, .pptx, .docx, .xlsx` に更新
