@@ -165,6 +165,54 @@ class TestUpdateFileResult:
             assert item["status"] == "COMPLETED"
             assert "errorMessage" not in item
 
+    def test_writes_error_category_when_provided(self):
+        """error_category 引数が渡されたら DDB の errorCategory 属性に書く (R4.2)。"""
+        with mock_aws():
+            table = _create_batch_table()
+            _seed_batch(table, BATCH_ID, ["d.pdf"])
+            import batch_store
+
+            updated = batch_store.update_file_result(
+                table=table,
+                batch_job_id=BATCH_ID,
+                file_key=f"batches/{BATCH_ID}/input/d.pdf",
+                status="FAILED",
+                error_message="encrypted PDF",
+                error_category="CONVERSION_FAILED",
+            )
+            assert updated is True
+
+            item = table.get_item(Key={
+                "PK": f"BATCH#{BATCH_ID}",
+                "SK": f"FILE#batches/{BATCH_ID}/input/d.pdf",
+            })["Item"]
+            assert item["status"] == "FAILED"
+            assert item["errorCategory"] == "CONVERSION_FAILED"
+
+    def test_omits_error_category_when_none(self):
+        """error_category=None (デフォルト) の場合は errorCategory 属性を書かない (R4.2)。"""
+        with mock_aws():
+            table = _create_batch_table()
+            _seed_batch(table, BATCH_ID, ["e.pdf"])
+            import batch_store
+
+            updated = batch_store.update_file_result(
+                table=table,
+                batch_job_id=BATCH_ID,
+                file_key=f"batches/{BATCH_ID}/input/e.pdf",
+                status="COMPLETED",
+                dpi=200,
+            )
+            assert updated is True
+
+            item = table.get_item(Key={
+                "PK": f"BATCH#{BATCH_ID}",
+                "SK": f"FILE#batches/{BATCH_ID}/input/e.pdf",
+            })["Item"]
+            assert item["status"] == "COMPLETED"
+            # 明示しない限り errorCategory 属性は書かれない (TS 側 batch-store.ts と同じ契約)
+            assert "errorCategory" not in item
+
 
 # ---------------------------------------------------------------------------
 # transition_batch_status
@@ -254,6 +302,67 @@ class TestApplyProcessLog:
             })["Item"]
             assert b_item["status"] == "FAILED"
             assert b_item["errorMessage"] == "boom"
+
+    def test_preserves_explicit_conversion_failed_and_derives_ocr_failed(self):
+        """error_category 派生規則 (R4.2 / R4.3):
+
+        - success=False かつ error_category="CONVERSION_FAILED" → そのまま CONVERSION_FAILED
+        - success=False かつ error_category=None → "OCR_FAILED" に正規化
+        - success=True → errorCategory 属性は書かない (overwrite しない)
+        """
+        from process_log_reader import ProcessLogEntry
+        with mock_aws():
+            table = _create_batch_table()
+            _seed_batch(table, BATCH_ID, ["conv.pdf", "ocr.pdf", "ok.pdf"])
+            import batch_store
+
+            entries = [
+                # 1. 変換失敗: error_category=CONVERSION_FAILED → そのまま採用
+                ProcessLogEntry(
+                    file_path="/tmp/input/conv.pdf", filename="conv.pdf",
+                    success=False, error="encrypted",
+                    error_category="CONVERSION_FAILED",
+                ),
+                # 2. OCR 失敗: error_category=None → OCR_FAILED に正規化
+                ProcessLogEntry(
+                    file_path="/tmp/input/ocr.pdf", filename="ocr.pdf",
+                    success=False, error="SageMaker timeout",
+                    error_category=None,
+                ),
+                # 3. 成功: errorCategory 属性は書かれない
+                ProcessLogEntry(
+                    file_path="/tmp/input/ok.pdf", filename="ok.pdf",
+                    success=True, dpi=200,
+                    output_path="/tmp/output/ok.json",
+                ),
+            ]
+            totals = batch_store.apply_process_log(
+                table=table, batch_job_id=BATCH_ID, entries=entries,
+            )
+            assert totals == {"succeeded": 1, "failed": 2, "skipped": 0}
+
+            conv_item = table.get_item(Key={
+                "PK": f"BATCH#{BATCH_ID}",
+                "SK": f"FILE#batches/{BATCH_ID}/input/conv.pdf",
+            })["Item"]
+            assert conv_item["status"] == "FAILED"
+            assert conv_item["errorCategory"] == "CONVERSION_FAILED"
+            assert conv_item["errorMessage"] == "encrypted"
+
+            ocr_item = table.get_item(Key={
+                "PK": f"BATCH#{BATCH_ID}",
+                "SK": f"FILE#batches/{BATCH_ID}/input/ocr.pdf",
+            })["Item"]
+            assert ocr_item["status"] == "FAILED"
+            assert ocr_item["errorCategory"] == "OCR_FAILED"
+            assert ocr_item["errorMessage"] == "SageMaker timeout"
+
+            ok_item = table.get_item(Key={
+                "PK": f"BATCH#{BATCH_ID}",
+                "SK": f"FILE#batches/{BATCH_ID}/input/ok.pdf",
+            })["Item"]
+            assert ok_item["status"] == "COMPLETED"
+            assert "errorCategory" not in ok_item
 
 
 class TestFinalizeBatchStatus:

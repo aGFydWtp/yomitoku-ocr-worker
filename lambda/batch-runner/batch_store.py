@@ -70,6 +70,7 @@ def update_file_result(
     processing_time_ms: int | None = None,
     result_key: str | None = None,
     error_message: str | None = None,
+    error_category: str | None = None,
 ) -> bool:
     """FILE アイテムを条件付き更新する。既に COMPLETED の場合はスキップし False を返す。
 
@@ -79,6 +80,13 @@ def update_file_result(
         file_key: `batches/{id}/input/{filename}` 形式
         status: "COMPLETED" | "FAILED"
         dpi/processing_time_ms/result_key/error_message: 追加属性
+        error_category: 変換 / OCR 失敗の機械可読カテゴリ
+            (`"CONVERSION_FAILED"` | `"OCR_FAILED"`)。
+            None の場合は DDB の `errorCategory` 属性を一切更新しない
+            (UpdateExpression の SET 句に含めない)。明示的に値を渡したときのみ
+            `SET` で書き込まれる。これにより既存 FILE アイテムの旧データを
+            意図せず上書きするリスクを避ける (TS 側 `lambda/api/lib/batch-store.ts`
+            の `errorCategory` と同名 attribute / 同じ契約)。
 
     Returns:
         True: 更新実行, False: 既に COMPLETED でスキップ
@@ -109,6 +117,13 @@ def update_file_result(
         ean["#errMsg"] = "errorMessage"
         eav[":errMsg"] = error_message
         set_exprs.append("#errMsg = :errMsg")
+    # errorCategory: 明示時のみ SET (None なら属性を触らない)。
+    # attribute 名 ``errorCategory`` は TS 側 (`lambda/api/lib/batch-store.ts`)
+    # と共有 (R4.2 / R4.3)。
+    if error_category is not None:
+        ean["#errorCategory"] = "errorCategory"
+        eav[":errorCategory"] = error_category
+        set_exprs.append("#errorCategory = :errorCategory")
 
     try:
         table.update_item(
@@ -244,12 +259,22 @@ def apply_process_log(
             else:
                 skipped += 1
         else:
+            # errorCategory 派生規則 (R4.2 / R4.3):
+            #   - entry.error_category が明示されていればそのまま採用
+            #     (例: 変換層が `"CONVERSION_FAILED"` を書いている)
+            #   - None の場合は OCR 由来失敗とみなして `"OCR_FAILED"` に正規化
+            #     (yomitoku-client は error_category を出力しないため Py 側で導出)
+            error_category = (
+                entry.error_category if entry.error_category is not None
+                else "OCR_FAILED"
+            )
             updated = update_file_result(
                 table=table,
                 batch_job_id=batch_job_id,
                 file_key=file_key,
                 status="FAILED",
                 error_message=entry.error,
+                error_category=error_category,
             )
             if updated:
                 failed += 1

@@ -90,7 +90,7 @@
   - 完了時に `error_category` フィールドが無い旧形式の jsonl 行を読み込んでも例外を出さず `error_category=None` の `ProcessLogEntry` が yield される
   - _Requirements: 4.2, 4.4_
   - _Boundary: process_log_reader.py_
-- [ ] 3.3 batch_store.py apply_process_log で errorCategory を DDB に書き、OCR_FAILED を導出
+- [x] 3.3 batch_store.py apply_process_log で errorCategory を DDB に書き、OCR_FAILED を導出
   - `update_file_result()` に `error_category: str | None = None` 引数を追加し、`UpdateExpression` で `errorCategory` を `SET` (None なら属性更新しない、TS 側 `batch-store.ts:errorCategory` と同名 attribute)
   - `apply_process_log()` で `entry.success is False` のとき:
     - `entry.error_category == "CONVERSION_FAILED"` ならそのまま採用
