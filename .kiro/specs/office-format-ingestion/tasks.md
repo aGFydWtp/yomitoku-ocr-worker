@@ -209,7 +209,7 @@
   - _Requirements: 2.1, 3.1, 3.2, 3.3, 7.2, 9.1_
   - _Boundary: test_run_async_batch_e2e.py_
   - _Depends: 4.1, 5.1_
-- [ ] 5.11 Manual: built image で日本語 PPTX を実 LibreOffice 変換し CJK 描画を目視確認
+- [x] 5.11 Manual: built image で日本語 PPTX を実 LibreOffice 変換し CJK 描画を目視確認
   - `sample-pdf/` (gitignore 配下) に日本語混在の `.pptx` (≥ 50 ページ目安、ひらがな / カタカナ / 漢字 / 英字) を 1 件配置し、ローカル `docker run` で `office_converter.convert_office_to_pdf` を呼んで生成 PDF を取得
   - 生成 PDF を PDF Viewer で開き、日本語が `□` (豆腐) や `?` に置換されていないことを目視確認 (R2.5)
   - SageMaker stub or 実 endpoint で OCR を流し、結果 JSON 内に元 PPTX に含まれていた日本語文字列が含まれることを `jq` で確認
