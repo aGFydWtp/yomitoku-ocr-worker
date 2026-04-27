@@ -126,13 +126,24 @@ def update_file_result(
         set_exprs.append("#errorCategory = :errorCategory")
 
     try:
+        # ConditionExpression 2 段:
+        # 1. attribute_exists(PK): defense-in-depth — 存在しない FILE への
+        #    upsert を防ぐ。`apply_process_log` の converted_filename_map が
+        #    PPTX→PDF 名解決を担うが、将来のフォーマット追加や mapping 漏れで
+        #    filename mismatch が再発した場合に silent な orphan 行が作られる
+        #    のを防ぐため、明示的に既存行のみ更新する契約に固定。
+        # 2. #status <> :completed: 既存の冪等性ガード (再実行で完了済を上書きしない)。
+        # どちらが原因の `ConditionalCheckFailedException` でも、本関数は False を
+        # 返してスキップ扱いとし、apply_process_log 側で集計する `skipped` に計上される。
         table.update_item(
             Key={
                 "PK": f"BATCH#{batch_job_id}",
                 "SK": f"FILE#{file_key}",
             },
             UpdateExpression="SET " + ", ".join(set_exprs),
-            ConditionExpression="#status <> :completed",
+            ConditionExpression=(
+                "attribute_exists(PK) AND #status <> :completed"
+            ),
             ExpressionAttributeNames=ean,
             ExpressionAttributeValues=eav,
         )
@@ -140,7 +151,7 @@ def update_file_result(
     except ClientError as exc:
         if exc.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
             logger.info(
-                "update_file_result skipped (already COMPLETED): %s / %s",
+                "update_file_result skipped (already COMPLETED or FILE not found): %s / %s",
                 batch_job_id, file_key,
             )
             return False

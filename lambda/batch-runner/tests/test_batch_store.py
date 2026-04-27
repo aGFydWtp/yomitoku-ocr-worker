@@ -165,6 +165,43 @@ class TestUpdateFileResult:
             assert item["status"] == "COMPLETED"
             assert "errorMessage" not in item
 
+    def test_does_not_create_orphan_file_when_pk_missing(self):
+        """attribute_exists(PK) 条件: 未seed の FILE PK に対する update は False
+        を返してスキップし、orphan FILE 行を作らない (Codex defense-in-depth)。
+
+        本来の bug は ``apply_process_log`` の filename mismatch (.pptx → .pdf)
+        だが、本テストは下流ガードとして ``update_file_result`` 単体が orphan
+        upsert を起こさないことを保証する。これにより将来 mapping 漏れが起き
+        ても silent な orphan 行ではなく、テスト / ログで早期に検知できる。
+        """
+        with mock_aws():
+            table = _create_batch_table()
+            _seed_batch(table, BATCH_ID, ["seeded.pdf"])
+            import batch_store
+
+            # seeded.pdf は table に存在するが、ghost.pdf は存在しない
+            updated = batch_store.update_file_result(
+                table=table, batch_job_id=BATCH_ID,
+                file_key=f"batches/{BATCH_ID}/input/ghost.pdf",
+                status="COMPLETED",
+                result_key=f"batches/{BATCH_ID}/output/ghost.json",
+            )
+            # 既存行が無いため ConditionalCheckFailedException → False
+            assert updated is False
+            # orphan 行が作られていないことを確認 (= GetItem で見つからない)
+            response = table.get_item(Key={
+                "PK": f"BATCH#{BATCH_ID}",
+                "SK": f"FILE#batches/{BATCH_ID}/input/ghost.pdf",
+            })
+            assert "Item" not in response
+
+            # 既存の seeded.pdf には影響なし (PENDING のまま)
+            seeded = table.get_item(Key={
+                "PK": f"BATCH#{BATCH_ID}",
+                "SK": f"FILE#batches/{BATCH_ID}/input/seeded.pdf",
+            })["Item"]
+            assert seeded["status"] == "PENDING"
+
     def test_writes_error_category_when_provided(self):
         """error_category 引数が渡されたら DDB の errorCategory 属性に書く (R4.2)。"""
         with mock_aws():
