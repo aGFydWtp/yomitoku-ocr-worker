@@ -85,7 +85,7 @@
   - _Requirements: 1.1, 1.2, 1.3, 1.5, 4.1_
   - _Boundary: scripts/, test/_
 
-- [ ] 5.2 E2E 混在バッチ統合テスト (`test_run_async_batch_e2e.py`) の新仕様再検証
+- [x] 5.2 E2E 混在バッチ統合テスト (`test_run_async_batch_e2e.py`) の新仕様再検証
   - 既存の混在バッチ test case (PDF + PPTX + 変換失敗 PPTX) を新仕様で再アサート: `BatchFile.resultKey` が `/{name}.{ext}.json` 終端、可視化 JPEG が `{stem}_{mode}_page_{idx}.jpg` 形式で生成、`CONVERSION_FAILED` / `OCR_FAILED` で resultKey 未設定、PENDING/PROCESSING で resultKey 不在
   - 既存バッチ非影響シナリオ: pre-existing fixture として旧フォーマット `resultKey="batches/old/output/legacy.json"` を持つ FILE 行を DDB に投入 → 新仕様の `apply_process_log` を別バッチで実行 → 旧バッチの resultKey 値が unchanged であることを assert (R5.1, R5.2)
   - In-flight handling シナリオ: 新仕様コードを 1 バッチ走らせた後、別の新規バッチで `{name}.{ext}.json` 形式が一貫して生成されることを assert (R5.3、Fargate task 単位 deploy のセマンティクスを moto + Stubber で再現)
