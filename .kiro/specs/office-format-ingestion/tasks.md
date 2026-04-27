@@ -72,7 +72,7 @@
 ## Phase 3: Batch Runner Core (Python Fargate 層)
 
 - [ ] 3. Core: Office → PDF 変換層と process_log の error_category 連携
-- [ ] 3.1 office_converter.py を新規実装
+- [x] 3.1 office_converter.py を新規実装
   - public API: `is_office_format(filename) -> bool` (`.pptx` / `.docx` / `.xlsx` を True、`.pdf` / その他は False) / `is_password_protected(path) -> bool` (`msoffcrypto.OfficeFile(file).is_encrypted()` を try/except で wrap、open 不能は False) / `convert_office_to_pdf(input_path, work_dir, timeout_sec) -> Path` (LibreOffice subprocess 呼び出し、成功時に PDF パス返す、失敗は 5 種の専用例外を raise) / `validate_converted_size(pdf_path, max_bytes) -> None` (上限超過なら `ConversionOversizeError`) / `convert_office_files(input_dir, *, timeout_sec, max_concurrent, max_converted_bytes) -> ConvertResult` (semaphore 並列 + 成功時の Office 原本ローカル削除)
   - LibreOffice CLI: `["soffice", "--headless", "--invisible", "--nodefault", "--nofirststartwizard", "--norestore", "--nolockcheck", f"-env:UserInstallation=file:///tmp/lo_profile_{uuid.uuid4().hex}/", "--convert-to", "pdf", "--outdir", str(work_dir), str(input_path)]`
   - subprocess は `Popen(start_new_session=True)` + timeout 経過時に `os.killpg(os.getpgid(p.pid), signal.SIGKILL)` で zombie 防止
