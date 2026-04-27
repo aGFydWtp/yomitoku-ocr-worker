@@ -43,6 +43,7 @@ async def run_async_batch(
     output_dir: str | Path,
     log_path: str | Path,
     deadline_seconds: float | None = None,
+    local_to_original: dict[str, str] | None = None,
 ) -> BatchResult:
     """Async Inference 経路でバッチを実行し、``BatchResult`` を返す。
 
@@ -50,6 +51,9 @@ async def run_async_batch(
       (末尾スラッシュ必須: ``AsyncInvoker.__init__`` が検証)
     - ``deadline_seconds`` を省略した場合は
       ``settings.batch_max_duration_sec`` を採用する
+    - ``local_to_original``: ローカル PDF basename → 原本ファイル名のマップ
+      (省略時は identity)。Office 形式で ``deck.pdf`` (変換後) → ``deck.pptx``
+      (原本) のような書き戻しに使用。``AsyncInvoker`` にそのまま転送する。
     - 呼び出し側 (Fargate main) は ``BatchResult.succeeded_files`` /
       ``failed_files`` / ``in_flight_timeout`` を DDB 反映に利用する
     """
@@ -73,6 +77,7 @@ async def run_async_batch(
         success_queue_url=settings.success_queue_url,
         failure_queue_url=settings.failure_queue_url,
         max_concurrent=settings.async_max_concurrent,
+        local_to_original=local_to_original,
     )
 
     deadline = float(
@@ -152,13 +157,30 @@ def _generate_for_single_file(
 
 
 def generate_all_visualizations(
-    *, input_dir: str, output_dir: str
+    *,
+    input_dir: str,
+    output_dir: str,
+    original_to_local: dict[str, str] | None = None,
 ) -> dict[str, list[str]]:
-    """``output_dir/*.json`` に対して ``input_dir/{basename}.pdf`` の可視化を生成する。
+    """``output_dir/*.json`` に対して ``input_dir/{local_pdf_basename}.pdf`` の可視化を生成する。
+
+    新命名規約 (``{原本ファイル名}.json``) に対応するため、JSON ファイル名から
+    ``.json`` を 1 段だけ剥がして ``original_input_name`` を得る。Office 形式の
+    場合、``original_to_local`` map (例: ``{"deck.pptx": "deck.pdf"}``) で
+    ローカル PDF basename に逆引き解決する。ネイティブ PDF は identity 解決
+    (``report.pdf.json`` → ``report.pdf``)。
+
+    Args:
+        input_dir: ローカル PDF が並置されているディレクトリ。
+        output_dir: メイン JSON および可視化 JPEG を出力するディレクトリ。
+        original_to_local: Office 形式の ``{原本ファイル名: ローカル PDF basename}``
+            マッピング。``None`` または空 dict は identity 解決と等価
+            (ネイティブ PDF のみのバッチで使用)。
 
     Returns:
-        ``{basename: [error_messages...]}`` — エラーがあったファイルのみ記録。
-        空 dict なら全件完全成功。
+        ``{original_input_name: [error_messages...]}`` — エラーがあったファイル
+        のみ記録。空 dict なら全件完全成功。lookup 失敗は致命ではなく silent
+        skip + warning ログとして扱う。
     """
     errors_per_file: dict[str, list[str]] = {}
     out_path = Path(output_dir)
@@ -166,17 +188,22 @@ def generate_all_visualizations(
     if not out_path.exists():
         return errors_per_file
 
+    lookup = original_to_local or {}
     for json_file in sorted(out_path.glob("*.json")):
-        basename = json_file.stem
-        pdf_path = in_path / f"{basename}.pdf"
+        # ``.json`` を 1 段だけ剥がす (新命名規約: ``{原本ファイル名}.json``)。
+        original_input_name = json_file.name[: -len(".json")]
+        local_pdf_basename = lookup.get(original_input_name, original_input_name)
+        pdf_path = in_path / local_pdf_basename
         if not pdf_path.exists():
-            errors_per_file[basename] = [f"input PDF not found: {pdf_path.name}"]
+            errors_per_file[original_input_name] = [
+                f"local PDF not found: {local_pdf_basename}"
+            ]
             continue
         errs = _generate_for_single_file(
             json_path=json_file, pdf_path=pdf_path, out_dir=out_path
         )
         if errs:
-            errors_per_file[basename] = errs
+            errors_per_file[original_input_name] = errs
 
     if errors_per_file:
         logger.warning(

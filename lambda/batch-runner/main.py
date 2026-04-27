@@ -46,7 +46,12 @@ import boto3
 
 from batch_store import apply_process_log, finalize_batch_status
 from control_table import delete_heartbeat, register_heartbeat
-from office_converter import ConvertFailure, convert_office_files, is_office_format
+from office_converter import (
+    ConvertFailure,
+    build_filename_maps,
+    convert_office_files,
+    is_office_format,
+)
 from process_log_reader import read_process_log
 from runner import generate_all_visualizations, run_async_batch
 from s3_sync import download_inputs, upload_outputs
@@ -194,11 +199,17 @@ def run(settings: BatchRunnerSettings) -> int:
         # 3.5. Office → PDF 変換 (PDF only バッチでは早期 skip → R7.1)
         # downloaded は S3 key の list なので Path で basename を取り判定する。
         office_files_present = any(is_office_format(Path(k).name) for k in downloaded)
-        # Bug 001: 変換成功時 yomitoku-client は変換後 PDF (例: deck.pdf) を
-        # process_log.jsonl に書くが、API が seed した DDB FILE PK は原本名
-        # (例: deck.pptx)。下記 map を apply_process_log に渡すことで PK lookup
-        # 時に PDF 名 → 原本名へ書き戻し、phantom FILE 行を防ぐ。
-        pdf_to_original: dict[str, str] = {}
+        # フィルナム双方向マップ (result-filename-extension-preservation):
+        #   local_to_original: {変換後 PDF basename: 原本 Office filename}
+        #     例 {"deck.pdf": "deck.pptx"} — async_invoker で persist パス命名と
+        #     apply_process_log の DDB FILE PK lookup (Bug 001 互換維持) に使用
+        #   original_to_local: {原本 Office filename: 変換後 PDF basename}
+        #     例 {"deck.pptx": "deck.pdf"} — runner で JSON → ローカル PDF 逆引きに使用
+        # 両 map は ``office_converter.build_filename_maps`` で 1 箇所 SSOT 構築
+        # (案 A 採用、Drift 防止)。PDF only バッチでは両 map とも空 dict のままで、
+        # 下流は ``dict.get(name, name)`` で identity 解決される (R5.3 維持)。
+        local_to_original: dict[str, str] = {}
+        original_to_local: dict[str, str] = {}
         if office_files_present:
             convert_result = convert_office_files(
                 input_dir,
@@ -214,11 +225,11 @@ def run(settings: BatchRunnerSettings) -> int:
                     "converted_failed": len(convert_result.failed),
                 },
             )
-            # 変換成功 1 件 = 変換後 PDF の basename → 原本 Office ファイル basename
-            # の写像。``apply_process_log`` がこのマップを使って DDB FILE PK lookup
-            # を原本名に正規化する。
-            for cf in convert_result.succeeded:
-                pdf_to_original[cf.pdf_path.name] = cf.original_path.name
+            # 双方向マップを 1 箇所で原子的に構築 (Drift 防止 / 案 A)。
+            # ``apply_process_log`` の引数名 ``converted_filename_map`` は
+            # office-format-ingestion 由来で維持しつつ、value だけ
+            # ``pdf_to_original`` (旧名) → ``local_to_original`` (新名) に置換。
+            local_to_original, original_to_local = build_filename_maps(convert_result)
             # 変換失敗を process_log.jsonl に追記 (run_async_batch より先に書く)。
             # 成功・失敗いずれも office_converter 側で原本がローカル削除されるため
             # input_dir には変換後 PDF + 元から PDF だったファイルのみが残る
@@ -234,6 +245,7 @@ def run(settings: BatchRunnerSettings) -> int:
                 output_dir=str(output_dir),
                 log_path=str(log_path),
                 deadline_seconds=float(settings.batch_max_duration_sec),
+                local_to_original=local_to_original,
             )
         )
         logger.info(
@@ -251,6 +263,7 @@ def run(settings: BatchRunnerSettings) -> int:
             generate_all_visualizations(
                 input_dir=str(input_dir),
                 output_dir=str(output_dir),
+                original_to_local=original_to_local,
             )
         except Exception:  # noqa: BLE001 — 非致命
             logger.exception(
@@ -295,7 +308,10 @@ def run(settings: BatchRunnerSettings) -> int:
             table=batch_table,
             batch_job_id=settings.batch_job_id,
             entries=entries,
-            converted_filename_map=pdf_to_original,
+            # 引数名 ``converted_filename_map`` は office-format-ingestion 由来で
+            # 維持 (Bug 001 互換); value のみ ``pdf_to_original`` (旧名) →
+            # ``local_to_original`` (新名) に置き換え。
+            converted_filename_map=local_to_original,
         )
 
         # 8. META.status を最終状態に遷移

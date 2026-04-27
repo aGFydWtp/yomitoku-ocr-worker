@@ -242,14 +242,15 @@ def test_e2e_mixed_success_and_failure_produces_correct_process_log(
     assert "ModelError" in fail_reason
     assert result.in_flight_timeout == []
 
-    ok_json = output_dir / "ok.json"
+    # 新仕様: persist パスは原本ファイル名 (`ok.pdf`) + `.json` 終端
+    ok_json = output_dir / "ok.pdf.json"
     assert ok_json.exists()
     assert json.loads(ok_json.read_text()) == {"pages": [{"idx": 0}]}
 
     records = _read_log(log_path)
     by_stem = {Path(r["file_path"]).stem: r for r in records}
     assert by_stem["ok"]["success"] is True
-    assert by_stem["ok"]["output_path"].endswith("ok.json")
+    assert by_stem["ok"]["output_path"].endswith("ok.pdf.json")
     assert by_stem["bad"]["success"] is False
     assert "ModelError" in by_stem["bad"]["error"]
     stubber.assert_no_pending_responses()
@@ -780,9 +781,11 @@ def test_e2e_mixed_pdf_and_pptx_via_main_run(
             f"(実 {deck_pptx_item['status']})"
         )
         assert "errorCategory" not in deck_pptx_item
-        # resultKey は実 S3 出力 (= deck.json) を指す: 変換後 stem ベース
-        assert deck_pptx_item.get("resultKey", "").endswith("/deck.json"), (
-            f"resultKey は deck.json を指すはず: {deck_pptx_item.get('resultKey')}"
+        # 新仕様 (R1.2): resultKey は原本 Office 名 (`deck.pptx.json`) を指す。
+        # 変換後 PDF basename (`deck.pdf`) ではなく、API レイヤでサニタイズ済の
+        # 原本ファイル名 + `.json` 終端で書き込まれる。
+        assert deck_pptx_item.get("resultKey", "").endswith("/deck.pptx.json"), (
+            f"resultKey は deck.pptx.json を指すはず: {deck_pptx_item.get('resultKey')}"
         )
 
         # 3d (Bug 001 fix): 変換後 deck.pdf 名で phantom FILE item が
@@ -831,3 +834,79 @@ def test_e2e_mixed_pdf_and_pptx_via_main_run(
             f"実 {meta['status']}"
         )
         assert meta["GSI1PK"].startswith("STATUS#PARTIAL#")
+
+
+def test_e2e_pdf_only_batch_persists_extension_preserved_json(e2e_env, tmp_path):
+    """Task 5.2 / R1.1 / R5.3: ネイティブ PDF のみのバッチで新仕様
+    {原本ファイル名}.pdf.json で persist されることを E2E で検証する。
+
+    Office 形式が無いバッチでは local_to_original / original_to_local が空 dict
+    のまま下流に届き、identity 解決によって PDF にも `{name}.pdf.json` が適用
+    される (main.py の早期 init による)。
+    """
+    settings = _settings()
+    settings.success_queue_url = e2e_env.success_url
+    settings.failure_queue_url = e2e_env.failure_url
+
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    input_dir.mkdir()
+    _write_pdf(input_dir, "alpha")
+    _write_pdf(input_dir, "beta")
+
+    _put_dummy_output(e2e_env.s3, "alpha")
+    _put_dummy_output(e2e_env.s3, "beta")
+    e2e_env.sqs.send_message(
+        QueueUrl=e2e_env.success_url,
+        MessageBody=_sns_wrap(_success_body(BATCH_JOB_ID, "alpha")),
+    )
+    e2e_env.sqs.send_message(
+        QueueUrl=e2e_env.success_url,
+        MessageBody=_sns_wrap(_success_body(BATCH_JOB_ID, "beta")),
+    )
+
+    stubber = e2e_env.stubber
+    for stem in ("alpha", "beta"):
+        stubber.add_response(
+            "invoke_endpoint_async",
+            {"InferenceId": f"{BATCH_JOB_ID}:{stem}", "OutputLocation": "s3://x/y"},
+        )
+    stubber.activate()
+
+    log_path = output_dir / "process_log.jsonl"
+    result = asyncio.run(
+        run_async_batch(
+            settings=settings,
+            input_dir=input_dir,
+            output_dir=output_dir,
+            log_path=log_path,
+            deadline_seconds=30.0,
+            local_to_original=None,  # PDF only バッチでは map なし → identity 解決
+        )
+    )
+
+    assert sorted(result.succeeded_files) == ["alpha", "beta"]
+    assert result.failed_files == []
+
+    # 新仕様: 両 PDF が {name}.pdf.json で persist されている
+    for stem in ("alpha", "beta"):
+        persisted = output_dir / f"{stem}.pdf.json"
+        assert persisted.exists(), (
+            f"R1.1 違反: ネイティブ PDF も {stem}.pdf.json で persist されるべき "
+            f"(現状 {output_dir} の中身: {[p.name for p in output_dir.iterdir()]})"
+        )
+        # 旧フォーマット {stem}.json は存在しない (R5.3: 新仕様一貫性)
+        legacy = output_dir / f"{stem}.json"  # legacy-on-purpose: negative assertion で旧仕様の不在を確認する R5.3 ガード
+        assert not legacy.exists(), (
+            f"R5.3 違反: 旧フォーマット {stem}.json が persist されている"
+        )
+
+    # process_log の output_path も新仕様
+    records = _read_log(log_path)
+    success_records = [r for r in records if r.get("success") is True]
+    assert len(success_records) == 2
+    output_paths = {Path(r["output_path"]).name for r in success_records}
+    assert output_paths == {"alpha.pdf.json", "beta.pdf.json"}, (
+        f"output_path は新仕様の {{name}}.pdf.json 形式であるはず: {output_paths}"
+    )
+    stubber.assert_no_pending_responses()

@@ -364,11 +364,24 @@ export const BatchFileSchema = z
     processingTimeMs: z.number().int().optional().openapi({
       description: "ミリ秒単位の処理時間 (成功時のみ)",
     }),
-    resultKey: z.string().optional().openapi({
-      description:
-        "結果 JSON の S3 オブジェクトキー (`status=COMPLETED` のときのみ存在)。署名付き URL は `resultUrl` を使ってください。",
-      example: "batches/abc-123/output/document.json",
-    }),
+    resultKey: z
+      .string()
+      .optional()
+      .openapi({
+        description: [
+          "結果 JSON の S3 オブジェクトキー (`status=COMPLETED` のときのみ存在)。署名付き URL は `resultUrl` を使ってください。",
+          "",
+          "**値フォーマット**: `batches/{batchJobId}/output/{原本ファイル名}.json`",
+          "- `{原本ファイル名}` は `BatchFile.filename` と一致し、原本拡張子を含む (例: `report.pdf.json` / `deck.pptx.json` / `report.docx.json` / `report.xlsx.json`)。",
+          "",
+          "**移行ノート**: 旧フォーマットは `batches/{batchJobId}/output/{stem}.json` (拡張子を除いた basename + `.json`) でした。本変更により `.json` 直前のファイル名部分に原本拡張子が含まれるようになります。`resultKey` から basename を抽出している既存 consumer (`.json` を 1 段だけ剥がす実装) は、抽出後の値に原本拡張子が残る点に注意してください (例: 旧 `report` → 新 `report.pdf`)。",
+          "",
+          "**不変 invariant**: 属性名 `resultKey` および値が `.json` で終端することは変更されません (R4.3)。",
+          "",
+          "**追加フォーマットとの非対称メモ**: yomitoku-client が出力する追加フォーマット (`.md` / `.csv` / `.html`) は本仕様の対象外で、命名は yomitoku-client 規約 (`{stem}_{ext}.json` 等) のままです。メイン JSON (`report.pdf.json`) と追加フォーマット (`report.md` 等) の命名は一時的に非対称となりますが、将来 spec で統一する可能性があります。",
+        ].join("\n"),
+        example: "batches/abc-123/output/document.pdf.json",
+      }),
     resultUrl: z
       .string()
       .url()

@@ -16,8 +16,12 @@ Task 3.1 〜 3.3 / 5.1 を通じて以下を担う:
       まで待機し、未完了 InferenceId は ``BatchResult.in_flight_timeout`` に
       集計する
     - 成功時は ``OutputLocation`` から JSON を取得して
-      ``output_dir/{stem}.json`` に保存し、全結果 (成功/失敗/タイムアウト) を
-      ``process_log.jsonl`` に 1 行 1 レコードで追記する
+      ``output_dir/{原本ファイル名}.json`` に保存する。原本ファイル名は
+      コンストラクタ引数 ``local_to_original`` (ローカル basename → 原本)
+      経由で解決し、Office 形式は変換前の Office 名 (``deck.pptx``)、
+      ネイティブ PDF はそのまま (``report.pdf``) になる。全結果
+      (成功/失敗/タイムアウト) を ``process_log.jsonl`` に 1 行 1 レコードで
+      追記する
 """
 
 from __future__ import annotations
@@ -147,6 +151,7 @@ class AsyncInvoker:
         sagemaker_client: Any | None = None,
         sqs_client: Any | None = None,
         s3_client: Any | None = None,
+        local_to_original: dict[str, str] | None = None,
     ) -> None:
         if not input_prefix.endswith("/"):
             raise ValueError(
@@ -167,6 +172,12 @@ class AsyncInvoker:
         self._sagemaker = sagemaker_client or boto3.client("sagemaker-runtime")
         self._sqs = sqs_client or boto3.client("sqs")
         self._s3 = s3_client or boto3.client("s3")
+        # result-filename-extension-preservation: ローカル basename (変換後 PDF
+        # ``deck.pdf`` 等) → 原本ファイル名 (``deck.pptx`` 等) のマップ。
+        # ``main.py`` (orchestrator) のみが構築し、``_drain_queue`` の persist
+        # パス計算で参照する。Office 形式のみ entry あり、ネイティブ PDF 入力は
+        # ``dict.get(name, name)`` で identity 解決される。
+        self._local_to_original: dict[str, str] = dict(local_to_original or {})
 
     # ------------------------------------------------------------------
     # Task 3.1: S3 ステージング + invoke_endpoint_async
@@ -449,7 +460,9 @@ class AsyncInvoker:
         """1 回 ``_poll_queue`` を実行し、結果を result / in_flight に反映する。
 
         成功通知を受けた場合は ``responseParameters.outputLocation`` から
-        JSON を S3 経由でダウンロードし、``output_dir/{stem}.json`` に保存する。
+        JSON を S3 経由でダウンロードし、``output_dir/{output_filename}.json``
+        に保存する (``output_filename`` は ``self._local_to_original`` 経由で
+        原本ファイル名に解決される。Office 形式以外は identity)。
         ダウンロード失敗は失敗扱いとして ``failed_files`` に積む。
 
         失敗通知を受けた場合は ``failureReason`` を ``failed_files`` と
@@ -489,7 +502,21 @@ class AsyncInvoker:
             output_location = (
                 notif.body.get("responseParameters", {}).get("outputLocation")
             )
-            persisted_path = output_dir / f"{file_stem}.json"
+            # result-filename-extension-preservation R1.1-1.4:
+            # persist パスは原本ファイル名 (拡張子付き) + ".json" を使う。
+            # ``local_to_original`` は Office 形式のみ entry を持ち、ネイティブ
+            # PDF 入力では identity (``file_path.name`` がそのまま返る)。
+            # ``_safe_ident`` (SHA-1) は InferenceId / S3 input key 用途のみ。
+            # ``file_path`` が None になる経路は本実装上存在しないが、防御的に
+            # ``file_stem`` フォールバックを残す (DDB 反映が走らないため
+            # ファイル名衝突は問題にならない)。
+            if file_path is not None:
+                output_filename = self._local_to_original.get(
+                    file_path.name, file_path.name
+                )
+            else:
+                output_filename = file_stem
+            persisted_path = output_dir / f"{output_filename}.json"
             try:
                 if not isinstance(output_location, str) or not output_location:
                     raise ValueError(

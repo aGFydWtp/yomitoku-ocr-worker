@@ -44,6 +44,45 @@ async function fetchOpenApiDescription(): Promise<string> {
   return description;
 }
 
+/**
+ * Task 4.2 用ヘルパ:
+ *   `/doc` の JSON ペイロードから `components.schemas.BatchFile.properties.resultKey.description`
+ *   を取り出して返す。`BatchFile.resultKey` の OpenAPI description が
+ *   result-filename-extension-preservation 仕様 (R4.1 / R4.2 / R4.3 / R4.4)
+ *   に追従していることを検証する用途。
+ */
+async function fetchBatchFileResultKeyDescription(): Promise<string> {
+  const mod = await import("../index");
+  const app = (mod as { app?: { fetch: (req: Request) => Promise<Response> } })
+    .app;
+  if (!app) {
+    throw new Error(
+      "index.ts must export the OpenAPIHono `app` instance for unit tests",
+    );
+  }
+  const res = await app.fetch(new Request("http://localhost/doc"));
+  expect(res.status).toBe(200);
+  const doc = (await res.json()) as {
+    components?: {
+      schemas?: {
+        BatchFile?: {
+          properties?: {
+            resultKey?: { description?: string };
+          };
+        };
+      };
+    };
+  };
+  const description =
+    doc.components?.schemas?.BatchFile?.properties?.resultKey?.description;
+  if (typeof description !== "string") {
+    throw new Error(
+      "components.schemas.BatchFile.properties.resultKey.description was not a string",
+    );
+  }
+  return description;
+}
+
 describe("Task 2.4 — OpenAPI info.description の Office 形式対応", () => {
   it("PUT 説明 (:37) に Office 形式 4 種と OOXML MIME を併記している", async () => {
     const description = await fetchOpenApiDescription();
@@ -88,5 +127,54 @@ describe("Task 2.4 — OpenAPI info.description の Office 形式対応", () => 
     expect(description).toContain("LibreOffice");
     // 旧文言「拡張子は **`.pdf`** のみ」が残っていないこと
     expect(description).not.toMatch(/拡張子は\s*\*\*`\.pdf`\*\*\s*のみ/);
+  });
+});
+
+describe("Task 4.2 — BatchFile.resultKey description の result-filename-extension-preservation 仕様 (R4.1-R4.4)", () => {
+  it("R4.1: 値フォーマット `{原本ファイル名}.json` と 4 種例示 (PDF/PPTX/DOCX/XLSX) が含まれる", async () => {
+    const description = await fetchBatchFileResultKeyDescription();
+    // 値フォーマットの記述
+    expect(description).toContain("{原本ファイル名}.json");
+    // 4 種の例示すべて
+    expect(description).toContain("report.pdf.json");
+    expect(description).toContain("deck.pptx.json");
+    expect(description).toContain("report.docx.json");
+    expect(description).toContain("report.xlsx.json");
+  });
+
+  it("R4.2: 旧フォーマット `{stem}.json` への言及と consumer 影響の移行ノートが含まれる", async () => {
+    const description = await fetchBatchFileResultKeyDescription();
+    // 旧フォーマットへの言及 (stem ベース)
+    expect(description).toContain("{stem}.json");
+    // 既存 consumer の basename 抽出処理への影響説明
+    // (basename / 1 段 / 抽出 等のキーワードを期待)
+    expect(description).toMatch(/basename|1 段|抽出/);
+  });
+
+  it("R4.3: `.json` 終端不変 + `resultKey` 属性名不変の invariant が明示されている", async () => {
+    const description = await fetchBatchFileResultKeyDescription();
+    // `.json` 終端の不変性
+    expect(description).toMatch(/\.json.*終端|終端.*\.json/);
+    // 属性名 `resultKey` の不変性 + 「変更されません」等の文言
+    expect(description).toContain("resultKey");
+    expect(description).toMatch(/変更されません|不変|変えない/);
+  });
+
+  it("R4.4: 追加フォーマット (`.md` / `.csv` / `.html`) との非対称メモが含まれる", async () => {
+    const description = await fetchBatchFileResultKeyDescription();
+    // 追加フォーマット 3 種への言及
+    expect(description).toContain(".md");
+    expect(description).toContain(".csv");
+    expect(description).toContain(".html");
+    // yomitoku-client 規約への言及
+    expect(description).toContain("yomitoku-client");
+  });
+
+  it("既存情報の保持: status=COMPLETED 限定句 と resultUrl 案内が losslessly に維持されている", async () => {
+    const description = await fetchBatchFileResultKeyDescription();
+    // 既存の `status=COMPLETED` 限定句
+    expect(description).toContain("status=COMPLETED");
+    // 既存の resultUrl 案内
+    expect(description).toContain("resultUrl");
   });
 });

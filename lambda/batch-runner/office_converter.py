@@ -392,3 +392,47 @@ def convert_office_files(
                 failed.append(outcome)
 
     return ConvertResult(succeeded=succeeded, failed=failed)
+
+
+# ---------------------------------------------------------------------------
+# Filename map ヘルパ (Single Source of Truth: 案 A)
+# ---------------------------------------------------------------------------
+
+
+def build_filename_maps(
+    convert_result: ConvertResult,
+) -> tuple[dict[str, str], dict[str, str]]:
+    """変換結果から双方向ファイル名マップを構築する (Single Source of Truth)。
+
+    `result-filename-extension-preservation` design > Components > main.py
+    Implementation Notes (Drift 防止 - 案 A) に基づく。`main.py` 側で双方向 map を
+    個別構築すると将来の保守者が片方だけ更新するリスク (`office-format-ingestion`
+    Bug 001 と同種) があるため、両 map を 1 箇所で原子的に構築する。
+
+    引数:
+        convert_result: `convert_office_files` の戻り値。`succeeded` の各
+            `ConvertedFile(original_path, pdf_path)` から filename basename を抽出する。
+
+    Returns:
+        `(local_to_original, original_to_local)`:
+            - `local_to_original`: `{converted_pdf_basename: original_office_filename}`
+              例: `{"deck.pdf": "deck.pptx"}`
+            - `original_to_local`: `{original_office_filename: converted_pdf_basename}`
+              例: `{"deck.pptx": "deck.pdf"}`
+
+        両 map は完全な逆引き関係 (entry 数同一、`local_to_original[v] == k for k, v
+        in original_to_local.items()`)。`convert_result.succeeded` が空 (ネイティブ
+        PDF のみのバッチ) であれば両 map とも空 dict (`{}`) を返す。
+
+    Postconditions:
+        - `len(local_to_original) == len(original_to_local) == len(convert_result.succeeded)`
+        - `all(local_to_original[v] == k for k, v in original_to_local.items())`
+    """
+    local_to_original: dict[str, str] = {}
+    original_to_local: dict[str, str] = {}
+    for converted in convert_result.succeeded:
+        original_name = converted.original_path.name
+        pdf_name = converted.pdf_path.name
+        local_to_original[pdf_name] = original_name
+        original_to_local[original_name] = pdf_name
+    return local_to_original, original_to_local
