@@ -7,6 +7,20 @@ FROM python:3.12-slim
 # -----------------------------------------------------------------------
 WORKDIR /app
 
+# -----------------------------------------------------------------------
+# OS パッケージのインストール (LibreOffice + CJK フォント)
+# -----------------------------------------------------------------------
+# Office 形式 (.pptx / .docx / .xlsx) を soffice 経由で PDF 化するための
+# OS-level 依存。USER 切替前に root で install する必要がある。
+# CJK フォント (Noto + IPAex) は日本語ドキュメントの "□" / "?" 化を防ぐ。
+# msoffcrypto-tool は APT に該当 package が存在しないため (Debian 名は
+# `python3-msoffcrypto`)、ここには含めず requirements.txt 経由で pip install する。
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+       libreoffice-core libreoffice-impress libreoffice-writer libreoffice-calc \
+       fonts-noto-cjk fonts-ipaexfont \
+    && rm -rf /var/lib/apt/lists/*
+
 # requirements.txt を先にコピーしてレイヤーキャッシュを最大化
 COPY requirements.txt .
 # yomitoku-client 0.2.0 は transitive に opencv-python (非 headless) を

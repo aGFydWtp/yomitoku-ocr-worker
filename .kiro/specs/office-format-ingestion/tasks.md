@@ -24,7 +24,7 @@
   - 完了時に `pytest lambda/batch-runner/tests/test_settings.py` が新フィールド含めて pass し、`BatchRunnerSettings.from_env()` を素の env で呼ぶと 3 つの新フィールドに default 値が入る
   - _Requirements: 2.4, 4.6, 5.2_
   - _Boundary: settings.py_
-- [ ] 1.4 (P) Dockerfile に LibreOffice + CJK フォント、requirements.txt に msoffcrypto-tool を追加
+- [x] 1.4 (P) Dockerfile に LibreOffice + CJK フォント、requirements.txt に msoffcrypto-tool を追加
   - `lambda/batch-runner/Dockerfile` に `WORKDIR /app` 直後 (COPY requirements.txt の前) で `apt-get install -y --no-install-recommends libreoffice-core libreoffice-impress libreoffice-writer libreoffice-calc fonts-noto-cjk fonts-ipaexfont` を実行 (USER 切替前、root 権限で)、末尾に `rm -rf /var/lib/apt/lists/*`
   - `msoffcrypto-tool` は **APT には含めない** (Debian package 名は `python3-msoffcrypto` で `msoffcrypto-tool` という APT 名は存在しないため build が失敗する)。代わりに `lambda/batch-runner/requirements.txt` に `msoffcrypto-tool>=5,<6` を追記
   - 完了時に `docker build --platform linux/amd64 -t batch-runner-test lambda/batch-runner` が成功し、`docker run --rm batch-runner-test soffice --version` が exit 0 を返し、`docker run --rm batch-runner-test python -c "import msoffcrypto"` が exit 0 を返す
