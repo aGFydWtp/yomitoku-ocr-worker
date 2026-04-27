@@ -242,14 +242,15 @@ def test_e2e_mixed_success_and_failure_produces_correct_process_log(
     assert "ModelError" in fail_reason
     assert result.in_flight_timeout == []
 
-    ok_json = output_dir / "ok.json"
+    # 新仕様: persist パスは原本ファイル名 (`ok.pdf`) + `.json` 終端
+    ok_json = output_dir / "ok.pdf.json"
     assert ok_json.exists()
     assert json.loads(ok_json.read_text()) == {"pages": [{"idx": 0}]}
 
     records = _read_log(log_path)
     by_stem = {Path(r["file_path"]).stem: r for r in records}
     assert by_stem["ok"]["success"] is True
-    assert by_stem["ok"]["output_path"].endswith("ok.json")
+    assert by_stem["ok"]["output_path"].endswith("ok.pdf.json")
     assert by_stem["bad"]["success"] is False
     assert "ModelError" in by_stem["bad"]["error"]
     stubber.assert_no_pending_responses()
@@ -780,9 +781,11 @@ def test_e2e_mixed_pdf_and_pptx_via_main_run(
             f"(実 {deck_pptx_item['status']})"
         )
         assert "errorCategory" not in deck_pptx_item
-        # resultKey は実 S3 出力 (= deck.json) を指す: 変換後 stem ベース
-        assert deck_pptx_item.get("resultKey", "").endswith("/deck.json"), (
-            f"resultKey は deck.json を指すはず: {deck_pptx_item.get('resultKey')}"
+        # 新仕様 (R1.2): resultKey は原本 Office 名 (`deck.pptx.json`) を指す。
+        # 変換後 PDF basename (`deck.pdf`) ではなく、API レイヤでサニタイズ済の
+        # 原本ファイル名 + `.json` 終端で書き込まれる。
+        assert deck_pptx_item.get("resultKey", "").endswith("/deck.pptx.json"), (
+            f"resultKey は deck.pptx.json を指すはず: {deck_pptx_item.get('resultKey')}"
         )
 
         # 3d (Bug 001 fix): 変換後 deck.pdf 名で phantom FILE item が

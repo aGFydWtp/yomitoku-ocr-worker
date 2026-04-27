@@ -54,7 +54,7 @@
 
 ## 4. Test Fixture 移行 — 旧フォーマット `{stem}.json` の書換 (並列実行可能)
 
-- [ ] 4.1 (P) Python テスト fixture を新仕様 (`{name}.json`) へ移行
+- [x] 4.1 (P) Python テスト fixture を新仕様 (`{name}.json`) へ移行
   - `lambda/batch-runner/tests/test_async_invoker.py` (L955) / `test_run_async_batch_e2e.py` (L252, L784) / `test_main.py` (L758, L830, L960) / `test_batch_store.py` (L116, L313, L322, L335, L373, L435, L483, L515, L557, L564) の `output_path` / `resultKey` リテラルおよび `f"{stem}.json"` 系構築式を新フォーマット (`{name}.json`、Office は `{name}.pptx.json` 等) に書換
   - 新規テストケース追加: (a) `test_run_async_batch_e2e.py` で混在バッチ (PDF + PPTX + DOCX + XLSX + 変換失敗 PPTX) の resultKey 全件検証、(b) `test_async_invoker.py` で非 ASCII filename ケース (R1.4 ガード)、(c) 既存バッチ fixture を pre-populate しておき、新仕様 deploy 後にその resultKey 値が遡及更新されないことを assert (R5.1, R5.2)
   - 失敗ケース (CONVERSION_FAILED / OCR_FAILED) で resultKey が未設定であることを既存テストで再検証 (R3.1, R3.2)
