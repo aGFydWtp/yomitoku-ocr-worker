@@ -103,7 +103,7 @@
 ## Phase 4: Integration (オーケストレーションと CDK 配線)
 
 - [ ] 4. Integration: main.py 変換フェーズ挿入と CDK env 配線
-- [ ] 4.1 main.py に convert_office_files フェーズを挿入し process_log に CONVERSION_FAILED を追記
+- [x] 4.1 main.py に convert_office_files フェーズを挿入し process_log に CONVERSION_FAILED を追記
   - `download_inputs` の直後、`asyncio.run(run_async_batch(...))` の前に分岐ロジックを配置:
     - `office_files_present = any(is_office_format(p.name) for p in downloaded)` で早期判定
     - `office_files_present == False` なら変換層を起動せず既存フローへ (R7.1 充足)

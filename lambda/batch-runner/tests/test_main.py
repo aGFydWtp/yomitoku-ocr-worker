@@ -9,6 +9,7 @@ process_log_reader) は各 test_*.py で網羅済みなので、本ファイル�
 from __future__ import annotations
 
 import importlib
+import json
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -192,6 +193,251 @@ class TestEmptyInput:
         assert "run_async_batch" not in rec.names
         finalize_kw = dict(rec.calls)["finalize_batch_status"]
         assert finalize_kw["total_files"] == 0
+
+
+class TestOfficeConversionPhase:
+    """convert_office_files フェーズの分岐ロジック (R2.1, R3.1, R7.1, R9.1, R9.2 / task 4.1)。"""
+
+    def test_pdf_only_batch_skips_convert_phase(
+        self, monkeypatch: pytest.MonkeyPatch, patched_main
+    ):
+        """downloaded が PDF のみのとき convert_office_files は一度も呼ばれない (R7.1)。"""
+        main_module, rec = patched_main
+
+        def _bomb_convert(*args, **kwargs):
+            rec.calls.append(("convert_office_files", {"args": args, "kwargs": kwargs}))
+            raise AssertionError("convert_office_files must not be called for PDF-only batch")
+
+        monkeypatch.setattr(main_module, "convert_office_files", _bomb_convert)
+
+        assert main_module.main() == 0
+        assert "convert_office_files" not in rec.names
+        # 既存 8 ステップが順序通りに走ること
+        assert rec.names == [
+            "register_heartbeat",
+            "download_inputs",
+            "run_async_batch",
+            "generate_all_visualizations",
+            "upload_outputs",
+            "read_process_log",
+            "apply_process_log",
+            "finalize_batch_status",
+            "delete_heartbeat",
+        ]
+
+    def test_mixed_batch_invokes_convert_and_appends_failures(
+        self, monkeypatch: pytest.MonkeyPatch, patched_main, tmp_path: Path
+    ):
+        """PDF + PPTX 混在で convert_office_files が呼ばれ、失敗が process_log.jsonl に追記される。
+
+        process_log.jsonl への追記行は CONVERSION_FAILED + ConvertFailure.detail を含む。
+        書き込み順は convert → run_async_batch (yomitoku-client が後で書く形を想定)。
+        """
+        main_module, rec = patched_main
+
+        # downloaded を mixed (PDF + PPTX) に差し替え
+        monkeypatch.setattr(
+            main_module, "download_inputs",
+            lambda **kw: (
+                rec.record("download_inputs")(**kw),
+                ["batches/x/input/a.pdf", "batches/x/input/deck.pptx"],
+            )[1],
+        )
+
+        # convert_office_files は ConvertResult(succeeded, failed) を返す。
+        # 1 件は成功 (= 原本ローカル削除済み想定)、1 件は変換失敗とする。
+        captured_log_path: dict[str, Path] = {}
+        original_office_path = tmp_path / "input" / "deck.pptx"
+
+        def _fake_convert(input_dir, *, timeout_sec, max_concurrent, max_converted_bytes):
+            rec.calls.append((
+                "convert_office_files",
+                {
+                    "input_dir": input_dir,
+                    "timeout_sec": timeout_sec,
+                    "max_concurrent": max_concurrent,
+                    "max_converted_bytes": max_converted_bytes,
+                },
+            ))
+            return SimpleNamespace(
+                succeeded=[],
+                failed=[
+                    SimpleNamespace(
+                        original_path=original_office_path,
+                        reason="encrypted",
+                        detail="file is password-protected or encrypted: deck.pptx",
+                    )
+                ],
+            )
+
+        monkeypatch.setattr(main_module, "convert_office_files", _fake_convert)
+
+        # run_async_batch / read_process_log では実際に書かれた log_path を覗いて検証する
+        async def _capture_run_async(**kwargs):
+            rec.calls.append(("run_async_batch", kwargs))
+            captured_log_path["log_path"] = Path(kwargs["log_path"])
+            return SimpleNamespace(
+                succeeded_files=["a"], failed_files=[], in_flight_timeout=[]
+            )
+
+        monkeypatch.setattr(main_module, "run_async_batch", _capture_run_async)
+
+        assert main_module.main() == 0
+
+        # 順序検証: download → convert → run_async ...
+        assert rec.names.index("convert_office_files") > rec.names.index("download_inputs")
+        assert rec.names.index("run_async_batch") > rec.names.index("convert_office_files")
+
+        # convert_office_files に env 由来の引数が伝わっていること
+        convert_kw = next(c for c in rec.calls if c[0] == "convert_office_files")[1]
+        assert convert_kw["timeout_sec"] == 300  # default
+        assert convert_kw["max_concurrent"] == 4
+        assert convert_kw["max_converted_bytes"] == 1073741824
+
+        # 実 log_path に CONVERSION_FAILED 行が追記されていること
+        log_path = captured_log_path["log_path"]
+        assert log_path.exists()
+        lines = [
+            json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines() if line
+        ]
+        assert len(lines) == 1
+        record = lines[0]
+        assert record["success"] is False
+        assert record["error_category"] == "CONVERSION_FAILED"
+        assert record["filename"] == "deck.pptx"
+        assert record["file_path"] == str(original_office_path)
+        assert "encrypted" in record["error"]
+        assert "timestamp" in record
+
+    def test_convert_phase_with_no_failures_does_not_write_log(
+        self, monkeypatch: pytest.MonkeyPatch, patched_main, tmp_path: Path
+    ):
+        """変換成功のみ (failed=[]) の場合 process_log.jsonl への追記は行わない。"""
+        main_module, rec = patched_main
+
+        monkeypatch.setattr(
+            main_module, "download_inputs",
+            lambda **kw: (
+                rec.record("download_inputs")(**kw),
+                ["batches/x/input/deck.pptx"],
+            )[1],
+        )
+
+        def _fake_convert(input_dir, **kwargs):
+            rec.calls.append(("convert_office_files", {"input_dir": input_dir, **kwargs}))
+            return SimpleNamespace(succeeded=[SimpleNamespace()], failed=[])
+
+        monkeypatch.setattr(main_module, "convert_office_files", _fake_convert)
+
+        captured_log_path: dict[str, Path] = {}
+
+        async def _capture_run_async(**kwargs):
+            rec.calls.append(("run_async_batch", kwargs))
+            captured_log_path["log_path"] = Path(kwargs["log_path"])
+            return SimpleNamespace(
+                succeeded_files=["deck"], failed_files=[], in_flight_timeout=[]
+            )
+
+        monkeypatch.setattr(main_module, "run_async_batch", _capture_run_async)
+
+        assert main_module.main() == 0
+        assert "convert_office_files" in rec.names
+        # 失敗 0 件なので convert 由来の追記行は無し
+        log_path = captured_log_path["log_path"]
+        if log_path.exists():
+            convert_failed_lines = [
+                json.loads(line)
+                for line in log_path.read_text(encoding="utf-8").splitlines()
+                if line and json.loads(line).get("error_category") == "CONVERSION_FAILED"
+            ]
+            assert convert_failed_lines == []
+
+    def test_convert_phase_does_not_call_s3_delete(
+        self, monkeypatch: pytest.MonkeyPatch, patched_main
+    ):
+        """変換フェーズは S3 input prefix への delete API を呼ばない (R9.1 維持)。
+
+        s3_client は patched_main 内で SimpleNamespace に差し替え済みだが、
+        delete_object / delete_objects 属性が呼ばれた場合に検知できるよう
+        attribute 監視を仕掛ける。
+        """
+        main_module, rec = patched_main
+
+        called: dict[str, int] = {"delete_object": 0, "delete_objects": 0}
+
+        class _GuardedS3:
+            def __getattr__(self, name):
+                if name in called:
+                    called[name] += 1
+                    raise AssertionError(
+                        f"main.run must not call s3.{name} during convert phase (R9.1)"
+                    )
+                # download などはダミー callable
+                return lambda *args, **kwargs: None
+
+        monkeypatch.setattr(main_module.boto3, "client", lambda *a, **kw: _GuardedS3())
+
+        monkeypatch.setattr(
+            main_module, "download_inputs",
+            lambda **kw: (
+                rec.record("download_inputs")(**kw),
+                ["batches/x/input/deck.pptx"],
+            )[1],
+        )
+
+        monkeypatch.setattr(
+            main_module, "convert_office_files",
+            lambda input_dir, **kwargs: (
+                rec.calls.append(("convert_office_files", kwargs)),
+                SimpleNamespace(succeeded=[], failed=[]),
+            )[1],
+        )
+
+        assert main_module.main() == 0
+        assert called["delete_object"] == 0
+        assert called["delete_objects"] == 0
+
+
+class TestAppendConversionFailuresHelper:
+    """_append_conversion_failures_to_log の単体検証。"""
+
+    def test_appends_one_line_per_failure(
+        self, patched_main, tmp_path: Path
+    ):
+        main_module, _ = patched_main
+        log_path = tmp_path / "out" / "process_log.jsonl"
+        failures = [
+            SimpleNamespace(
+                original_path=Path("/tmp/in/a.pptx"),
+                reason="timeout",
+                detail="soffice timeout after 300s: /tmp/in/a.pptx",
+            ),
+            SimpleNamespace(
+                original_path=Path("/tmp/in/b.docx"),
+                reason="oversize",
+                detail="converted PDF size 2147483648 exceeds max_bytes 1073741824",
+            ),
+        ]
+        main_module._append_conversion_failures_to_log(log_path, failures)
+
+        lines = log_path.read_text(encoding="utf-8").splitlines()
+        assert len(lines) == 2
+        for raw, src in zip(lines, failures):
+            obj = json.loads(raw)
+            assert obj["success"] is False
+            assert obj["error_category"] == "CONVERSION_FAILED"
+            assert obj["error"] == src.detail
+            assert obj["filename"] == src.original_path.name
+            assert obj["file_path"] == str(src.original_path)
+            assert "timestamp" in obj
+
+    def test_empty_failures_is_noop_and_does_not_create_file(
+        self, patched_main, tmp_path: Path
+    ):
+        main_module, _ = patched_main
+        log_path = tmp_path / "out" / "process_log.jsonl"
+        main_module._append_conversion_failures_to_log(log_path, [])
+        assert not log_path.exists()
 
 
 class TestFailures:
