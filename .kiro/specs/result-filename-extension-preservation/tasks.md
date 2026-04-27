@@ -31,7 +31,7 @@
   - _Requirements: 2.1, 2.2, 2.3, 2.4_
   - _Boundary: runner.generate_all_visualizations_
 
-- [ ] 2.3 (P) `BatchFile.resultKey` の OpenAPI description を新フォーマット仕様に更新
+- [x] 2.3 (P) `BatchFile.resultKey` の OpenAPI description を新フォーマット仕様に更新
   - `lambda/api/schemas.ts` L367-371 の `BatchFile.resultKey` schema description を以下の 4 要素を含む文字列に書換: (1) 値フォーマット `batches/{batchJobId}/output/{原本ファイル名}.json` (`{原本ファイル名}` は `BatchFile.filename` と一致、原本拡張子を含む) と例示 (`report.pdf.json` / `deck.pptx.json` / `report.docx.json` / `report.xlsx.json`)、(2) 旧フォーマット (`{stem}.json`) からの変更点と既存 consumer の basename 抽出処理への影響を含む移行ノート、(3) 属性名 `resultKey` および `.json` 終端は不変 (R4.3)、(4) yomitoku-client が出力する追加フォーマット (`.md` / `.csv` / `.html`) は本 spec の対象外で、命名は yomitoku-client 規約のまま、将来 spec で統一の可能性ありという非対称メモ
   - `example` プロパティを `batches/abc-123/output/document.pdf.json` に更新
   - **観察可能な完了**: `pnpm cdk synth ApiStack` が成功し、生成された OpenAPI ドキュメントの `BatchFile.resultKey.description` に上記 4 要素が含まれる
