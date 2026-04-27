@@ -2,7 +2,7 @@
 
 ## 1. Foundation — フィルナムマッピングヘルパ
 
-- [ ] 1.1 `office_converter.build_filename_maps` ヘルパ関数を追加
+- [x] 1.1 `office_converter.build_filename_maps` ヘルパ関数を追加
   - `ConvertResult` を受け取り、`(local_to_original, original_to_local)` の双方向マッピングを 1 箇所で原子的に構築する関数を実装する (Single Source of Truth、Critical Issue 1 への design 解決策 案 A)
   - `convert_result.succeeded` (`ConvertedFile(original_path, pdf_path)` の list) を走査し、key/value を Path.name ベースで構築。`succeeded` が空であれば両 map とも空 dict を返す
   - 関数の戻り値型は `tuple[dict[str, str], dict[str, str]]` で型ヒント明示
