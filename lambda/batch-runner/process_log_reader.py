@@ -5,14 +5,18 @@
 
 想定スキーマ (ライブラリ仕様):
     {
-      "timestamp":   ISO8601 文字列,
-      "file_path":   入力 PDF のローカルパス (/tmp/input/foo.pdf),
-      "output_path": 出力 JSON のローカルパス (成功時のみ),
-      "dpi":         int,
-      "executed":    bool,
-      "success":     bool,
-      "error":       str | null
+      "timestamp":      ISO8601 文字列,
+      "file_path":      入力 PDF のローカルパス (/tmp/input/foo.pdf),
+      "output_path":    出力 JSON のローカルパス (成功時のみ),
+      "dpi":            int,
+      "executed":       bool,
+      "success":        bool,
+      "error":          str | null,
+      "error_category": str | null  # Office/PDF 変換失敗の機械可読カテゴリ (任意)
     }
+
+`error_category` は新規追加フィールド。旧形式 (フィールド無し) の jsonl 行を
+読み込んでも `error_category=None` として扱い後方互換を維持する。
 
 破損行は best-effort でスキップしバッチ全体を止めない。
 """
@@ -39,6 +43,7 @@ class ProcessLogEntry:
     dpi: int | None = None
     output_path: str | None = None
     error: str | None = None
+    error_category: str | None = None
     processing_time_ms: int | None = None
     timestamp: str | None = None
 
@@ -77,6 +82,7 @@ def read_process_log(log_path: str) -> Iterator[ProcessLogEntry]:
                 dpi=data.get("dpi"),
                 output_path=data.get("output_path"),
                 error=data.get("error"),
+                error_category=data.get("error_category"),
                 processing_time_ms=data.get("processing_time_ms"),
                 timestamp=data.get("timestamp"),
             )

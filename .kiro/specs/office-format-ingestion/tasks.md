@@ -84,7 +84,7 @@
   - _Requirements: 2.1, 2.2, 2.3, 2.4, 4.5, 4.6, 4.7, 5.1, 5.2, 5.3, 7.2, 9.2, 9.3_
   - _Boundary: office_converter.py_
   - _Depends: 1.3, 1.4_
-- [ ] 3.2 (P) ProcessLogEntry に error_category フィールドを追加し read_process_log で読み出す
+- [x] 3.2 (P) ProcessLogEntry に error_category フィールドを追加し read_process_log で読み出す
   - `ProcessLogEntry` dataclass に `error_category: str | None = None` を追加
   - `read_process_log()` の dict → dataclass 変換で `data.get("error_category")` を呼ぶ (欠落時 `None`、後方互換維持)
   - 完了時に `error_category` フィールドが無い旧形式の jsonl 行を読み込んでも例外を出さず `error_category=None` の `ProcessLogEntry` が yield される

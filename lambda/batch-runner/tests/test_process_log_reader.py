@@ -64,3 +64,46 @@ class TestReadProcessLog:
         )
         entries = list(read_process_log(str(log)))
         assert [e.filename for e in entries] == ["a.pdf", "b.pdf"]
+
+    def test_reads_error_category_when_present(self, tmp_path):
+        from process_log_reader import read_process_log
+
+        log = tmp_path / "process_log.jsonl"
+        log.write_text(
+            json.dumps({
+                "timestamp": "2026-04-22T10:00:00Z",
+                "file_path": "/tmp/input/broken.pdf",
+                "output_path": None,
+                "dpi": 200,
+                "executed": True,
+                "success": False,
+                "error": "PDF parser raised",
+                "error_category": "pdf_parse_error",
+            }) + "\n"
+        )
+
+        entries = list(read_process_log(str(log)))
+        assert len(entries) == 1
+        assert entries[0].success is False
+        assert entries[0].error_category == "pdf_parse_error"
+
+    def test_legacy_log_without_error_category_yields_none(self, tmp_path):
+        """旧形式 (error_category フィールド無し) の jsonl 行も例外を出さず読める。"""
+        from process_log_reader import ProcessLogEntry, read_process_log
+
+        log = tmp_path / "process_log.jsonl"
+        log.write_text(
+            json.dumps({
+                "timestamp": "2026-04-22T10:00:00Z",
+                "file_path": "/tmp/input/old.pdf",
+                "output_path": "/tmp/output/old.json",
+                "dpi": 200,
+                "executed": True,
+                "success": True,
+            }) + "\n"
+        )
+
+        entries = list(read_process_log(str(log)))
+        assert len(entries) == 1
+        assert isinstance(entries[0], ProcessLogEntry)
+        assert entries[0].error_category is None
