@@ -40,7 +40,7 @@
 
 ## 3. Integration — `main.py` のオーケストレーション配線
 
-- [ ] 3.1 `main.py` でフィルナムマッピングを構築し下流モジュールに pipe through
+- [x] 3.1 `main.py` でフィルナムマッピングを構築し下流モジュールに pipe through
   - 既存の `pdf_to_original` 構築ロジック (L201-221) を `office_converter.build_filename_maps(convert_result)` の戻り値で置き換え、`local_to_original` および `original_to_local` の 2 変数を取得
   - `apply_process_log(..., converted_filename_map=local_to_original)` の呼び出しは引数名を維持しつつ value を新変数 `local_to_original` を流用 (Bug 001 互換維持)
   - `run_async_batch(...)` 呼び出しに `local_to_original=local_to_original` を追加
@@ -93,3 +93,7 @@
   - _Depends: 3.1, 4.1_
   - _Requirements: 1.1, 1.2, 1.5, 2.1, 2.2, 3.1, 3.2, 3.3, 5.1, 5.2, 5.3_
   - _Boundary: lambda/batch-runner/tests/test_run_async_batch_e2e.py_
+
+## Implementation Notes
+
+- **Task 2.1 boundary blind spot**: Task 2.1 added `local_to_original` to `AsyncInvoker.__init__` (in `async_invoker.py`) but missed the `run_async_batch` wrapper function that lives in `runner.py:39` (NOT in `async_invoker.py`). Discovered during Task 3.1 implementation when `main.py` started passing `local_to_original=...` to `runner.run_async_batch(...)`. Fixed in Task 3.1's commit by extending the boundary to include `runner.py:run_async_batch` signature and AsyncInvoker forward. Future tasks: when a "function in module X" boundary is declared, check both the source module AND any wrapper functions exported from sibling modules.

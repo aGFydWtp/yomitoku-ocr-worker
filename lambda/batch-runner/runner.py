@@ -43,6 +43,7 @@ async def run_async_batch(
     output_dir: str | Path,
     log_path: str | Path,
     deadline_seconds: float | None = None,
+    local_to_original: dict[str, str] | None = None,
 ) -> BatchResult:
     """Async Inference 経路でバッチを実行し、``BatchResult`` を返す。
 
@@ -50,6 +51,9 @@ async def run_async_batch(
       (末尾スラッシュ必須: ``AsyncInvoker.__init__`` が検証)
     - ``deadline_seconds`` を省略した場合は
       ``settings.batch_max_duration_sec`` を採用する
+    - ``local_to_original``: ローカル PDF basename → 原本ファイル名のマップ
+      (省略時は identity)。Office 形式で ``deck.pdf`` (変換後) → ``deck.pptx``
+      (原本) のような書き戻しに使用。``AsyncInvoker`` にそのまま転送する。
     - 呼び出し側 (Fargate main) は ``BatchResult.succeeded_files`` /
       ``failed_files`` / ``in_flight_timeout`` を DDB 反映に利用する
     """
@@ -73,6 +77,7 @@ async def run_async_batch(
         success_queue_url=settings.success_queue_url,
         failure_queue_url=settings.failure_queue_url,
         max_concurrent=settings.async_max_concurrent,
+        local_to_original=local_to_original,
     )
 
     deadline = float(
