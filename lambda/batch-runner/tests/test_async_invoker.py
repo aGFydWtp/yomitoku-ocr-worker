@@ -865,7 +865,7 @@ def test_run_batch_persists_output_json_from_output_location(
     full_aws_env, tmp_path: Path
 ) -> None:
     """成功通知を受けたら OutputLocation から JSON をダウンロードし
-    `output_dir/{stem}.json` に保存する。"""
+    `output_dir/{原本ファイル名}.json` に保存する。"""
     env = full_aws_env
     invoker = _make_invoker(env, max_concurrent=2)
 
@@ -897,7 +897,7 @@ def test_run_batch_persists_output_json_from_output_location(
 
     assert result.succeeded_files == ["ok"]
     # output JSON がローカルに書き出される
-    persisted = output_dir / "ok.json"
+    persisted = output_dir / "ok.pdf.json"
     assert persisted.exists(), f"output JSON not persisted: {persisted}"
     body = json.loads(persisted.read_text(encoding="utf-8"))
     assert body == {"pages": [{"idx": 0}], "stem": "ok"}
@@ -952,7 +952,7 @@ def test_run_batch_appends_process_log_for_success_and_failure(
     assert len(by_success[False]) == 1
     success_row = by_success[True][0]
     assert Path(success_row["file_path"]).name == "ok.pdf"
-    assert success_row["output_path"].endswith("ok.json")
+    assert success_row["output_path"].endswith("ok.pdf.json")
     assert success_row.get("error") in (None, "")
     failure_row = by_success[False][0]
     assert Path(failure_row["file_path"]).name == "bad.pdf"
@@ -1116,3 +1116,242 @@ def test_run_batch_records_in_flight_timeout_to_process_log(
         and "timeout" in (r.get("error") or "").lower()
         for r in records
     )
+
+
+# --------------------------------------------------------------------------
+# result-filename-extension-preservation Task 2.1:
+# JSON persist 命名規約を {file_stem}.json から {原本ファイル名}.json に変更
+#
+# - PDF 入力 (R1.1): report.pdf → output_dir/report.pdf.json
+# - Office 入力 (R1.2, R1.3): local deck.pdf + local_to_original={deck.pdf: deck.pptx}
+#                              → output_dir/deck.pptx.json (変換後 PDF 名でなく原本 Office 名)
+# - 非 ASCII / サニタイズ済 filename (R1.4): persist パスに _safe_ident SHA-1 16 文字が
+#                                               含まれず、サニタイズ済 filename + ".json" になる
+# --------------------------------------------------------------------------
+
+
+class TestNewNamingConvention:
+    """JSON persist パスが ``{file_stem}.json`` から ``{原本ファイル名}.json`` に変わる。
+
+    設計参照: design.md > Components > async_invoker.AsyncInvoker > Service Interface,
+    Implementation Notes (R1.1, R1.2, R1.3, R1.4)。
+    """
+
+    def test_pdf_input_persists_with_full_filename_including_extension(
+        self, full_aws_env, tmp_path: Path
+    ) -> None:
+        """PDF 入力 ``report.pdf`` → ``output_dir/report.pdf.json`` で保存される (R1.1).
+
+        旧仕様 (``{stem}.json`` = ``report.json``) ではなく、原本拡張子を含む
+        ``report.pdf.json`` で保存されることを assert する。
+        """
+        env = full_aws_env
+        invoker = _make_invoker(env, max_concurrent=1)
+
+        file_pdf = _write_input(tmp_path, "report.pdf")
+        # outputLocation 取得用ダミー: success body の outputLocation は
+        # ``s3://{BUCKET}/batches/_async/outputs/{stem}.out`` 形式
+        # (``_success_body`` ヘルパが ``inference_id.split(':')[-1]`` から組み立てる)。
+        _put_dummy_output(env["s3"], "report", payload={"pages": [{"idx": 0}]})
+        env["sqs"].send_message(
+            QueueUrl=env["success_url"],
+            MessageBody=_sns_wrap(_success_body(f"{BATCH_JOB_ID}:report")),
+        )
+
+        stubber = env["stubber"]
+        stubber.add_response(
+            "invoke_endpoint_async",
+            {"InferenceId": f"{BATCH_JOB_ID}:report", "OutputLocation": "s3://x/y"},
+        )
+        stubber.activate()
+
+        output_dir = tmp_path / "out"
+        log_path = output_dir / "process_log.jsonl"
+        result = asyncio.run(
+            invoker.run_batch(
+                batch_job_id=BATCH_JOB_ID,
+                input_files=[file_pdf],
+                output_dir=output_dir,
+                log_path=log_path,
+                deadline_seconds=30.0,
+            )
+        )
+
+        assert len(result.succeeded_files) == 1
+        # 新仕様: 原本ファイル名 (拡張子付き) + ".json"
+        persisted = output_dir / "report.pdf.json"
+        assert persisted.exists(), (
+            f"output JSON should be persisted at new convention path: {persisted}"
+        )
+        # 旧仕様 ({stem}.json) ではないこと
+        assert not (output_dir / "report.json").exists(), (
+            "old naming convention {stem}.json should not be used"
+        )
+        # process_log.jsonl の output_path も新仕様に追従する (R1.5 の前提)
+        records = _read_process_log(log_path)
+        success_rows = [r for r in records if r.get("success") is True]
+        assert len(success_rows) == 1
+        assert success_rows[0]["output_path"].endswith("report.pdf.json")
+
+    def test_office_input_uses_original_office_filename_via_local_to_original(
+        self, full_aws_env, tmp_path: Path
+    ) -> None:
+        """Office 形式 (R1.2, R1.3): ローカル ``deck.pdf`` + map → ``deck.pptx.json``.
+
+        ``local_to_original={"deck.pdf": "deck.pptx"}`` を渡した場合、
+        SageMaker には変換後 PDF (``deck.pdf``) が送られるが、JSON persist
+        パスは原本 Office 名 (``deck.pptx``) + ``.json`` になる。
+        """
+        env = full_aws_env
+        invoker = AsyncInvoker(
+            endpoint_name="yomitoku-async",
+            input_bucket=BUCKET,
+            input_prefix=INPUT_PREFIX,
+            output_bucket=BUCKET,
+            success_queue_url=env["success_url"],
+            failure_queue_url=env["failure_url"],
+            max_concurrent=1,
+            poll_wait_seconds=0,
+            sagemaker_client=env["sagemaker"],
+            sqs_client=env["sqs"],
+            s3_client=env["s3"],
+            local_to_original={"deck.pdf": "deck.pptx"},
+        )
+
+        file_pdf = _write_input(tmp_path, "deck.pdf")
+        _put_dummy_output(env["s3"], "deck", payload={"pages": []})
+        env["sqs"].send_message(
+            QueueUrl=env["success_url"],
+            MessageBody=_sns_wrap(_success_body(f"{BATCH_JOB_ID}:deck")),
+        )
+
+        stubber = env["stubber"]
+        stubber.add_response(
+            "invoke_endpoint_async",
+            {"InferenceId": f"{BATCH_JOB_ID}:deck", "OutputLocation": "s3://x/y"},
+        )
+        stubber.activate()
+
+        output_dir = tmp_path / "out"
+        log_path = output_dir / "process_log.jsonl"
+        result = asyncio.run(
+            invoker.run_batch(
+                batch_job_id=BATCH_JOB_ID,
+                input_files=[file_pdf],
+                output_dir=output_dir,
+                log_path=log_path,
+                deadline_seconds=30.0,
+            )
+        )
+
+        assert len(result.succeeded_files) == 1
+        # 原本 Office 名 + ".json" (変換後 PDF 名でなく)
+        persisted = output_dir / "deck.pptx.json"
+        assert persisted.exists(), (
+            f"output JSON should use original Office filename: {persisted}"
+        )
+        assert not (output_dir / "deck.pdf.json").exists(), (
+            "should not use converted PDF basename for persist path"
+        )
+        assert not (output_dir / "deck.json").exists(), (
+            "should not use stem-only naming"
+        )
+        # process_log の output_path も同様
+        records = _read_process_log(log_path)
+        success_rows = [r for r in records if r.get("success") is True]
+        assert len(success_rows) == 1
+        assert success_rows[0]["output_path"].endswith("deck.pptx.json")
+
+    def test_non_ascii_filename_persist_path_excludes_safe_ident_hash(
+        self, full_aws_env, tmp_path: Path
+    ) -> None:
+        """非 ASCII filename: persist パスに ``_safe_ident`` SHA-1 16 文字が **含まれない** (R1.4).
+
+        - InferenceId / S3 input key は SHA-1 で安全化されるが、
+        - persist パスは原本 (= サニタイズ済) filename + ``.json`` をそのまま使う。
+
+        本テストでは file_path.name = "報告書.pdf" を渡し、
+        persist パスが ``output_dir / "報告書.pdf.json"`` であり、
+        ``_safe_ident("報告書")`` の 16 文字 SHA-1 ハッシュ文字列が
+        パスに含まれないことを確認する。
+        """
+        env = full_aws_env
+        invoker = _make_invoker(env, max_concurrent=1)
+
+        non_ascii_name = "報告書.pdf"
+        file_path = tmp_path / non_ascii_name
+        file_path.write_bytes(b"%PDF-1.4\n%stub\n")
+
+        # InferenceId は _safe_ident(stem) を使うため、stem = "報告書" → SHA-1 16 文字
+        from async_invoker import _safe_ident  # type: ignore
+
+        safe_stem = _safe_ident("報告書")
+        # 16 文字の SHA-1 hex であることを sanity check (テスト前提の確認)
+        assert len(safe_stem) == 16
+        assert all(c in "0123456789abcdef" for c in safe_stem)
+        inference_id = f"{BATCH_JOB_ID}:{safe_stem}"
+
+        # success body 構築 (outputLocation は safe_stem を使う、_success_body と同形式)
+        success_body = {
+            "awsRegion": REGION,
+            "invocationStatus": "Completed",
+            "requestParameters": {
+                "endpointName": "yomitoku-async",
+                "inputLocation": (
+                    f"s3://{BUCKET}/batches/_async/inputs/{BATCH_JOB_ID}/{safe_stem}.pdf"
+                ),
+            },
+            "responseParameters": {
+                "contentType": "application/json",
+                "outputLocation": (
+                    f"s3://{BUCKET}/batches/_async/outputs/{safe_stem}.out"
+                ),
+            },
+            "inferenceId": inference_id,
+        }
+        env["s3"].put_object(
+            Bucket=BUCKET,
+            Key=f"batches/_async/outputs/{safe_stem}.out",
+            Body=json.dumps({"pages": []}).encode("utf-8"),
+            ContentType="application/json",
+        )
+        env["sqs"].send_message(
+            QueueUrl=env["success_url"],
+            MessageBody=_sns_wrap(success_body),
+        )
+
+        stubber = env["stubber"]
+        stubber.add_response(
+            "invoke_endpoint_async",
+            {"InferenceId": inference_id, "OutputLocation": "s3://x/y"},
+        )
+        stubber.activate()
+
+        output_dir = tmp_path / "out"
+        log_path = output_dir / "process_log.jsonl"
+        result = asyncio.run(
+            invoker.run_batch(
+                batch_job_id=BATCH_JOB_ID,
+                input_files=[file_path],
+                output_dir=output_dir,
+                log_path=log_path,
+                deadline_seconds=30.0,
+            )
+        )
+
+        assert len(result.succeeded_files) == 1
+        # persist パスは原本 (非 ASCII) filename + ".json"
+        persisted = output_dir / "報告書.pdf.json"
+        assert persisted.exists(), (
+            f"persist path should use sanitized original filename: {persisted}"
+        )
+        # SHA-1 16 文字ハッシュ文字列が persist パスに **含まれない**
+        persisted_str = str(persisted)
+        assert safe_stem not in persisted_str, (
+            f"persist path must not contain _safe_ident SHA-1 hash "
+            f"({safe_stem!r}); actual path: {persisted_str!r}"
+        )
+        # 旧仕様パス (SHA-1 stem + .json) も存在しないこと
+        assert not (output_dir / f"{safe_stem}.json").exists(), (
+            "should not persist using SHA-1 hashed stem path"
+        )

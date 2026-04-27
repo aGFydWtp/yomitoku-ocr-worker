@@ -12,7 +12,7 @@
 
 ## 2. Core — 各モジュールの命名 / lookup ロジック改修 (並列実行可能)
 
-- [ ] 2.1 (P) `async_invoker` の JSON persist 命名規約を `{原本ファイル名}.json` に変更
+- [x] 2.1 (P) `async_invoker` の JSON persist 命名規約を `{原本ファイル名}.json` に変更
   - `run_async_batch` 関数および `AsyncInvoker.__init__` (または `run_batch` メソッド) に `local_to_original: dict[str, str] | None = None` 引数を追加し、`AsyncInvoker._drain_queue` 内で参照可能にする
   - `_drain_queue` の persist パス組み立てを `output_dir / f"{file_stem}.json"` から `output_dir / f"{output_filename}.json"` に変更。`output_filename = (local_to_original or {}).get(file_path.name, file_path.name)` で解決
   - SageMaker `InferenceId` 用の `_safe_ident` (SHA-1 16 文字) は persist パス計算に **使わない**。ローカル persist には API レイヤでサニタイズ済の filename をそのまま使用する (R1.4 invariant)
