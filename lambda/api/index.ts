@@ -14,7 +14,7 @@ const GB = 1024 * 1024 * 1024;
 const formatSize = (bytes: number): string =>
   bytes >= GB ? `${bytes / GB} GB` : `${bytes / MB} MB`;
 
-const app = new OpenAPIHono();
+export const app = new OpenAPIHono();
 
 app.route("/batches", batchesRoutes);
 
@@ -34,7 +34,7 @@ app.doc("/doc", {
       "- `Authorization` / `X-API-Key` などは設定しないでください (設定しても無視されますが、混乱を避けるため)。",
       "",
       "## 利用フロー",
-      "1. `POST /batches` でバッチを作成し、返却された `uploads[].uploadUrl` に PDF を `PUT` (Content-Type は `application/pdf` 必須、有効 15 分)",
+      "1. `POST /batches` でバッチを作成し、返却された `uploads[].uploadUrl` に PDF / PPTX / DOCX / XLSX を `PUT` (Content-Type は拡張子別の MIME を schema 仕様で確認、`application/pdf` または `application/vnd.openxmlformats-officedocument.*`、有効 15 分)",
       "2. 全ファイルのアップロード完了後に `POST /batches/{batchJobId}/start` でバッチ実行をキック",
       "3. `GET /batches/{batchJobId}` を 15〜30 秒間隔でポーリングし、`status` が終端 (`COMPLETED` / `PARTIAL` / `FAILED` / `CANCELLED`) になったら停止",
       "4. `GET /batches/{batchJobId}/files` で各ファイルの `resultUrl` (署名付き GET URL、有効 60 分) を取得してダウンロード",
@@ -45,11 +45,13 @@ app.doc("/doc", {
       "BASE=https://<cloudfront>",
       "# 1. バッチ作成",
       "RES=$(curl -sX POST $BASE/batches -H 'content-type: application/json' \\",
-      '  -d \'{"batchLabel":"demo","files":[{"filename":"a.pdf"}]}\')',
+      '  -d \'{"batchLabel":"demo","files":[{"filename":"a.pdf"},{"filename":"slides.pptx"}]}\')',
       "BID=$(echo $RES | jq -r .batchJobId)",
       "URL=$(echo $RES | jq -r .uploads[0].uploadUrl)",
       "# 2. アップロード (Content-Type 必須)",
       "curl -X PUT -H 'content-type: application/pdf' --data-binary @a.pdf \"$URL\"",
+      "URL=$(echo $RES | jq -r .uploads[1].uploadUrl)",
+      "curl -X PUT -H 'content-type: application/vnd.openxmlformats-officedocument.presentationml.presentation' --data-binary @slides.pptx \"$URL\"",
       "# 3. 実行開始",
       "curl -X POST $BASE/batches/$BID/start",
       "# 4. ポーリング (15-30s 間隔)",
@@ -79,7 +81,7 @@ app.doc("/doc", {
       "| --- | --- | --- |",
       "| Scale-from-Zero (0→1 台) | 約 **2〜3 分** | 直前にバッチを処理していなかった場合に追加発生 |",
       "| Cold start (model load) | 約 **3〜5 分** | 1 台目のコンテナ pull + モデルロード |",
-      "| OCR 処理 (warm, 1 ファイル) | 数秒〜数十秒 / ページ数に応じて増加 | PDF 2 ページの smoke では約 4 秒 |",
+      "| OCR 処理 (warm, 1 ファイル) | 数秒〜数十秒 / ページ数に応じて増加 | PDF 2 ページの smoke では約 4 秒。Office 形式 (PPTX / DOCX / XLSX) は内部 PDF 変換で +1–3 秒/ファイル程度のオーバーヘッドが追加 |",
       "| scale-in (N→0 台) | 約 **15 分**後にアイドル判定 | 直近処理完了から 15 分無活動で 0 台へ |",
       "",
       "**直近にバッチを流した直後 (warm)**: 数秒〜数分で `COMPLETED` に到達します。",
@@ -98,7 +100,7 @@ app.doc("/doc", {
       `- 1 バッチあたり最大 **${MAX_FILES_PER_BATCH} ファイル**`,
       `- 1 バッチあたり合計 **${formatSize(MAX_TOTAL_BYTES)}**`,
       `- 1 ファイルあたり最大 **${formatSize(MAX_FILE_BYTES)}**`,
-      "- 拡張子は **`.pdf`** のみ (日本語ファイル名可)",
+      "- 拡張子は **`.pdf` / `.pptx` / `.docx` / `.xlsx`** (日本語ファイル名可)。Office 形式は内部で LibreOffice により PDF 化されてから OCR にかかる",
       "- `uploadUrl` 有効期限 **15 分** / `resultUrl` 有効期限 **60 分** (呼び出しごとに再発行)",
     ].join("\n"),
   },

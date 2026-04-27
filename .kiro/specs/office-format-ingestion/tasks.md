@@ -58,7 +58,7 @@
   - _Requirements: 4.2, 4.3_
   - _Boundary: batch-store.ts (TS)_
   - _Depends: 1.1_
-- [ ] 2.4 (P) index.ts の OpenAPI info.description を Office 形式対応に更新
+- [x] 2.4 (P) index.ts の OpenAPI info.description を Office 形式対応に更新
   - `:37` の "PDF を `PUT`" → "PDF / PPTX / DOCX / XLSX を `PUT`" + Content-Type は拡張子別 MIME に変更
   - `:48` 利用例 body に PPTX 例 (`{"filename":"slides.pptx"}`) を追加して PDF + PPTX 混在を提示
   - `:52` curl サンプルの直後に PPTX 用 `-H 'content-type: application/vnd.openxmlformats-officedocument.presentationml.presentation' --data-binary @slides.pptx "$URL"` を追記
