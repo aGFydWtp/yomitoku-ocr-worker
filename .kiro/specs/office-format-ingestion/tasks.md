@@ -42,7 +42,7 @@
   - _Requirements: 1.2_
   - _Boundary: batch-presign.ts_
   - _Depends: 1.1_
-- [ ] 2.2 (P) schemas.ts CreateBatchBodySchema に stem 一意性 refine を追加
+- [x] 2.2 (P) schemas.ts CreateBatchBodySchema に stem 一意性 refine を追加
   - `files` 配列レベルで `.refine()` を追加し、各 `f.filename` に対して `sanitizeFilename` (try/catch ラップ) → `path.parse(name).name.toLowerCase()` で stem を取得し `Set` 比較で重複検出
   - 重複検出時のエラーメッセージは `Duplicate stem detected. Conflicting files: [<filename>, <filename>, ...]` の形式で重複した stem 値と該当ファイル名を含める
   - sanitize 由来の throw が refine 内で起きた場合は `false` を返して 500 化を防ぐ (前段の `allowedExtensionRegex` と Zod `.min(1)` で大半は弾かれる前提)

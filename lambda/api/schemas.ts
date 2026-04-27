@@ -1,4 +1,6 @@
+import path from "node:path";
 import { z } from "@hono/zod-openapi";
+import { sanitizeFilename } from "./lib/sanitize";
 
 // ---------------------------------------------------------------------------
 // Batch ステータス
@@ -79,6 +81,37 @@ const allowedExtensionRegex = new RegExp(
   "i",
 );
 
+// stem 重複検出用ヘルパ。サニタイズ後ベース名を case-insensitive な stem に
+// 落として同一 stem を共有するファイル群を検出し、利用者がリクエストを
+// 修正できるよう「重複していた元ファイル名」を平坦に並べて返す。
+// `sanitizeFilename` 由来の throw (拡張子のみ / 空名 / 制御文字 only) は
+// refine 側ですでに `false` 扱い (=400) に落ちる経路を通っているため、
+// ここではメッセージ生成のみで try/catch する (該当ファイル名は元入力の
+// `filename` をそのまま含めてユーザが識別できるようにする)。
+function formatDuplicateStems(files: { filename: string }[]): string[] {
+  const groups = new Map<string, string[]>();
+  for (const f of files) {
+    let stem: string | null;
+    try {
+      stem = path.parse(sanitizeFilename(f.filename)).name.toLowerCase();
+    } catch {
+      stem = null;
+    }
+    if (!stem) continue;
+    const list = groups.get(stem) ?? [];
+    list.push(f.filename);
+    groups.set(stem, list);
+  }
+  const conflicts: string[] = [];
+  for (const [stem, names] of groups) {
+    if (names.length >= 2) {
+      // `report=[report.pdf, report.pptx]` 形式で重複 stem 値とファイル名を併記
+      conflicts.push(`${stem}=[${names.join(", ")}]`);
+    }
+  }
+  return conflicts;
+}
+
 export const CreateBatchBodySchema = z
   .object({
     batchLabel: z
@@ -122,6 +155,32 @@ export const CreateBatchBodySchema = z
       .max(
         MAX_FILES_PER_BATCH,
         `files must not exceed ${MAX_FILES_PER_BATCH} items`,
+      )
+      // R3.4 / R3.5: 同一 stem (拡張子を除いたベース名、サニタイズ後、case-insensitive)
+      // を持つファイルが 2 件以上含まれた場合は 400 で reject する。Office 形式追加で
+      // `report.pdf` + `report.pptx` のような同 stem 異拡張子の組合せが現実的になった
+      // ため、出力 JSON (`{stem}.json`) や可視化ファイル (`{basename}_..._page_*.jpg`)
+      // のキー衝突を作成時点で防ぐ。`sanitizeFilename` は前段の `allowedExtensionRegex`
+      // refine と Zod `.min(1)` で大半の入力が事前に弾かれている前提で、それでも
+      // 想定外 throw が起きた場合は refine を `false` 扱い (=400) に落として 500 化を防ぐ。
+      .refine(
+        (files) => {
+          try {
+            const stems = files.map((f) =>
+              path.parse(sanitizeFilename(f.filename)).name.toLowerCase(),
+            );
+            return new Set(stems).size === stems.length;
+          } catch {
+            return false;
+          }
+        },
+        {
+          error: (issue) => {
+            const files = issue.input as { filename: string }[] | undefined;
+            if (!files) return "Duplicate stem detected.";
+            return `Duplicate stem detected. Conflicting files: [${formatDuplicateStems(files).join(", ")}]`;
+          },
+        },
       )
       .openapi({
         description: `1 バッチあたり最大 ${MAX_FILES_PER_BATCH} ファイル。合計 ${MAX_TOTAL_BYTES / 1024 / 1024} MB、1 ファイルあたり ${MAX_FILE_BYTES / 1024 / 1024} MB が上限。PDF と Office 形式 (.pptx / .docx / .xlsx) を 1 バッチ内で混在させることが可能 (Office 形式は Batch Runner 内で PDF へ自動変換)。Content-Type は拡張子別に既定値が決まり、各ファイルの \`contentType\` で明示することもできる。`,

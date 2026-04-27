@@ -239,4 +239,102 @@ describe("CreateBatchBodySchema", () => {
     });
     expect(result.success).toBe(false);
   });
+
+  describe("stem 一意性 validation (R3.4 / R3.5)", () => {
+    it("異常系: 同一 stem の異拡張子の組合せ (report.pdf + report.pptx) は 400 で拒否される", () => {
+      // R3.4: case-insensitive stem 比較で重複検出
+      const result = CreateBatchBodySchema.safeParse({
+        ...validInput,
+        files: [{ filename: "report.pdf" }, { filename: "report.pptx" }],
+      });
+      expect(result.success).toBe(false);
+    });
+
+    it("異常系: エラーメッセージに重複した stem 値と該当ファイル名が含まれる (R3.5)", () => {
+      // R3.5: 重複 stem 値 (`report`) と該当ファイル名 (`report.pdf` / `report.pptx`)
+      // をエラー本文に含めて利用者が修正方針を判断できるようにする
+      const result = CreateBatchBodySchema.safeParse({
+        ...validInput,
+        files: [{ filename: "report.pdf" }, { filename: "report.pptx" }],
+      });
+      expect(result.success).toBe(false);
+      if (result.success) return; // type narrowing
+      const messages = result.error.issues.map((i) => i.message).join(" | ");
+      expect(messages).toContain("Duplicate stem detected");
+      // 重複 stem 値そのもの (`report`) もエラー本文に含まれる (R3.5)
+      expect(messages).toMatch(/\breport\b/);
+      expect(messages).toContain("report.pdf");
+      expect(messages).toContain("report.pptx");
+    });
+
+    it("異常系: case-insensitive で stem 重複を検出する (Report.pdf + report.pptx)", () => {
+      // 大文字小文字違いも衝突扱い (R3.4)
+      const result = CreateBatchBodySchema.safeParse({
+        ...validInput,
+        files: [{ filename: "Report.pdf" }, { filename: "report.pptx" }],
+      });
+      expect(result.success).toBe(false);
+      if (result.success) return;
+      const messages = result.error.issues.map((i) => i.message).join(" | ");
+      expect(messages).toContain("Report.pdf");
+      expect(messages).toContain("report.pptx");
+    });
+
+    it("異常系: 3 件以上の stem 重複もすべて該当ファイル名がエラー本文に含まれる", () => {
+      const result = CreateBatchBodySchema.safeParse({
+        ...validInput,
+        files: [
+          { filename: "report.pdf" },
+          { filename: "report.pptx" },
+          { filename: "report.docx" },
+        ],
+      });
+      expect(result.success).toBe(false);
+      if (result.success) return;
+      const messages = result.error.issues.map((i) => i.message).join(" | ");
+      expect(messages).toContain("report.pdf");
+      expect(messages).toContain("report.pptx");
+      expect(messages).toContain("report.docx");
+    });
+
+    it("正常系: stem が異なれば同拡張子でも受け付ける (report.pdf + summary.pdf)", () => {
+      const result = CreateBatchBodySchema.safeParse({
+        ...validInput,
+        files: [{ filename: "report.pdf" }, { filename: "summary.pdf" }],
+      });
+      expect(result.success).toBe(true);
+    });
+
+    it("正常系: 同一 stem が無ければ Office と PDF の混在を受け付ける", () => {
+      const result = CreateBatchBodySchema.safeParse({
+        ...validInput,
+        files: [
+          { filename: "report.pdf" },
+          { filename: "slides.pptx" },
+          { filename: "memo.docx" },
+        ],
+      });
+      expect(result.success).toBe(true);
+    });
+
+    it("異常系: 同一 stem 重複と別の stem 重複が混在しても両方検出される", () => {
+      const result = CreateBatchBodySchema.safeParse({
+        ...validInput,
+        files: [
+          { filename: "a.pdf" },
+          { filename: "a.pptx" },
+          { filename: "b.docx" },
+          { filename: "b.xlsx" },
+        ],
+      });
+      expect(result.success).toBe(false);
+      if (result.success) return;
+      const messages = result.error.issues.map((i) => i.message).join(" | ");
+      // 両 stem 重複の関連ファイル名がメッセージに含まれる
+      expect(messages).toContain("a.pdf");
+      expect(messages).toContain("a.pptx");
+      expect(messages).toContain("b.docx");
+      expect(messages).toContain("b.xlsx");
+    });
+  });
 });
