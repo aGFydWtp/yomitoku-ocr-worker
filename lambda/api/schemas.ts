@@ -25,6 +25,20 @@ export const FILE_STATUSES = [
 ] as const;
 export type FileStatus = (typeof FILE_STATUSES)[number];
 
+// ファイル単位の失敗カテゴリ。``status === "FAILED"`` の場合のみ意味を持ち、
+// それ以外では未設定 (undefined) として扱う。
+//
+// - ``CONVERSION_FAILED``: Office (.pptx / .docx / .xlsx) → PDF 変換が失敗
+//   (LibreOffice subprocess の timeout / non-zero exit / silent fail / 暗号化
+//   検知 / 変換後 PDF サイズ超過のいずれか、R4.2 / R4.5 / R4.6 / R4.7 / R5.2)。
+// - ``OCR_FAILED``: SageMaker Async Inference 経由の OCR 実行で失敗 (R4.3)。
+//
+// TS (`batch-store.ts:FileItem.errorCategory`) と Py (`batch_store.py:
+// update_file_result(error_category=...)`) は同名 DDB 属性 ``errorCategory``
+// (camelCase, ``errorMessage`` と対称) を共有する bit 互換契約。
+export const ERROR_CATEGORIES = ["CONVERSION_FAILED", "OCR_FAILED"] as const;
+export type ErrorCategory = (typeof ERROR_CATEGORIES)[number];
+
 // ---------------------------------------------------------------------------
 // 上限定数
 // ---------------------------------------------------------------------------
@@ -329,6 +343,18 @@ export const BatchFileSchema = z
     errorMessage: z.string().optional().openapi({
       description: "`status=FAILED` のときに付与される人間可読な失敗理由",
     }),
+    errorCategory: z
+      .enum(ERROR_CATEGORIES)
+      .optional()
+      .openapi({
+        description: [
+          "`status=FAILED` のときに付与される失敗カテゴリ。",
+          "- `CONVERSION_FAILED`: Office (`.pptx` / `.docx` / `.xlsx`) → PDF 変換段階での失敗 (LibreOffice timeout / non-zero exit / silent fail / 暗号化検知 / 変換後サイズ上限超過)。",
+          "- `OCR_FAILED`: SageMaker Async Inference 経由の OCR 実行段階での失敗。",
+          "",
+          '本フィールド導入前に作成された旧 FILE アイテムでは未設定 (キーごと省略) となる。`status !== "FAILED"` の場合も常に省略される。',
+        ].join("\n"),
+      }),
     updatedAt: z.string().datetime(),
   })
   .openapi("BatchFile");

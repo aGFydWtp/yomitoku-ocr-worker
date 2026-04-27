@@ -50,7 +50,7 @@
   - _Requirements: 3.4, 3.5_
   - _Boundary: schemas.ts_
   - _Depends: 1.2_
-- [ ] 2.3 (P) batch-store.ts (TS) に FileItem.errorCategory フィールドを追加
+- [x] 2.3 (P) batch-store.ts (TS) に FileItem.errorCategory フィールドを追加
   - `FileItem` 型に `errorCategory?: "CONVERSION_FAILED" | "OCR_FAILED"` を optional で追加
   - `updateFileResult()` の `UpdateExpression` に `errorCategory` を `SET` (引数 None なら属性 set しない)、`getFile()` で読み出して FileItem に展開
   - `BatchFileSchema` (Zod) に対応する `.optional()` フィールドを追加し、API レスポンスで expose

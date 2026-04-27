@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 import {
   ALLOWED_EXTENSIONS,
   BATCH_STATUSES,
+  BatchFileSchema,
   CreateBatchBodySchema,
+  ERROR_CATEGORIES,
   MAX_FILE_BYTES,
   MAX_FILES_PER_BATCH,
   MAX_TOTAL_BYTES,
@@ -336,5 +338,62 @@ describe("CreateBatchBodySchema", () => {
       expect(messages).toContain("b.docx");
       expect(messages).toContain("b.xlsx");
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// errorCategory (R4.2 / R4.3, office-format-ingestion task 2.3)
+// ---------------------------------------------------------------------------
+
+describe("ERROR_CATEGORIES", () => {
+  it("CONVERSION_FAILED と OCR_FAILED の 2 値を定義している", () => {
+    // R4.2 (CONVERSION_FAILED) / R4.3 (OCR_FAILED) と TS↔Py 共通の attribute 値。
+    expect(ERROR_CATEGORIES).toEqual(["CONVERSION_FAILED", "OCR_FAILED"]);
+  });
+});
+
+describe("BatchFileSchema.errorCategory", () => {
+  const baseFile = {
+    fileKey: "batches/abc/input/a.pdf",
+    filename: "a.pdf",
+    status: "FAILED" as const,
+    updatedAt: "2026-04-22T00:10:00Z",
+  };
+
+  it("errorCategory='CONVERSION_FAILED' を受理する", () => {
+    const result = BatchFileSchema.safeParse({
+      ...baseFile,
+      errorCategory: "CONVERSION_FAILED",
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.errorCategory).toBe("CONVERSION_FAILED");
+    }
+  });
+
+  it("errorCategory='OCR_FAILED' を受理する", () => {
+    const result = BatchFileSchema.safeParse({
+      ...baseFile,
+      errorCategory: "OCR_FAILED",
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("errorCategory 省略時も受理する (optional, 後方互換)", () => {
+    // R4.4: 旧データ (errorCategory 属性なし) は読み出し時 undefined のまま
+    // BatchFileSchema を通過し、レスポンス JSON からはキーごと省略される。
+    const result = BatchFileSchema.safeParse(baseFile);
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.errorCategory).toBeUndefined();
+    }
+  });
+
+  it("errorCategory に enum 外の値を渡すと validation error", () => {
+    const result = BatchFileSchema.safeParse({
+      ...baseFile,
+      errorCategory: "UNKNOWN",
+    });
+    expect(result.success).toBe(false);
   });
 });

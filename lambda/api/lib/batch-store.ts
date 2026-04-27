@@ -1,5 +1,5 @@
 import { TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import type { BatchStatus } from "../schemas";
+import type { BatchStatus, ErrorCategory } from "../schemas";
 import { MAX_FILES_PER_BATCH } from "../schemas";
 import { docClient } from "./dynamodb";
 import { ConflictError } from "./errors";
@@ -34,6 +34,12 @@ export interface FileItem {
   processingTimeMs?: number;
   resultKey?: string;
   errorMessage?: string;
+  /**
+   * `status === "FAILED"` の場合のみ意味を持つ失敗カテゴリ。
+   * 詳細は ``schemas.ts::ERROR_CATEGORIES`` を参照。
+   * 旧データ (本フィールド導入前の FILE アイテム) は読み出し時 ``undefined``。
+   */
+  errorCategory?: ErrorCategory;
   updatedAt: string;
 }
 
@@ -96,6 +102,13 @@ export interface UpdateFileResultInput {
   processingTimeMs?: number;
   resultKey?: string;
   errorMessage?: string;
+  /**
+   * 省略 (undefined) の場合は DDB の `errorCategory` 属性を一切更新しない
+   * (UpdateExpression の SET 句に含めない)。明示的に値を渡したときのみ
+   * `SET` で書き込まれる。これにより既存 FILE アイテムの旧データを
+   * 意図せず上書きするリスクを避ける。
+   */
+  errorCategory?: ErrorCategory;
 }
 
 // ---------------------------------------------------------------------------
@@ -266,6 +279,7 @@ export class BatchStore {
       processingTimeMs,
       resultKey,
       errorMessage,
+      errorCategory,
     } = input;
 
     const iso = new Date().toISOString();
@@ -301,6 +315,13 @@ export class BatchStore {
       ean["#errMsg"] = "errorMessage";
       eav[":errMsg"] = errorMessage;
       setExprs.push("#errMsg = :errMsg");
+    }
+    // errorCategory: 明示時のみ SET (省略時は属性を触らない)。
+    // attribute 名 ``errorCategory`` は Py 側 (`batch_store.py`) と共有 (R4.2 / R4.3)。
+    if (errorCategory !== undefined) {
+      ean["#errorCategory"] = "errorCategory";
+      eav[":errorCategory"] = errorCategory;
+      setExprs.push("#errorCategory = :errorCategory");
     }
 
     await docClient.send(

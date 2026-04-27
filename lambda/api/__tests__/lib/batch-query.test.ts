@@ -80,6 +80,82 @@ describe("BatchQuery", () => {
       const cmd: AnyRecord = mockSend.mock.calls[0][0];
       expect(cmd.input.Limit).toBeGreaterThan(0);
     });
+
+    // --- errorCategory 読み出し (R4.2 / R4.3 / office-format-ingestion task 2.3) ---
+    it("FILE アイテムの errorCategory を FileItem に展開する (CONVERSION_FAILED)", async () => {
+      // R4.2: 変換失敗 FILE は DDB に errorCategory='CONVERSION_FAILED' を持つ。
+      // GET /batches/{id}/files のレスポンス JSON にそのまま expose する。
+      mockSend.mockResolvedValue({
+        Items: [
+          {
+            PK: "BATCH#batch-001",
+            SK: "META",
+            entityType: "BATCH",
+            batchJobId: "batch-001",
+            status: "PARTIAL",
+            totals: { total: 1, succeeded: 0, failed: 1, inProgress: 0 },
+            createdAt: "2026-04-22T00:00:00Z",
+            startedAt: "2026-04-22T00:01:00Z",
+            updatedAt: "2026-04-22T00:10:00Z",
+            parentBatchJobId: null,
+          },
+          {
+            PK: "BATCH#batch-001",
+            SK: "FILE#batches/batch-001/input/slides.pptx",
+            entityType: "FILE",
+            batchJobId: "batch-001",
+            fileKey: "batches/batch-001/input/slides.pptx",
+            filename: "slides.pptx",
+            status: "FAILED",
+            errorMessage: "Encrypted office document is not supported",
+            errorCategory: "CONVERSION_FAILED",
+            updatedAt: "2026-04-22T00:10:00Z",
+          },
+        ],
+      });
+
+      const result = await query.getBatchWithFiles("batch-001");
+
+      expect(result?.files).toHaveLength(1);
+      expect(result?.files[0].errorCategory).toBe("CONVERSION_FAILED");
+    });
+
+    it("既存 FILE アイテム (errorCategory 属性なし) は undefined として読み出される (後方互換)", async () => {
+      // R4.4 (TS 側): 既存 FILE アイテム (errorCategory 属性なし) を読み出した
+      // ときに throw / null 化せず、undefined のまま FileItem に乗せる。
+      // BatchFileSchema 側で .optional() なのでレスポンスからもキー自体が消える。
+      mockSend.mockResolvedValue({
+        Items: [
+          {
+            PK: "BATCH#batch-001",
+            SK: "META",
+            entityType: "BATCH",
+            batchJobId: "batch-001",
+            status: "COMPLETED",
+            totals: { total: 1, succeeded: 1, failed: 0, inProgress: 0 },
+            createdAt: "2026-04-22T00:00:00Z",
+            startedAt: "2026-04-22T00:01:00Z",
+            updatedAt: "2026-04-22T00:10:00Z",
+            parentBatchJobId: null,
+          },
+          {
+            PK: "BATCH#batch-001",
+            SK: "FILE#batches/batch-001/input/a.pdf",
+            entityType: "FILE",
+            batchJobId: "batch-001",
+            fileKey: "batches/batch-001/input/a.pdf",
+            filename: "a.pdf",
+            status: "COMPLETED",
+            updatedAt: "2026-04-22T00:10:00Z",
+            // errorCategory 属性なし (旧データ)
+          },
+        ],
+      });
+
+      const result = await query.getBatchWithFiles("batch-001");
+
+      expect(result?.files[0].errorCategory).toBeUndefined();
+    });
   });
 
   // --- listFailedFiles ---

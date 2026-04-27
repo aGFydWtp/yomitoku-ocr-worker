@@ -80,6 +80,11 @@ export class BatchQuery {
         processingTimeMs: i.processingTimeMs as number | undefined,
         resultKey: i.resultKey as string | undefined,
         errorMessage: i.errorMessage as string | undefined,
+        // errorCategory: 旧 FILE アイテムは属性自体が無いので undefined のまま
+        // FileItem に乗る (BatchFileSchema 側で .optional() なのでレスポンス
+        // JSON からも省略される)。R4.2 / R4.3 の値検証は schemas.ts の Zod
+        // enum で API 境界で行うため、ここでは type assertion のみ。
+        errorCategory: i.errorCategory as FileItem["errorCategory"],
         updatedAt: i.updatedAt as string,
       }));
 
