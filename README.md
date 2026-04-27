@@ -211,7 +211,7 @@ curl "https://<DistributionDomainName>/batches/<batchJobId>/files?cursor=<cursor
       "status": "COMPLETED",
       "dpi": 200,
       "processingTimeMs": 12345,
-      "resultKey": "batches/.../output/doc-a.json",
+      "resultKey": "batches/.../output/doc-a.pdf.json",
       "updatedAt": "2026-04-22T00:03:00.000Z"
     }
   ],

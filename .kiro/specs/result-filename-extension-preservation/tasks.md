@@ -74,7 +74,7 @@
 
 ## 5. Validation — 契約ガードと E2E
 
-- [ ] 5.1 Legacy reference contract guard (移行漏れ検出機構) の実装
+- [x] 5.1 Legacy reference contract guard (移行漏れ検出機構) の実装
   - `scripts/check-legacy-refs.sh` を拡張、または新規 `scripts/check-result-key-format.sh` を作成し、以下の正規表現で旧フォーマット fixture / 構築式の取り残しを検出する: (a) `output_dir\s*/\s*f"\{(?:file_)?stem\}\.json"` (Python `f"{stem}.json"` 系)、(b) `output/[a-zA-Z0-9_-]+\.json["']` (拡張子なし basename + `.json` のリテラル)
   - 除外リスト (false positive 防止): `process_log.jsonl` / `_async/outputs/{uuid}.out` / yomitoku-client 規約 (`{stem}_{ext}.json` の `extra_formats` 出力) / 本 script 自体
   - 違反 1 件以上で `exit 1`、0 件で `exit 0` を返す
