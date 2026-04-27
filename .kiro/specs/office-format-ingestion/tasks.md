@@ -114,7 +114,7 @@
   - 完了時に PDF + PPTX 混在のローカル input_dir を作って `main.run(settings)` を mock 経由で 1 周し、`process_log.jsonl` に成功と CONVERSION_FAILED が混在し、DDB FILE アイテムが `errorCategory` 含めて期待通り更新される (test_main.py で確認、5.8 で詳細)
   - _Requirements: 2.1, 2.3, 3.1, 3.2, 4.1, 4.2, 7.1, 8.1, 8.2, 8.3, 9.1, 9.2, 9.3_
   - _Depends: 3.1, 3.2, 3.3_
-- [ ] 4.2 (P) batch-execution-stack.ts TaskDefinition env に OFFICE_CONVERT_* を配線
+- [x] 4.2 (P) batch-execution-stack.ts TaskDefinition env に OFFICE_CONVERT_* を配線
   - 既存 `containerOverrides` ではなく `TaskDefinition.containerDefinitions[].environment` の static 部に 3 つ追加: `OFFICE_CONVERT_TIMEOUT_SEC: "300"`, `OFFICE_CONVERT_MAX_CONCURRENT: "4"`, `MAX_CONVERTED_FILE_BYTES: String(1024 * 1024 * 1024)`
   - 値はビルド時定数 (CDK synth 時に固定)、将来 SSM Parameter Store 化したくなれば別途 spec
   - 完了時に `pnpm cdk synth BatchExecutionStack` の出力 CFN テンプレート JSON を `jq '.Resources[].Properties.ContainerDefinitions[].Environment'` で確認し 3 つの環境変数が含まれる
