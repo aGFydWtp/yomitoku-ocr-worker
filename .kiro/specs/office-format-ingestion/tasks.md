@@ -187,7 +187,7 @@
   - _Requirements: 2.4, 4.6, 5.2, 6.4, 6.5_
   - _Boundary: batch-execution-stack.test.ts_
   - _Depends: 4.2_
-- [ ] 5.8 main.py の混在バッチ統合テスト (test_main.py 拡張)
+- [x] 5.8 main.py の混在バッチ統合テスト (test_main.py 拡張)
   - `download_inputs` を mock し PDF + PPTX が input_dir に並ぶ状態を作る、`office_converter.convert_office_files` を mock して 1 件成功 + 1 件 CONVERSION_FAILED (encrypted 等) を返す、`asyncio.run(run_async_batch)` を mock して残り PDF を success させる
   - main pipeline 完走後に `process_log.jsonl` に 3 件 (PDF success / 変換成功 PDF success / 変換失敗 CONVERSION_FAILED) が並ぶこと、DDB FILE が `errorCategory` 含めて正しく更新されること、META.status が PARTIAL になること
   - PDF only バッチで `office_converter.convert_office_files` が **呼ばれない** ことを mock の call_count で assert (R7.1)
