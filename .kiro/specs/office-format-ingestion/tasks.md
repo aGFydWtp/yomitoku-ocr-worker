@@ -201,7 +201,7 @@
   - _Requirements: 8.1, 8.2, 8.3_
   - _Boundary: test_runner.py_
   - _Depends: 4.1_
-- [ ] 5.10 E2E: test_run_async_batch_e2e.py に PDF + PPTX 混在ケースを追加
+- [x] 5.10 E2E: test_run_async_batch_e2e.py に PDF + PPTX 混在ケースを追加
   - moto + Stubber で SNS / SQS / S3 / SageMaker をすべて立て、`subprocess.run` を mock した office_converter で PPTX 1 件 + PDF 1 件 + 失敗 PPTX 1 件の混在バッチを 1 周流す
   - `BatchResult.succeeded_files` / `failed_files` が期待通り、`process_log.jsonl` の出力、DDB FILE 全件 (PDF / 変換成功 / 変換失敗) のステータスと `errorCategory` を最終的に検証
   - SageMaker invoke は変換後 PDF (拡張子 .pdf、Content-Type application/pdf) のみを受信 (R7.2 確認)

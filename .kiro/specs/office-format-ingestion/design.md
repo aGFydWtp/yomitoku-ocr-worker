@@ -587,11 +587,12 @@ def convert_office_files(
     max_converted_bytes: int,
 ) -> ConvertResult: ...
     # 上記単位関数を semaphore で並列実行する高レベル API。
-    # 成功した ConvertedFile は input_dir 内の Office 原本をローカル削除し、PDF のみ残す。
+    # 成功・失敗いずれの場合も Office 原本を input_dir からローカル削除し、PDF のみ残す
+    # (R7.2 維持。S3 上は不変 = R9.1 / R9.2)。
 ```
 
 - Preconditions: `input_dir` が存在し、`soffice` コマンドが PATH に存在する
-- Postconditions: 変換成功ファイルは `input_dir/{stem}.pdf` として配置済、Office 原本はローカル削除済 (S3 不変)
+- Postconditions: 変換成功ファイルは `input_dir/{stem}.pdf` として配置済、Office 原本は成功・失敗を問わずローカル削除済 (R7.2 維持。S3 不変 = R9.1 / R9.2)
 - Invariants: `ConvertResult.succeeded` と `ConvertResult.failed` の和が input_dir 内の Office ファイル総数に一致
 
 ##### Batch / Job Contract

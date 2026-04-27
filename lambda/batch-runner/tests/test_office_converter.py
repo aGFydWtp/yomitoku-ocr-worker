@@ -451,8 +451,8 @@ class TestConvertOfficeFiles:
         f = result.failed[0]
         assert f.reason == "encrypted"
         assert f.original_path == tmp_path / "secret.docx"
-        # 失敗時は原本を削除しない
-        assert (tmp_path / "secret.docx").exists()
+        # 失敗時も R7.2 維持のため原本は削除する (S3 は不変 / R9.1)
+        assert not (tmp_path / "secret.docx").exists()
 
     @pytest.mark.parametrize(
         "exc, expected_reason",
@@ -475,11 +475,11 @@ class TestConvertOfficeFiles:
         assert result.succeeded == []
         assert len(result.failed) == 1
         assert result.failed[0].reason == expected_reason
-        # 失敗時は原本残置
-        assert (tmp_path / "broken.pptx").exists()
+        # 失敗時も R7.2 維持のため原本は削除する (S3 は不変 / R9.1)
+        assert not (tmp_path / "broken.pptx").exists()
 
-    def test_oversize_failure_recorded_and_pdf_present_but_original_kept(self, tmp_path: Path) -> None:
-        """変換は成功するが size 超過で失敗扱い。原本は失敗時には残す。"""
+    def test_oversize_failure_recorded_and_original_deleted(self, tmp_path: Path) -> None:
+        """変換は成功するが size 超過で失敗扱い。失敗時も R7.2 維持のため原本は削除。"""
         self._make_files(tmp_path, ["big.xlsx"])
 
         def _conv(input_path, *, work_dir, timeout_sec):  # noqa: ARG001
@@ -495,8 +495,8 @@ class TestConvertOfficeFiles:
         assert result.succeeded == []
         assert len(result.failed) == 1
         assert result.failed[0].reason == "oversize"
-        # 原本残置 (失敗扱い)
-        assert (tmp_path / "big.xlsx").exists()
+        # 失敗時も R7.2 維持のため原本は削除する (S3 は不変 / R9.1)
+        assert not (tmp_path / "big.xlsx").exists()
 
     def test_mixed_batch_partial_success(self, tmp_path: Path) -> None:
         self._make_files(tmp_path, ["ok.pptx", "fail.pptx", "report.pdf"])
@@ -515,8 +515,8 @@ class TestConvertOfficeFiles:
         assert (tmp_path / "report.pdf").exists()
         # 成功した office 原本は消えている
         assert not (tmp_path / "ok.pptx").exists()
-        # 失敗側は残っている
-        assert (tmp_path / "fail.pptx").exists()
+        # 失敗側も R7.2 維持のため原本は削除する (S3 は不変 / R9.1)
+        assert not (tmp_path / "fail.pptx").exists()
 
     def test_parallel_execution_respects_max_concurrent(self, tmp_path: Path) -> None:
         """3 ファイル / max_concurrent=2 で同時実行は最大 2 (3 ではない) を満たす。"""

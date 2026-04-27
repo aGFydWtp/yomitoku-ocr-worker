@@ -4,8 +4,9 @@
     - LibreOffice (`soffice`) subprocess の起動・出力検証・cleanup を 1 モジュールに閉じる
     - 暗号化検知 (msoffcrypto) / silent fail / timeout / 非ゼロ exit / oversize の
       5 失敗カテゴリをそれぞれ専用例外として呼び出し側に通知する
-    - 並列変換 (ThreadPoolExecutor) を提供し、成功した Office 原本はローカル削除する
-      (S3 への delete は呼ばない: 監査要件 R9.2)
+    - 並列変換 (ThreadPoolExecutor) を提供し、成功・失敗いずれの場合も Office 原本を
+      ローカル削除する (R7.2 維持: 後段 run_async_batch が SageMaker に Office 形式で
+      invoke するのを防ぐ。S3 への delete は呼ばない: 監査要件 R9.2)
 
 外部依存:
     - 標準ライブラリ: subprocess / pathlib / uuid / shutil / signal / os / tempfile /
@@ -242,7 +243,7 @@ def convert_office_files(
         2. is_password_protected で暗号化判定 (true → encrypted failure)
         3. convert_office_to_pdf で変換 (timeout/exit_code/silent_fail を捕捉)
         4. validate_converted_size で size 検証 (oversize failure)
-        5. 成功時のみ Office 原本をローカル削除 (S3 は触らない: R9.2)
+        5. 成功・失敗いずれも Office 原本をローカル削除 (R7.2 維持。S3 は触らない: R9.2)
 
     並列性:
         ThreadPoolExecutor(max_workers=max_concurrent) で同時最大 max_concurrent。
@@ -302,6 +303,25 @@ def convert_office_files(
 
         return ConvertedFile(original_path=p, pdf_path=pdf)
 
+    def _unlink_local_original(path: Path, *, context: str) -> None:
+        """Office 原本を input_dir からローカル削除する (S3 は不変 / R9.1 維持)。
+
+        成功・失敗いずれの場合も呼び出す: 残置すると後段 run_async_batch が
+        SageMaker に Office 形式で invoke してしまい、R7.2 / R2.3
+        (application/pdf のみ staging) を破る。
+        """
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+        except OSError:
+            logger.warning(
+                "failed to delete local original after %s: %s",
+                context,
+                path,
+                exc_info=True,
+            )
+
     workers = max(1, max_concurrent)
     with ThreadPoolExecutor(max_workers=workers) as executor:
         futures: list[tuple[Path, Future[ConvertedFile | ConvertFailure]]] = [
@@ -312,6 +332,8 @@ def convert_office_files(
                 outcome = fut.result()
             except Exception as e:  # noqa: BLE001 - 想定外例外は exit_code として扱う
                 logger.exception("unexpected error converting %s", original)
+                # 想定外失敗でも Office 原本はローカル削除 (R7.2 維持 / S3 不変)
+                _unlink_local_original(original, context="unexpected failure")
                 failed.append(
                     ConvertFailure(
                         original_path=original,
@@ -323,18 +345,13 @@ def convert_office_files(
 
             if isinstance(outcome, ConvertedFile):
                 # 成功: Office 原本をローカル削除 (S3 は触らない)
-                try:
-                    outcome.original_path.unlink()
-                except FileNotFoundError:
-                    pass
-                except OSError:
-                    logger.warning(
-                        "failed to delete local original after success: %s",
-                        outcome.original_path,
-                        exc_info=True,
-                    )
+                _unlink_local_original(outcome.original_path, context="success")
                 succeeded.append(outcome)
             else:
+                # 失敗: Office 原本もローカル削除 (S3 は触らない / R9.1)
+                # 残置すると後段 run_async_batch が SageMaker に Office 形式で
+                # invoke してしまい R7.2 / R2.3 (application/pdf のみ staging) を破る。
+                _unlink_local_original(outcome.original_path, context="failure")
                 failed.append(outcome)
 
     return ConvertResult(succeeded=succeeded, failed=failed)

@@ -210,8 +210,9 @@ def run(settings: BatchRunnerSettings) -> int:
                 },
             )
             # 変換失敗を process_log.jsonl に追記 (run_async_batch より先に書く)。
-            # 成功ファイルは office_converter 側で原本がローカル削除されるため
-            # input_dir には変換後 PDF + 元から PDF だったファイルのみが残る。
+            # 成功・失敗いずれも office_converter 側で原本がローカル削除されるため
+            # input_dir には変換後 PDF + 元から PDF だったファイルのみが残る
+            # (R7.2 維持: 後段は application/pdf のみを SageMaker に送る)。
             # S3 input prefix への delete API は呼ばない (R9.1 / R9.2 維持)。
             _append_conversion_failures_to_log(log_path, convert_result.failed)
 
