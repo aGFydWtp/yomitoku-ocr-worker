@@ -309,3 +309,84 @@ class TestGenerateVisualizations:
             "a_layout_page_1.jpg",
             "a_ocr_page_1.jpg",
         ]
+
+    def test_visualizes_converted_pdf_after_office_original_removed(
+        self, reload_runner, monkeypatch, tmp_path
+    ):
+        """R8.1-8.3 非退行: Office 原本が削除済 + 変換後 PDF のみ存在する状態でも、
+        runner.py の ``in_path / f"{basename}.pdf"`` 解決で可視化が生成される。
+
+        office_converter.convert_office_files() は変換後に原本 (.pptx/.docx/.xlsx)
+        を削除し ``{stem}.pdf`` のみを並置するため、本テストでは事後状態
+        (input_dir に .pdf のみが存在し、原本拡張子のファイルは存在しない) を
+        再現する。
+        """
+        runner = reload_runner()
+        self._install_fakes(runner, monkeypatch, pages=2)
+
+        input_dir = tmp_path / "input"
+        output_dir = tmp_path / "output"
+        input_dir.mkdir()
+        output_dir.mkdir()
+
+        # Office 変換後の状態: 原本 (.pptx 等) は既に削除済。
+        # input_dir には変換後 PDF のみ残っている。
+        (input_dir / "deck.pdf").write_bytes(b"%PDF-")
+        (output_dir / "deck.json").write_text(json.dumps({"pages": []}))
+
+        # Office 原本拡張子のファイルは置かない (削除済を表現)。
+        assert not list(input_dir.glob("*.pptx"))
+        assert not list(input_dir.glob("*.docx"))
+        assert not list(input_dir.glob("*.xlsx"))
+
+        errors = runner.generate_all_visualizations(
+            input_dir=str(input_dir), output_dir=str(output_dir)
+        )
+
+        # PDF 可視化パイプラインがそのまま再利用され、命名規則も維持されること
+        # (R8.1 / R8.2 / R8.3)。
+        assert errors == {}
+        generated = sorted(p.name for p in output_dir.glob("*.jpg"))
+        assert generated == [
+            "deck_layout_page_0.jpg",
+            "deck_layout_page_1.jpg",
+            "deck_ocr_page_0.jpg",
+            "deck_ocr_page_1.jpg",
+        ]
+
+    def test_visualizes_pdf_and_converted_pdf_are_indistinguishable(
+        self, reload_runner, monkeypatch, tmp_path
+    ):
+        """R8.3 非退行: 既存 PDF 入力と Office 由来の変換後 PDF が input_dir に
+        混在しても、両方とも同一の可視化命名規則で処理される。
+
+        runner.py からは両者の出自を区別できず ``.pdf`` として一括処理される
+        ことを検証する。
+        """
+        runner = reload_runner()
+        self._install_fakes(runner, monkeypatch, pages=1)
+
+        input_dir = tmp_path / "input"
+        output_dir = tmp_path / "output"
+        input_dir.mkdir()
+        output_dir.mkdir()
+
+        # 既存 PDF と、Office 変換後 PDF を並置 (原本拡張子は無し)。
+        (input_dir / "native.pdf").write_bytes(b"%PDF-")
+        (input_dir / "converted.pdf").write_bytes(b"%PDF-")
+        (output_dir / "native.json").write_text(json.dumps({"pages": []}))
+        (output_dir / "converted.json").write_text(json.dumps({"pages": []}))
+
+        errors = runner.generate_all_visualizations(
+            input_dir=str(input_dir), output_dir=str(output_dir)
+        )
+
+        # 両者とも同じパイプラインで処理され、エラーゼロかつ同形式の JPEG が出る。
+        assert errors == {}
+        generated = sorted(p.name for p in output_dir.glob("*.jpg"))
+        assert generated == [
+            "converted_layout_page_0.jpg",
+            "converted_ocr_page_0.jpg",
+            "native_layout_page_0.jpg",
+            "native_ocr_page_0.jpg",
+        ]

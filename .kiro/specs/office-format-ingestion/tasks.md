@@ -194,7 +194,7 @@
   - 完了時に `pytest lambda/batch-runner/tests/test_main.py -v -k "mixed_batch or pdf_only or convert_skipped"` がすべて pass
   - _Requirements: 3.1, 3.3, 4.1, 4.2, 4.8, 7.1_
   - _Depends: 4.1_
-- [ ] 5.9 (P) test_runner.py で可視化が変換後 PDF を読みに行くこと (R8 非退行)
+- [x] 5.9 (P) test_runner.py で可視化が変換後 PDF を読みに行くこと (R8 非退行)
   - `runner.py:170-171` の `pdf_path = in_path / f"{basename}.pdf"` 解決が、Office 原本が削除済 + 変換後 PDF が並置された状態で正しく PDF を見つけて可視化を生成
   - 既存 PDF 入力との振る舞いが変わらない (regression check)
   - 完了時に `pytest lambda/batch-runner/tests/test_runner.py -v -k "visualize"` がすべて pass
