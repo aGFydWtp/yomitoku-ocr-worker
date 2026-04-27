@@ -35,7 +35,7 @@
 ## Phase 2: API Core (TS Lambda 層)
 
 - [ ] 2. Core: API 層に Office 形式受理 / stem 一意性 / errorCategory / OpenAPI description 反映
-- [ ] 2.1 (P) batch-presign.ts に拡張子別の既定 Content-Type マッピングを実装
+- [x] 2.1 (P) batch-presign.ts に拡張子別の既定 Content-Type マッピングを実装
   - `EXTENSION_TO_CONTENT_TYPE: Record<string, string>` を新設し、`.pdf` / `.pptx` / `.docx` / `.xlsx` を各 OOXML MIME / PDF MIME に対応付け
   - `createUploadUrls()` 内で `f.contentType ?? defaultContentType(safeFilename)` の形に変更 (未指定時は拡張子 lookup、未知拡張子は `application/octet-stream` フォールバック)
   - 完了時に `pptx` ファイル名で `contentType` 未指定の入力を `createUploadUrls()` に渡すと、署名 URL の `X-Amz-SignedHeaders` に `content-type` が含まれ署名対象 Content-Type が OOXML MIME になる (test で assert)

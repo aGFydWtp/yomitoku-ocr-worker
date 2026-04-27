@@ -14,7 +14,11 @@ vi.mock("@aws-sdk/client-s3", () => ({
 }));
 
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
-import { BatchPresign } from "../../lib/batch-presign";
+import {
+  BatchPresign,
+  defaultContentType,
+  EXTENSION_TO_CONTENT_TYPE,
+} from "../../lib/batch-presign";
 import { MAX_FILES_PER_BATCH } from "../../schemas";
 
 const BUCKET = "test-bucket";
@@ -106,6 +110,106 @@ describe("BatchPresign", () => {
 
       const [[, cmd]] = (getSignedUrl as ReturnType<typeof vi.fn>).mock.calls;
       expect(cmd.input.ContentType).toBe("application/pdf");
+    });
+
+    // R1.2: 拡張子別の既定 Content-Type マッピング
+    it("contentType 省略 + .pptx の場合は OOXML PPTX MIME を署名対象にする", async () => {
+      await presign.createUploadUrls({
+        batchJobId: "batch-001",
+        files: [{ filename: "deck.pptx" }],
+      });
+
+      const [[, cmd]] = (getSignedUrl as ReturnType<typeof vi.fn>).mock.calls;
+      expect(cmd.input.ContentType).toBe(
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+      );
+    });
+
+    it("contentType 省略 + .docx の場合は OOXML DOCX MIME を署名対象にする", async () => {
+      await presign.createUploadUrls({
+        batchJobId: "batch-001",
+        files: [{ filename: "report.docx" }],
+      });
+
+      const [[, cmd]] = (getSignedUrl as ReturnType<typeof vi.fn>).mock.calls;
+      expect(cmd.input.ContentType).toBe(
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      );
+    });
+
+    it("contentType 省略 + .xlsx の場合は OOXML XLSX MIME を署名対象にする", async () => {
+      await presign.createUploadUrls({
+        batchJobId: "batch-001",
+        files: [{ filename: "data.xlsx" }],
+      });
+
+      const [[, cmd]] = (getSignedUrl as ReturnType<typeof vi.fn>).mock.calls;
+      expect(cmd.input.ContentType).toBe(
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      );
+    });
+
+    it("拡張子が大文字の場合も case-insensitive で OOXML MIME に解決する", async () => {
+      await presign.createUploadUrls({
+        batchJobId: "batch-001",
+        files: [{ filename: "Deck.PPTX" }],
+      });
+
+      const [[, cmd]] = (getSignedUrl as ReturnType<typeof vi.fn>).mock.calls;
+      expect(cmd.input.ContentType).toBe(
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+      );
+    });
+  });
+
+  // R1.2: defaultContentType ヘルパの単体検証 (sanitizeFilename gate を経由しない経路)
+  describe("defaultContentType", () => {
+    it("拡張子 → MIME マップが design.md で定義された 4 形式を網羅する", () => {
+      expect(EXTENSION_TO_CONTENT_TYPE).toEqual({
+        ".pdf": "application/pdf",
+        ".pptx":
+          "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        ".docx":
+          "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        ".xlsx":
+          "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      });
+    });
+
+    it(".pdf を application/pdf に解決する", () => {
+      expect(defaultContentType("doc.pdf")).toBe("application/pdf");
+    });
+
+    it(".pptx を OOXML PPTX MIME に解決する", () => {
+      expect(defaultContentType("deck.pptx")).toBe(
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+      );
+    });
+
+    it(".docx を OOXML DOCX MIME に解決する", () => {
+      expect(defaultContentType("report.docx")).toBe(
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      );
+    });
+
+    it(".xlsx を OOXML XLSX MIME に解決する", () => {
+      expect(defaultContentType("data.xlsx")).toBe(
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      );
+    });
+
+    it("マップに無い拡張子は application/octet-stream にフォールバックする", () => {
+      expect(defaultContentType("notes.txt")).toBe("application/octet-stream");
+    });
+
+    it("拡張子のないファイル名は application/octet-stream にフォールバックする", () => {
+      expect(defaultContentType("README")).toBe("application/octet-stream");
+    });
+
+    it("大文字混じり拡張子も case-insensitive で解決する", () => {
+      expect(defaultContentType("Deck.PPTX")).toBe(
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+      );
     });
   });
 
