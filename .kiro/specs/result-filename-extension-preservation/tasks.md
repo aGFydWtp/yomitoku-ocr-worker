@@ -64,7 +64,7 @@
   - _Requirements: 1.1, 1.2, 1.3, 1.4, 1.5, 2.1, 2.2, 3.1, 3.2, 3.3, 5.1, 5.2_
   - _Boundary: lambda/batch-runner/tests/_
 
-- [ ] 4.2 (P) TypeScript テスト fixture を新仕様 (`{name}.json`) へ移行
+- [x] 4.2 (P) TypeScript テスト fixture を新仕様 (`{name}.json`) へ移行
   - `lambda/api/__tests__/lib/batch-presign.test.ts` (L220) / `batch-store.test.ts` (L175, L243) / `routes/batches.test.ts` (L116) の `resultKey` 値リテラル (`output/sample.json` / `output/a.json` 等) を新フォーマット (例: `output/document.pdf.json` / `output/a.pdf.json`) に書換
   - `lambda/api/__tests__/openapi-description.test.ts` に新規アサーション追加: `BatchFile.resultKey.description` が「`{原本ファイル名}.json`」「移行ノート」「追加フォーマット非対称メモ」「`.json` 終端不変」の 4 要素文言を含むことを検証 (R4.1, R4.2, R4.3, R4.4)
   - **観察可能な完了**: `pnpm test` (Vitest) が全件 pass し、OpenAPI description テストが新仕様の 4 要素文言を確認する

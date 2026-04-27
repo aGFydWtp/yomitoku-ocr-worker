@@ -172,7 +172,7 @@ describe("BatchStore (write-path)", () => {
         fileKey: "batches/batch-001/input/a.pdf",
         status: "COMPLETED",
         processingTimeMs: 1200,
-        resultKey: "batches/batch-001/output/a.json",
+        resultKey: "batches/batch-001/output/a.pdf.json",
       });
 
       const cmd: AnyRecord = mockSend.mock.calls[0][0];
@@ -240,7 +240,7 @@ describe("BatchStore (write-path)", () => {
         fileKey: "batches/batch-001/input/a.pdf",
         status: "COMPLETED",
         processingTimeMs: 1200,
-        resultKey: "batches/batch-001/output/a.json",
+        resultKey: "batches/batch-001/output/a.pdf.json",
       });
 
       const cmd: AnyRecord = mockSend.mock.calls[0][0];
