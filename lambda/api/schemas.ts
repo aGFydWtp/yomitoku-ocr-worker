@@ -1,4 +1,6 @@
+import path from "node:path";
 import { z } from "@hono/zod-openapi";
+import { sanitizeFilename } from "./lib/sanitize";
 
 // ---------------------------------------------------------------------------
 // Batch ステータス
@@ -23,6 +25,20 @@ export const FILE_STATUSES = [
 ] as const;
 export type FileStatus = (typeof FILE_STATUSES)[number];
 
+// ファイル単位の失敗カテゴリ。``status === "FAILED"`` の場合のみ意味を持ち、
+// それ以外では未設定 (undefined) として扱う。
+//
+// - ``CONVERSION_FAILED``: Office (.pptx / .docx / .xlsx) → PDF 変換が失敗
+//   (LibreOffice subprocess の timeout / non-zero exit / silent fail / 暗号化
+//   検知 / 変換後 PDF サイズ超過のいずれか、R4.2 / R4.5 / R4.6 / R4.7 / R5.2)。
+// - ``OCR_FAILED``: SageMaker Async Inference 経由の OCR 実行で失敗 (R4.3)。
+//
+// TS (`batch-store.ts:FileItem.errorCategory`) と Py (`batch_store.py:
+// update_file_result(error_category=...)`) は同名 DDB 属性 ``errorCategory``
+// (camelCase, ``errorMessage`` と対称) を共有する bit 互換契約。
+export const ERROR_CATEGORIES = ["CONVERSION_FAILED", "OCR_FAILED"] as const;
+export type ErrorCategory = (typeof ERROR_CATEGORIES)[number];
+
 // ---------------------------------------------------------------------------
 // 上限定数
 // ---------------------------------------------------------------------------
@@ -38,15 +54,20 @@ export const MAX_FILES_PER_BATCH = 99;
 // 入力 + 出力 + visualization + ログで分け合う前提で 10 GB を上限値として
 // OpenAPI description に表示する。API 層では強制していない
 // (PUT 後の S3 サイズを API が知る手段がないため)。超過すると Fargate の
-// ``No space left on device`` で task が落ちる。
+// ``No space left on device`` で task が落ちる。Office 形式 (.pptx /
+// .docx / .xlsx) は Batch Runner 内で PDF へ変換されるため、変換用の
+// 一時 PDF と LibreOffice 中間ファイルもこの ephemeral storage 内に収まる
+// 必要がある (Office 形式を多数含むバッチでは実効上限が下がる点に注意)。
 export const MAX_TOTAL_BYTES = 10 * 1024 * 1024 * 1024; // 10 GB
 // SageMaker Async Inference の入力 payload ハードリミットに合わせて 1 GB。
 // ``MAX_FILE_BYTES`` は本コード上は ``description`` 文字列の生成にのみ
 // 使われており、API 層では強制していない (クライアントがアップロードする
 // 前に byte size を API に伝えないため検証不能)。超過した場合は実行時に
-// SageMaker 側が ``PayloadTooLargeException`` を返す。
+// SageMaker 側が ``PayloadTooLargeException`` を返す。Office 形式
+// (.pptx / .docx / .xlsx) を入力した場合、変換後 PDF も同じ 1 GB
+// 上限で再検証される (変換後サイズ超過は per-file FAILED)。
 export const MAX_FILE_BYTES = 1024 * 1024 * 1024; // 1 GB
-export const ALLOWED_EXTENSIONS = [".pdf"] as const;
+export const ALLOWED_EXTENSIONS = [".pdf", ".pptx", ".docx", ".xlsx"] as const;
 
 // ---------------------------------------------------------------------------
 // 共通
@@ -74,6 +95,64 @@ const allowedExtensionRegex = new RegExp(
   "i",
 );
 
+// 拡張子と contentType が一致するか判定。R1.4 の cross-check に使用。
+// `contentType` 未指定 (省略) は cross-check 対象外 (presign 側で拡張子から既定値を導出するため)。
+// `application/octet-stream` も常に許可 (汎用バイナリ MIME はどの拡張子でも合法とする)。
+function isContentTypeCompatible(
+  filename: string,
+  contentType: string,
+): boolean {
+  if (contentType === "application/octet-stream") return true;
+  const idx = filename.lastIndexOf(".");
+  if (idx < 0) return false;
+  const ext = filename.slice(idx).toLowerCase();
+  const expected = EXTENSION_TO_CONTENT_TYPE_MAP[ext];
+  return expected === undefined || expected === contentType;
+}
+
+// schemas.ts 内で完結させるため presign 側 `EXTENSION_TO_CONTENT_TYPE`
+// と同じ map を保持 (将来は共通化を検討)。Office 形式追加に伴う R1.4 の
+// 充足には必要最小限の重複として許容する。
+const EXTENSION_TO_CONTENT_TYPE_MAP: Record<string, string> = {
+  ".pdf": "application/pdf",
+  ".pptx":
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  ".docx":
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+};
+
+// stem 重複検出用ヘルパ。サニタイズ後ベース名を case-insensitive な stem に
+// 落として同一 stem を共有するファイル群を検出し、利用者がリクエストを
+// 修正できるよう「重複していた元ファイル名」を平坦に並べて返す。
+// `sanitizeFilename` 由来の throw (拡張子のみ / 空名 / 制御文字 only) は
+// refine 側ですでに `false` 扱い (=400) に落ちる経路を通っているため、
+// ここではメッセージ生成のみで try/catch する (該当ファイル名は元入力の
+// `filename` をそのまま含めてユーザが識別できるようにする)。
+function formatDuplicateStems(files: { filename: string }[]): string[] {
+  const groups = new Map<string, string[]>();
+  for (const f of files) {
+    let stem: string | null;
+    try {
+      stem = path.parse(sanitizeFilename(f.filename)).name.toLowerCase();
+    } catch {
+      stem = null;
+    }
+    if (!stem) continue;
+    const list = groups.get(stem) ?? [];
+    list.push(f.filename);
+    groups.set(stem, list);
+  }
+  const conflicts: string[] = [];
+  for (const [stem, names] of groups) {
+    if (names.length >= 2) {
+      // `report=[report.pdf, report.pptx]` 形式で重複 stem 値とファイル名を併記
+      conflicts.push(`${stem}=[${names.join(", ")}]`);
+    }
+  }
+  return conflicts;
+}
+
 export const CreateBatchBodySchema = z
   .object({
     batchLabel: z
@@ -87,33 +166,79 @@ export const CreateBatchBodySchema = z
       }),
     files: z
       .array(
-        z.object({
-          filename: z
-            .string()
-            .min(1, "filename must not be empty")
-            .refine((name) => allowedExtensionRegex.test(name), {
-              error: `filename has unsupported extension. Allowed: ${ALLOWED_EXTENSIONS.join(", ")}`,
-            })
-            .openapi({
-              description: `拡張子は ${ALLOWED_EXTENSIONS.join(" / ")} のみ許可。日本語ファイル名も可。`,
-              example: "document.pdf",
-            }),
-          contentType: z
-            .enum(["application/pdf", "application/octet-stream"])
-            .optional()
-            .openapi({
-              description:
-                "PUT 時に署名される Content-Type。省略時は `application/pdf`。ここで指定した値と PUT リクエストの Content-Type ヘッダは**完全一致している必要あり** (不一致だと S3 が `SignatureDoesNotMatch` で 403)。",
-            }),
-        }),
+        z
+          .object({
+            filename: z
+              .string()
+              .min(1, "filename must not be empty")
+              .refine((name) => allowedExtensionRegex.test(name), {
+                error: `filename has unsupported extension. Allowed: ${ALLOWED_EXTENSIONS.join(", ")}`,
+              })
+              .openapi({
+                description: `拡張子は ${ALLOWED_EXTENSIONS.join(" / ")} のみ許可 (Office 形式は Batch Runner で PDF に自動変換される)。日本語ファイル名も可。Content-Type は拡張子別に決まる: \`.pdf\` → \`application/pdf\` / \`.pptx\` → \`application/vnd.openxmlformats-officedocument.presentationml.presentation\` / \`.docx\` → \`application/vnd.openxmlformats-officedocument.wordprocessingml.document\` / \`.xlsx\` → \`application/vnd.openxmlformats-officedocument.spreadsheetml.sheet\`。`,
+                example: "document.pdf",
+              }),
+            contentType: z
+              .enum([
+                "application/pdf",
+                "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                "application/octet-stream",
+              ])
+              .optional()
+              .openapi({
+                description:
+                  "PUT 時に署名される Content-Type。省略時は拡張子から既定値を導出する (`.pdf` → `application/pdf` / `.pptx` → `application/vnd.openxmlformats-officedocument.presentationml.presentation` / `.docx` → `application/vnd.openxmlformats-officedocument.wordprocessingml.document` / `.xlsx` → `application/vnd.openxmlformats-officedocument.spreadsheetml.sheet`)。ここで指定した値と PUT リクエストの Content-Type ヘッダは**完全一致している必要あり** (不一致だと S3 が `SignatureDoesNotMatch` で 403)。指定した contentType がファイル名拡張子と矛盾する場合 (例: `.pptx` に `application/pdf`) は 400 で reject される。",
+              }),
+          })
+          // R1.4: filename と contentType が両方指定されたとき、拡張子と
+          // contentType が矛盾しないことを cross-check する。
+          // contentType 未指定は presign 側 (`batch-presign.ts`) で既定値を導出するため対象外。
+          // `application/octet-stream` は汎用バイナリ MIME としてどの拡張子でも合法扱い。
+          .refine(
+            (item) =>
+              item.contentType === undefined ||
+              isContentTypeCompatible(item.filename, item.contentType),
+            {
+              error:
+                "contentType does not match filename extension (例: `.pptx` に `application/pdf` を指定するなどの不整合)",
+            },
+          ),
       )
       .min(1, "files must not be empty")
       .max(
         MAX_FILES_PER_BATCH,
         `files must not exceed ${MAX_FILES_PER_BATCH} items`,
       )
+      // R3.4 / R3.5: 同一 stem (拡張子を除いたベース名、サニタイズ後、case-insensitive)
+      // を持つファイルが 2 件以上含まれた場合は 400 で reject する。Office 形式追加で
+      // `report.pdf` + `report.pptx` のような同 stem 異拡張子の組合せが現実的になった
+      // ため、出力 JSON (`{stem}.json`) や可視化ファイル (`{basename}_..._page_*.jpg`)
+      // のキー衝突を作成時点で防ぐ。`sanitizeFilename` は前段の `allowedExtensionRegex`
+      // refine と Zod `.min(1)` で大半の入力が事前に弾かれている前提で、それでも
+      // 想定外 throw が起きた場合は refine を `false` 扱い (=400) に落として 500 化を防ぐ。
+      .refine(
+        (files) => {
+          try {
+            const stems = files.map((f) =>
+              path.parse(sanitizeFilename(f.filename)).name.toLowerCase(),
+            );
+            return new Set(stems).size === stems.length;
+          } catch {
+            return false;
+          }
+        },
+        {
+          error: (issue) => {
+            const files = issue.input as { filename: string }[] | undefined;
+            if (!files) return "Duplicate stem detected.";
+            return `Duplicate stem detected. Conflicting files: [${formatDuplicateStems(files).join(", ")}]`;
+          },
+        },
+      )
       .openapi({
-        description: `1 バッチあたり最大 ${MAX_FILES_PER_BATCH} ファイル。合計 ${MAX_TOTAL_BYTES / 1024 / 1024} MB、1 ファイルあたり ${MAX_FILE_BYTES / 1024 / 1024} MB が上限。`,
+        description: `1 バッチあたり最大 ${MAX_FILES_PER_BATCH} ファイル。合計 ${MAX_TOTAL_BYTES / 1024 / 1024} MB、1 ファイルあたり ${MAX_FILE_BYTES / 1024 / 1024} MB が上限。PDF と Office 形式 (.pptx / .docx / .xlsx) を 1 バッチ内で混在させることが可能 (Office 形式は Batch Runner 内で PDF へ自動変換)。Content-Type は拡張子別に既定値が決まり、各ファイルの \`contentType\` で明示することもできる。`,
       }),
     extraFormats: z.array(z.enum(EXTRA_FORMATS)).optional().openapi({
       description:
@@ -146,12 +271,12 @@ export const UploadItemSchema = z.object({
     .url()
     .openapi({
       description: [
-        "S3 への PDF PUT 用の署名付き URL。以下の制約をすべて満たすこと:",
+        "S3 への PUT 用の署名付き URL (PDF / PPTX / DOCX / XLSX を直接アップロード可能)。以下の制約をすべて満たすこと:",
         "",
         "1. **メソッド**: `PUT` (POST ではない)",
-        "2. **Content-Type ヘッダ**: リクエスト時に指定した `files[].contentType` と完全一致。省略時は `application/pdf`。不一致だと S3 が `SignatureDoesNotMatch` を返して 403。",
+        "2. **Content-Type ヘッダ**: リクエスト時に指定した `files[].contentType` と完全一致。省略時は拡張子別の既定値 (`.pdf` → `application/pdf` / `.pptx` → `application/vnd.openxmlformats-officedocument.presentationml.presentation` / `.docx` → `application/vnd.openxmlformats-officedocument.wordprocessingml.document` / `.xlsx` → `application/vnd.openxmlformats-officedocument.spreadsheetml.sheet`)。不一致だと S3 が `SignatureDoesNotMatch` を返して 403。",
         "3. **有効期限**: 発行から **15 分**。超過した場合は `POST /batches` をやり直して新規 URL を取得してください。",
-        "4. **ボディ**: PDF バイナリをそのまま送信 (multipart/form-data ではない)。",
+        "4. **ボディ**: ファイルバイナリをそのまま送信 (multipart/form-data ではない)。Office 形式は Batch Runner 内で PDF に変換される。",
       ].join("\n"),
       example:
         "https://<bucket>.s3.ap-northeast-1.amazonaws.com/batches/abc-123/input/document.pdf?X-Amz-Algorithm=...",
@@ -259,6 +384,18 @@ export const BatchFileSchema = z
     errorMessage: z.string().optional().openapi({
       description: "`status=FAILED` のときに付与される人間可読な失敗理由",
     }),
+    errorCategory: z
+      .enum(ERROR_CATEGORIES)
+      .optional()
+      .openapi({
+        description: [
+          "`status=FAILED` のときに付与される失敗カテゴリ。",
+          "- `CONVERSION_FAILED`: Office (`.pptx` / `.docx` / `.xlsx`) → PDF 変換段階での失敗 (LibreOffice timeout / non-zero exit / silent fail / 暗号化検知 / 変換後サイズ上限超過)。",
+          "- `OCR_FAILED`: SageMaker Async Inference 経由の OCR 実行段階での失敗。",
+          "",
+          '本フィールド導入前に作成された旧 FILE アイテムでは未設定 (キーごと省略) となる。`status !== "FAILED"` の場合も常に省略される。',
+        ].join("\n"),
+      }),
     updatedAt: z.string().datetime(),
   })
   .openapi("BatchFile");

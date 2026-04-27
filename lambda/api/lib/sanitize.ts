@@ -1,3 +1,4 @@
+import { ALLOWED_EXTENSIONS } from "../schemas";
 import { ValidationError } from "./errors";
 
 const MAX_FILENAME_BYTES = 255;
@@ -9,23 +10,32 @@ export function sanitizeFilename(raw: string): string {
   // そのまま basename として扱うとパストラバーサル回避策の盲点になる (L2)。
   const basename =
     raw
-      .replace(/[\u2215\uFF0F]/g, "/")
-      .replace(/\uFF3C/g, "\\")
+      .replace(/[∕／]/g, "/")
+      .replace(/＼/g, "\\")
       .split("/")
       .pop()
       ?.split("\\")
       .pop()
-      ?.trim() || "document.pdf";
+      ?.trim() ?? "";
 
   // biome-ignore lint/suspicious/noControlCharactersInRegex: セキュリティ上制御文字の除去が必要
   const cleaned = basename.replace(/[\x00-\x1f<>:"|?*]/g, "");
 
-  if (!cleaned || cleaned === ".pdf") {
-    return "document.pdf";
+  if (!cleaned) {
+    throw new ValidationError("Filename is empty after sanitization");
   }
 
-  if (!cleaned.toLowerCase().endsWith(".pdf")) {
-    throw new ValidationError("Filename must end with .pdf");
+  const lower = cleaned.toLowerCase();
+
+  // 拡張子のみ (".pdf" / ".pptx" 等) — basename が空に等しい
+  if (ALLOWED_EXTENSIONS.some((ext) => lower === ext)) {
+    throw new ValidationError("Filename has no basename (only extension)");
+  }
+
+  if (!ALLOWED_EXTENSIONS.some((ext) => lower.endsWith(ext))) {
+    throw new ValidationError(
+      `Filename must end with one of: ${ALLOWED_EXTENSIONS.join(", ")}`,
+    );
   }
 
   if (Buffer.byteLength(cleaned, "utf8") > MAX_FILENAME_BYTES) {

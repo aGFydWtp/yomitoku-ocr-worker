@@ -111,6 +111,34 @@ describe("BatchExecutionStack", () => {
       });
     });
 
+    it("OFFICE_CONVERT_* / MAX_CONVERTED_FILE_BYTES の static env が TaskDefinition に配線される (Task 4.2)", () => {
+      // Office → PDF 変換層 (office-format-ingestion spec) の運用パラメータ。
+      // 値は CDK synth 時固定 (将来 SSM Parameter Store 化したくなれば別 spec)。
+      // 既定値は lambda/batch-runner/settings.py の `_int(...)` 既定と一致させる。
+      const { template } = createStack();
+      template.hasResourceProperties("AWS::ECS::TaskDefinition", {
+        ContainerDefinitions: Match.arrayWith([
+          Match.objectLike({
+            Environment: Match.arrayWith([
+              Match.objectLike({
+                Name: "OFFICE_CONVERT_TIMEOUT_SEC",
+                Value: "300",
+              }),
+              Match.objectLike({
+                Name: "OFFICE_CONVERT_MAX_CONCURRENT",
+                Value: "4",
+              }),
+              Match.objectLike({
+                Name: "MAX_CONVERTED_FILE_BYTES",
+                // 1024 * 1024 * 1024 = 1 GiB (Python settings 既定と一致)
+                Value: "1073741824",
+              }),
+            ]),
+          }),
+        ]),
+      });
+    });
+
     it("Async 関連の環境変数 (Queue URL / S3 prefix / MAX_CONCURRENT) が ContainerDefinition に注入される (Task 4.3)", () => {
       const { template } = createStack();
       // SUCCESS_QUEUE_URL / FAILURE_QUEUE_URL は CloudFormation Ref によって

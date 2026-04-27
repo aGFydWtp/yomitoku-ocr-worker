@@ -210,6 +210,15 @@ export class BatchExecutionStack extends Stack {
         DEFAULT_ASYNC_MAX_CONCURRENT,
     );
 
+    // Office → PDF 変換層 (office-format-ingestion spec, Task 4.2) 用パラメータ。
+    // 値はビルド時定数 (CDK synth 時に固定)。lambda/batch-runner/settings.py の
+    // `_int(...)` 既定値と一致させ、Python 側 fallback と CDK 配線で乖離が
+    // 生じないようにする。将来 SSM Parameter Store 化したくなれば別途 spec。
+    const officeConvertTimeoutSec = "300";
+    const officeConvertMaxConcurrent = "4";
+    // 1024 * 1024 * 1024 = 1 GiB (SageMaker Async payload 上限と一致)。
+    const maxConvertedFileBytes = String(1024 * 1024 * 1024);
+
     this.taskDefinition.addContainer(this.containerName, {
       image,
       logging: LogDriver.awsLogs({
@@ -227,6 +236,9 @@ export class BatchExecutionStack extends Stack {
         ASYNC_OUTPUT_PREFIX: asyncOutputPrefix,
         ASYNC_ERROR_PREFIX: asyncErrorPrefix,
         ASYNC_MAX_CONCURRENT: asyncMaxConcurrent,
+        OFFICE_CONVERT_TIMEOUT_SEC: officeConvertTimeoutSec,
+        OFFICE_CONVERT_MAX_CONCURRENT: officeConvertMaxConcurrent,
+        MAX_CONVERTED_FILE_BYTES: maxConvertedFileBytes,
       },
     });
 

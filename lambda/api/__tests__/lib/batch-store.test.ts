@@ -182,5 +182,75 @@ describe("BatchStore (write-path)", () => {
       });
       expect(cmd.input.ConditionExpression).toBeDefined();
     });
+
+    // --- errorCategory R/W (R4.2 / R4.3 / office-format-ingestion task 2.3) ---
+    it("errorCategory='CONVERSION_FAILED' を渡すと UpdateExpression に SET し、属性値が一致する", async () => {
+      // R4.2: 変換失敗ファイルは DDB に errorCategory=CONVERSION_FAILED を書き込む。
+      // TS 側 (このテスト) と Py 側 (task 3.3) で同じ DDB attribute 名 `errorCategory`
+      // (camelCase, errorMessage と対称) を使う bit 互換契約を保つ。
+      mockSend.mockResolvedValue({});
+
+      await store.updateFileResult({
+        batchJobId: "batch-001",
+        fileKey: "batches/batch-001/input/slides.pptx",
+        status: "FAILED",
+        errorMessage: "Encrypted office document is not supported",
+        errorCategory: "CONVERSION_FAILED",
+      });
+
+      const cmd: AnyRecord = mockSend.mock.calls[0][0];
+      // EAN / EAV に errorCategory が含まれ、UpdateExpression の SET 句に展開される
+      expect(cmd.input.ExpressionAttributeNames["#errorCategory"]).toBe(
+        "errorCategory",
+      );
+      expect(cmd.input.ExpressionAttributeValues[":errorCategory"]).toBe(
+        "CONVERSION_FAILED",
+      );
+      expect(cmd.input.UpdateExpression).toMatch(
+        /#errorCategory\s*=\s*:errorCategory/,
+      );
+    });
+
+    it("errorCategory='OCR_FAILED' を渡すと UpdateExpression に SET される", async () => {
+      // R4.3: SageMaker 起因の失敗は OCR_FAILED として記録する。
+      mockSend.mockResolvedValue({});
+
+      await store.updateFileResult({
+        batchJobId: "batch-001",
+        fileKey: "batches/batch-001/input/a.pdf",
+        status: "FAILED",
+        errorMessage: "SageMaker invocation failed",
+        errorCategory: "OCR_FAILED",
+      });
+
+      const cmd: AnyRecord = mockSend.mock.calls[0][0];
+      expect(cmd.input.ExpressionAttributeValues[":errorCategory"]).toBe(
+        "OCR_FAILED",
+      );
+    });
+
+    it("errorCategory 省略時は UpdateExpression に errorCategory を含めない (旧データ汚染防止)", async () => {
+      // task 5.6 / 2.3 完了条件: 引数 None (= 省略) なら DDB に SET しない。
+      // 既存 FILE アイテム (errorCategory 属性なし) を更新するときに意図せず
+      // attribute を上書きしないため、明示時のみ書く設計。
+      mockSend.mockResolvedValue({});
+
+      await store.updateFileResult({
+        batchJobId: "batch-001",
+        fileKey: "batches/batch-001/input/a.pdf",
+        status: "COMPLETED",
+        processingTimeMs: 1200,
+        resultKey: "batches/batch-001/output/a.json",
+      });
+
+      const cmd: AnyRecord = mockSend.mock.calls[0][0];
+      expect(cmd.input.ExpressionAttributeNames).not.toHaveProperty(
+        "#errorCategory",
+      );
+      expect(cmd.input.ExpressionAttributeValues).not.toHaveProperty(
+        ":errorCategory",
+      );
+      expect(cmd.input.UpdateExpression).not.toMatch(/errorCategory/);
+    });
   });
 });

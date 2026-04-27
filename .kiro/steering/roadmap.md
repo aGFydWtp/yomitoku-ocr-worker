@@ -13,6 +13,8 @@
   - P1 (99 files): 現行 `MAX_FILES_PER_BATCH=100` + 1 META = 101 items が `TransactWriteItems` 上限を超えるバグ修正。数行で完結、早めに塞ぎたい
   - P2 (ephemeral 50 GB): CDK prop 1 行追加 + description 更新の低リスク変更。`MAX_TOTAL_BYTES` を 10 GB に引き上げて実用性を向上
   - P3 (1000 files): 非原子化・orphan 掃除・SLO 再定義・throughput 戦略など複数の設計判断が絡むため spec 必須
+- **Updates (2026-04-25, office-format-ingestion 合流)**:
+  - P2 (ephemeralStorage 50 GB + `MAX_TOTAL_BYTES=10GB`) は `office-format-ingestion` spec に責務移管。LibreOffice 変換で同じレイヤ (`lib/batch-execution-stack.ts` / `lambda/api/schemas.ts`) を触るため二度手間 / 衝突回避のため直接実装候補から除外
 - **Rejected alternatives**:
   - **全部を 1 spec**: P1 が数行のバグ修正なので spec の overhead (req → design → tasks) が本体より大きい
   - **P1/P2 も spec 化**: 同様に overhead 過剰。steering + task commit message で十分
@@ -57,8 +59,9 @@
 
 - [ ] **P1**: `MAX_FILES_PER_BATCH = 99` に修正し TransactWriteItems 上限衝突を回避 (即日対応、数行、可逆)
 - [ ] **P1b**: `MAX_FILE_BYTES` を 1 GB に引き上げ、OpenAPI description を SageMaker Async の実上限に合わせる (未強制の定数更新のみ)
-- [ ] **P2**: `FargateTaskDefinition.ephemeralStorageGiB = 50` を追加し `MAX_TOTAL_BYTES` を 10 GB に引き上げ (CDK 1 行 + OpenAPI description)
 
 ## Specs (dependency order)
 
-- [ ] batch-scale-out — 1 バッチ 1000 ファイル対応。DDB 書き込みを META Put → FILE BatchWriteItem の 2 フェーズ化、orphan 掃除戦略 (TTL 延長 or 明示 cleanup)、SLO 再定義 (1000 files × 数秒)、throughput スケール戦略 (`MaxConcurrentInvocationsPerInstance` / `asyncMaxCapacity`)、監視しきい値の再調整を含む。Dependencies: P1 + P2 (`ephemeralStorage` 拡張は 1000 file の合計サイズ要件にも必須)
+- [ ] office-format-ingestion — `.pptx` / `.docx` / `.xlsx` を API 入力で受理し、Fargate batch-runner で LibreOffice headless を介して PDF 変換してから Async Inference に流す。失敗分離 (`error_category: CONVERSION_FAILED`)、変換後 PDF サイズ再チェック (≤1 GB)、CJK フォント同梱、per-invocation UserInstallation、subprocess timeout、暗号化事前検知を含む。**P2 (ephemeralStorage 50 GB + `MAX_TOTAL_BYTES=10GB`) を本スペック責務に内包** (LibreOffice 変換で I/O 増、かつ `schemas.ts` / `batch-execution-stack.ts` を同時に触るため衝突回避)。Dependencies: P1 (`MAX_FILES_PER_BATCH=99`)
+- [ ] result-filename-extension-preservation — メイン OCR JSON のファイル名規約を `{stem}.json` から `{原本ファイル名}.json` (例: `report.pdf.json` / `report.pptx.json`) に変更。`async_invoker.py:492` の命名と `runner.py:170-171` の可視化 lookup を二段拡張子対応に書き換え。**`.pdf` ユーザー含む API consumer に対して resultKey 命名が変わる破壊的変更を含む** ため office-format-ingestion とは分離。追加フォーマット (`.md`/`.csv`/`.html`) は yomitoku-client 側の責務で本 spec の Out。Dependencies: office-format-ingestion (Office 形式が混在する状況で命名要件が顕在化、`async_invoker` / `runner.py` の merge 順序整理が必要)
+- [ ] batch-scale-out — 1 バッチ 1000 ファイル対応。DDB 書き込みを META Put → FILE BatchWriteItem の 2 フェーズ化、orphan 掃除戦略 (TTL 延長 or 明示 cleanup)、SLO 再定義 (1000 files × 数秒)、throughput スケール戦略 (`MaxConcurrentInvocationsPerInstance` / `asyncMaxCapacity`)、監視しきい値の再調整を含む。Dependencies: P1 + office-format-ingestion (後者で `ephemeralStorage` 50 GB 拡張が入るため)
