@@ -765,38 +765,38 @@ def test_e2e_mixed_pdf_and_pptx_via_main_run(
         assert enc_item["errorCategory"] == "CONVERSION_FAILED"
         assert "encrypted" in enc_item["errorMessage"].lower()
 
-        # 3c: deck.pptx (変換成功 → OCR success) → 既知制約 = PENDING のまま
-        # 理由: process_log の filename は変換後 "deck.pdf" だが DDB FILE PK は
-        # 原本 "deck.pptx" のまま。apply_process_log は filename ベースで FILE PK
-        # を組み立てるためマッチせず (= 新規 deck.pdf item を upsert)、原本
-        # deck.pptx item は touched なし。これは別 spec
-        # `result-filename-extension-preservation` で解消予定の既知制約。
+        # 3c: deck.pptx (変換成功 → OCR success) → COMPLETED (Bug 001 fix)
+        # apply_process_log が converted_filename_map で deck.pdf → deck.pptx に
+        # 書き戻して **原本 deck.pptx 行** を更新するため、PENDING のまま残らない。
         deck_pptx_item = batch_table.get_item(Key={
             "PK": f"BATCH#{BATCH_JOB_ID_E2E_MAIN}",
             "SK": (
                 f"FILE#batches/{BATCH_JOB_ID_E2E_MAIN}/input/deck.pptx"
             ),
         })["Item"]
-        assert deck_pptx_item["status"] == "PENDING", (
-            "既知制約: 変換成功 PPTX の DDB FILE 更新は filename mismatch のため "
-            "PENDING のまま (result-filename-extension-preservation spec で解消予定)"
+        assert deck_pptx_item["status"] == "COMPLETED", (
+            "Bug 001: 変換成功 PPTX は converted_filename_map により "
+            "原本 deck.pptx 行が COMPLETED 化されるはず "
+            f"(実 {deck_pptx_item['status']})"
+        )
+        assert "errorCategory" not in deck_pptx_item
+        # resultKey は実 S3 出力 (= deck.json) を指す: 変換後 stem ベース
+        assert deck_pptx_item.get("resultKey", "").endswith("/deck.json"), (
+            f"resultKey は deck.json を指すはず: {deck_pptx_item.get('resultKey')}"
         )
 
-        # 3d (副作用): 変換後 deck.pdf 名で新規 FILE item が apply_process_log により
-        # upsert されている (filename mismatch の現実装挙動)。本 spec では当該 item の
-        # 検証は補助情報としてのみ確認 (将来 spec で正規化される)。
-        deck_pdf_item = batch_table.get_item(Key={
+        # 3d (Bug 001 fix): 変換後 deck.pdf 名で phantom FILE item が
+        # 作られていないこと。converted_filename_map で原本名に書き戻されるため。
+        deck_pdf_resp = batch_table.get_item(Key={
             "PK": f"BATCH#{BATCH_JOB_ID_E2E_MAIN}",
             "SK": (
                 f"FILE#batches/{BATCH_JOB_ID_E2E_MAIN}/input/deck.pdf"
             ),
-        }).get("Item")
-        # upsert により attribute は status/result/dpi 等のみ存在する
-        assert deck_pdf_item is not None, (
-            "filename mismatch により apply_process_log が deck.pdf 名で "
-            "FILE item を upsert する現実挙動を確認"
+        })
+        assert "Item" not in deck_pdf_resp, (
+            "Bug 001: deck.pdf 名で phantom FILE 行が作成されている "
+            "(converted_filename_map で原本 deck.pptx 名に書き戻すべき)"
         )
-        assert deck_pdf_item["status"] == "COMPLETED"
 
         # --- 検証 4: S3 input prefix の original PPTX は削除されていない (R9.1) ---
         s3_inputs = s3.list_objects_v2(

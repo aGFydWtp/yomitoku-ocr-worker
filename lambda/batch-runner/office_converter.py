@@ -138,6 +138,30 @@ def validate_converted_size(pdf_path: Path, max_bytes: int) -> None:
         )
 
 
+def _unlink_converted_pdf(work_dir: Path, stem: str) -> None:
+    """Remove a partial / invalid PDF that conversion left behind (best effort).
+
+    Bug 002 fix: when a conversion fails (silent_fail / timeout / exit_code /
+    oversize), soffice may have produced a partial or corrupted PDF, or even a
+    full-but-oversize PDF, in ``work_dir``. Leaving it behind causes the
+    downstream ``run_async_batch`` step to send the bogus PDF to SageMaker
+    (R7.2 violation) and creates phantom DDB FILE rows. We remove it here so
+    the failure path is consistent with "no PDF produced".
+
+    Errors are intentionally swallowed: ``FileNotFoundError`` is the common
+    case (no PDF was created) and other ``OSError`` cases are logged but not
+    re-raised, because the caller is already raising a ``Conversion*Error``
+    and the cleanup is a defense-in-depth, not a correctness primitive.
+    """
+    pdf = work_dir / f"{stem}.pdf"
+    try:
+        pdf.unlink()
+    except FileNotFoundError:
+        pass
+    except OSError:
+        logger.warning("failed to remove leftover PDF: %s", pdf, exc_info=True)
+
+
 def convert_office_to_pdf(input_path: Path, work_dir: Path, timeout_sec: int) -> Path:
     """単一 Office ファイルを PDF に変換し、生成された PDF パスを返す。
 
@@ -157,6 +181,9 @@ def convert_office_to_pdf(input_path: Path, work_dir: Path, timeout_sec: int) ->
     副作用:
         - `/tmp/lo_profile_{uuid}/` を生成し、try/finally で確実に削除する
         - timeout 時は process group 全体に SIGKILL を送り、zombie soffice を防ぐ
+        - Bug 002: 失敗時 (timeout / exit_code / silent_fail) は中間 PDF を
+          ``work_dir`` から削除する。後段 ``run_async_batch`` が SageMaker に
+          壊れた PDF を送るのを防ぐ (R7.2 維持)。
     """
     profile_dir = Path(tempfile.gettempdir()) / f"lo_profile_{uuid.uuid4().hex}"
     cmd = [
@@ -185,8 +212,15 @@ def convert_office_to_pdf(input_path: Path, work_dir: Path, timeout_sec: int) ->
             stderr=subprocess.PIPE,
             start_new_session=True,
         )
+        # Bug 003: ``proc.wait(timeout=...)`` deadlocks when soffice fills the
+        # 64 KiB stderr pipe buffer (likely with CJK PPTX font fallback
+        # warnings). Result: a 1-3 s job hits the configured 300 s timeout and
+        # is mis-classified as ``CONVERSION_FAILED.timeout``. ``communicate()``
+        # spawns reader threads that drain stdout/stderr in parallel and
+        # therefore does not deadlock. We then reuse the captured stderr in
+        # the non-zero-exit branch (no second ``communicate`` call needed).
         try:
-            proc.wait(timeout=timeout_sec)
+            stdout, stderr = proc.communicate(timeout=timeout_sec)
         except subprocess.TimeoutExpired as e:
             # zombie 防止: process group 全体を SIGKILL
             try:
@@ -194,20 +228,20 @@ def convert_office_to_pdf(input_path: Path, work_dir: Path, timeout_sec: int) ->
             except (ProcessLookupError, PermissionError):
                 # 既に終了している or 権限が無いケースは握りつぶす
                 logger.warning("failed to killpg pid=%s", proc.pid, exc_info=True)
-            # コミュニケーションを確実に閉じて zombie を回収
+            # SIGKILL 後の zombie を回収するため pipe を排水する
             try:
                 proc.communicate(timeout=5)
-            except Exception:  # noqa: BLE001
+            except Exception:  # noqa: BLE001 — best-effort drain after kill
                 pass
+            # Bug 002: 中間 PDF が残っていれば削除 (R7.2 維持)
+            _unlink_converted_pdf(work_dir, input_path.stem)
             raise ConversionTimeoutError(
                 f"soffice timeout after {timeout_sec}s: {input_path}"
             ) from e
 
         if proc.returncode != 0:
-            try:
-                _, stderr = proc.communicate(timeout=5)
-            except Exception:  # noqa: BLE001
-                stderr = b""
+            # Bug 002: 中間 PDF が残っていれば削除 (R7.2 維持)
+            _unlink_converted_pdf(work_dir, input_path.stem)
             raise ConversionExitCodeError(
                 f"soffice exited with code {proc.returncode}: {input_path} "
                 f"stderr={stderr.decode('utf-8', errors='replace')[:500]}"
@@ -215,6 +249,8 @@ def convert_office_to_pdf(input_path: Path, work_dir: Path, timeout_sec: int) ->
 
         pdf_path = work_dir / f"{input_path.stem}.pdf"
         if not pdf_path.exists() or pdf_path.stat().st_size == 0:
+            # Bug 002: 0 バイト PDF が残っていれば削除 (silent_fail 経路)
+            _unlink_converted_pdf(work_dir, input_path.stem)
             raise ConversionSilentFailError(
                 f"soffice exited 0 but PDF not generated or empty: {pdf_path}"
             )
@@ -296,9 +332,10 @@ def convert_office_files(
             validate_converted_size(pdf, max_bytes=max_converted_bytes)
         except ConversionOversizeError as e:
             logger.info("conversion failed (oversize): %s: %s", p.name, e)
-            # oversize 時は変換結果 PDF が残っていても呼び出し側の挙動は失敗扱い。
-            # 中間 PDF は input_dir に残るが main.py 側がバッチ完了後にディレクトリごと
-            # 破棄する前提なので、ここでは敢えて触らない。
+            # Bug 002: oversize 時は変換結果 PDF が残ったままだと後段 run_async_batch
+            # が SageMaker に送ってしまう (R7.2 違反 + phantom DDB FILE 行)。
+            # 失敗扱いに合わせて中間 PDF をローカル削除する (S3 は触らない: R9.2)。
+            _unlink_converted_pdf(input_dir, p.stem)
             return ConvertFailure(original_path=p, reason="oversize", detail=str(e))
 
         return ConvertedFile(original_path=p, pdf_path=pdf)

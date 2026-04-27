@@ -331,7 +331,18 @@ class TestOfficeConversionPhase:
 
         def _fake_convert(input_dir, **kwargs):
             rec.calls.append(("convert_office_files", {"input_dir": input_dir, **kwargs}))
-            return SimpleNamespace(succeeded=[SimpleNamespace()], failed=[])
+            # Bug 001: main.py reads cf.pdf_path.name / cf.original_path.name to
+            # build converted_filename_map, so the SimpleNamespace must expose
+            # those attributes.
+            return SimpleNamespace(
+                succeeded=[
+                    SimpleNamespace(
+                        original_path=Path(input_dir) / "deck.pptx",
+                        pdf_path=Path(input_dir) / "deck.pdf",
+                    )
+                ],
+                failed=[],
+            )
 
         monkeypatch.setattr(main_module, "convert_office_files", _fake_convert)
 
@@ -801,18 +812,34 @@ class TestEndToEndMixedBatch:
             assert "errorCategory" not in a_item
             assert "errorMessage" not in a_item
 
-            # deck.pptx (変換成功 → OCR success): COMPLETED, errorCategory なし
-            # 重要: process_log の filename は "deck.pdf" だが DDB FILE PK は
-            # **原本ファイル名 (deck.pptx)** で seed されている → 整合確認は別タスク (5.10) 担当。
-            # ここでは process_log 由来の "deck.pdf" 行が DDB 上 (存在しない) item に
-            # update_item しても新規 item を作る (DDB upsert 仕様) ため、
-            # 元の deck.pptx PENDING item が残る点を確認するに留める。
+            # Bug 001 fix: deck.pptx (変換成功 → OCR success) は **deck.pptx 名のまま**
+            # COMPLETED に更新される (apply_process_log が converted_filename_map で
+            # 変換後 PDF 名 deck.pdf → 原本 deck.pptx に書き戻すため)。
             deck_pptx_item = table.get_item(Key={
                 "PK": f"BATCH#{_E2E_BATCH_ID}",
                 "SK": f"FILE#batches/{_E2E_BATCH_ID}/input/deck.pptx",
             })["Item"]
-            # PENDING のまま残る (CONVERSION_FAILED 対象ではないので touched なし)
-            assert deck_pptx_item["status"] == "PENDING"
+            assert deck_pptx_item["status"] == "COMPLETED", (
+                "Bug 001: 変換成功 PPTX は filename mismatch を解消して "
+                "原本 deck.pptx 名で COMPLETED 化されるはず "
+                f"(実 {deck_pptx_item['status']})"
+            )
+            assert "errorCategory" not in deck_pptx_item
+            assert "errorMessage" not in deck_pptx_item
+            # resultKey は変換後 PDF stem ベース (= deck.json) を指すこと
+            assert deck_pptx_item.get("resultKey", "").endswith("/deck.json"), (
+                f"resultKey は deck.json を指すはず: {deck_pptx_item.get('resultKey')}"
+            )
+
+            # Bug 001 fix: deck.pdf 名で phantom FILE 行が作られていないこと
+            deck_pdf_resp = table.get_item(Key={
+                "PK": f"BATCH#{_E2E_BATCH_ID}",
+                "SK": f"FILE#batches/{_E2E_BATCH_ID}/input/deck.pdf",
+            })
+            assert "Item" not in deck_pdf_resp, (
+                "Bug 001: deck.pdf 名で phantom FILE 行が作成されている "
+                "(converted_filename_map で原本名に書き戻すべき)"
+            )
 
             # broken.pptx (CONVERSION_FAILED): FAILED + errorCategory + errorMessage
             broken_item = table.get_item(Key={
@@ -824,7 +851,7 @@ class TestEndToEndMixedBatch:
             assert "encrypted" in broken_item["errorMessage"]
 
             # --- 検証 3: META.status == PARTIAL ---
-            # finalize_batch_status は succeeded=2 (a + deck.pdf), failed=1 (broken),
+            # finalize_batch_status は succeeded=2 (a + deck.pptx), failed=1 (broken),
             # total=3 で評価する → PARTIAL。
             meta = table.get_item(Key={
                 "PK": f"BATCH#{_E2E_BATCH_ID}", "SK": "META"
@@ -838,6 +865,23 @@ class TestEndToEndMixedBatch:
             assert int(totals["failed"]) == 1
             # GSI1PK が新 status で書き換わっていること
             assert meta["GSI1PK"].startswith("STATUS#PARTIAL#")
+
+            # --- 検証 4: META.totals.total が FILE 行数と一致すること ---
+            # phantom 行が発生していなければ FILE 行数 = 3 (a.pdf + deck.pptx + broken.pptx)
+            file_query = table.query(
+                KeyConditionExpression=(
+                    "PK = :pk AND begins_with(SK, :file_sk)"
+                ),
+                ExpressionAttributeValues={
+                    ":pk": f"BATCH#{_E2E_BATCH_ID}",
+                    ":file_sk": "FILE#",
+                },
+            )
+            file_rows = file_query.get("Items", [])
+            assert len(file_rows) == int(totals["total"]), (
+                f"META.totals.total ({totals['total']}) != FILE 行数 ({len(file_rows)}). "
+                "Bug 001: phantom FILE 行が混入している可能性。"
+            )
 
     def test_pdf_only_end_to_end_does_not_call_convert_office_files(
         self, monkeypatch: pytest.MonkeyPatch

@@ -194,6 +194,11 @@ def run(settings: BatchRunnerSettings) -> int:
         # 3.5. Office → PDF 変換 (PDF only バッチでは早期 skip → R7.1)
         # downloaded は S3 key の list なので Path で basename を取り判定する。
         office_files_present = any(is_office_format(Path(k).name) for k in downloaded)
+        # Bug 001: 変換成功時 yomitoku-client は変換後 PDF (例: deck.pdf) を
+        # process_log.jsonl に書くが、API が seed した DDB FILE PK は原本名
+        # (例: deck.pptx)。下記 map を apply_process_log に渡すことで PK lookup
+        # 時に PDF 名 → 原本名へ書き戻し、phantom FILE 行を防ぐ。
+        pdf_to_original: dict[str, str] = {}
         if office_files_present:
             convert_result = convert_office_files(
                 input_dir,
@@ -209,6 +214,11 @@ def run(settings: BatchRunnerSettings) -> int:
                     "converted_failed": len(convert_result.failed),
                 },
             )
+            # 変換成功 1 件 = 変換後 PDF の basename → 原本 Office ファイル basename
+            # の写像。``apply_process_log`` がこのマップを使って DDB FILE PK lookup
+            # を原本名に正規化する。
+            for cf in convert_result.succeeded:
+                pdf_to_original[cf.pdf_path.name] = cf.original_path.name
             # 変換失敗を process_log.jsonl に追記 (run_async_batch より先に書く)。
             # 成功・失敗いずれも office_converter 側で原本がローカル削除されるため
             # input_dir には変換後 PDF + 元から PDF だったファイルのみが残る
@@ -285,6 +295,7 @@ def run(settings: BatchRunnerSettings) -> int:
             table=batch_table,
             batch_job_id=settings.batch_job_id,
             entries=entries,
+            converted_filename_map=pdf_to_original,
         )
 
         # 8. META.status を最終状態に遷移

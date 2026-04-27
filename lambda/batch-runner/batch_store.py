@@ -222,8 +222,27 @@ def apply_process_log(
     table,
     batch_job_id: str,
     entries: Iterable[ProcessLogEntry],
+    converted_filename_map: dict[str, str] | None = None,
 ) -> dict[str, int]:
     """ProcessLogEntry のシーケンスを FILE アイテムに反映し totals を集計する。
+
+    Bug 001 fix (filename mismatch): Office → PDF 変換が成功した場合、
+    yomitoku-client は変換後 PDF (例: ``deck.pdf``) のパスを ``process_log.jsonl``
+    に書く。一方で API 側が seed する DDB FILE アイテムの SK は **原本ファイル名**
+    (例: ``deck.pptx``) のままなので、``filename`` をそのまま FILE PK に使うと
+    ``deck.pdf`` 名で別アイテムを upsert してしまい、原本 ``deck.pptx`` の
+    PENDING アイテムが残置される (= phantom FILE 行 + R3.3 totals 整合性違反)。
+
+    呼び出し側 (``main.py``) が変換成功 1 件ごとに
+    ``{converted_pdf_basename: original_filename}`` (例:
+    ``{"deck.pdf": "deck.pptx"}``) のマップを渡すと、ここで FILE PK のみ
+    原本名に書き戻して既存アイテムを更新する。``resultKey`` は引き続き実 S3
+    出力 (``batches/{id}/output/<stem>.json``) を指す: そちらは変換後 stem
+    ベースで生成されるため上書きしない。
+
+    Args:
+        converted_filename_map: ``{converted_pdf_basename: original_filename}``
+            None または空なら従来挙動 (filename をそのまま使う)。
 
     Returns:
         {"succeeded": int, "failed": int, "skipped": int}
@@ -231,6 +250,7 @@ def apply_process_log(
     succeeded = 0
     failed = 0
     skipped = 0
+    cf_map = converted_filename_map or {}
 
     for entry in entries:
         filename = entry.filename or Path(entry.file_path).name
@@ -238,6 +258,20 @@ def apply_process_log(
             logger.warning("process_log entry without filename, skip: %s", entry)
             skipped += 1
             continue
+
+        # Bug 001: 変換後 PDF 名 → 原本 Office ファイル名に書き戻す。
+        # マップ未登録なら従来挙動 (filename そのまま)。``resultKey`` は影響なし
+        # (S3 出力は変換後 stem ベースで生成されるため別経路で渡される)。
+        original = cf_map.get(filename)
+        if original:
+            logger.info(
+                "apply_process_log: rewriting filename for FILE PK lookup: "
+                "%s -> %s (batch=%s)",
+                filename,
+                original,
+                batch_job_id,
+            )
+            filename = original
 
         file_key = build_file_key(batch_job_id, filename)
 
