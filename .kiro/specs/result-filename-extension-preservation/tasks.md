@@ -21,7 +21,7 @@
   - _Requirements: 1.1, 1.2, 1.3, 1.4_
   - _Boundary: AsyncInvoker_
 
-- [ ] 2.2 (P) `runner.generate_all_visualizations` の二段拡張子 lookup 対応
+- [x] 2.2 (P) `runner.generate_all_visualizations` の二段拡張子 lookup 対応
   - 関数シグネチャに `original_to_local: dict[str, str] | None = None` 引数を追加
   - lookup ロジックを書換: `original_input_name = json_file.name[:-len(".json")]` で `.json` を 1 段だけ剥がし、`local_pdf_basename = (original_to_local or {}).get(original_input_name, original_input_name)` で local PDF basename を解決、`pdf_path = in_path / local_pdf_basename`
   - lookup 失敗時 (`pdf_path.exists() == False`) は既存挙動と同じ silent skip + warning ログを維持。エラーメッセージのみ `"local PDF not found: {local_pdf_basename}"` に更新
