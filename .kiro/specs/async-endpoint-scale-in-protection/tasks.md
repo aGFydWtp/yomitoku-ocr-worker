@@ -84,7 +84,7 @@
   - _Requirements: 2.2, 2.3, 2.7, 3.6_
   - _Boundary: lambda/batch-runner/tests/test_runner.py_
 
-- [ ] 5.4 (P) `SagemakerStack` の ScalingPolicy / synth 警告 / 既存パラメータ不変を CDK synth テストで固定する
+- [x] 5.4 (P) `SagemakerStack` の ScalingPolicy / synth 警告 / 既存パラメータ不変を CDK synth テストで固定する
   - `AWS::ApplicationAutoScaling::ScalingPolicy` の `Metrics` 配列に `m1` (Stat=Average, Period=60, MetricName=ApproximateBacklogSize), `m2` (Stat=Sum, Period=60, MetricName=InflightInvocations), `e1` (Expression="FILL(m1, 0) + IF(FILL(m2, 0) > 0, 5, 0)", Label=BacklogPlusInflightFloor, ReturnData=true) が含まれることを assert する (R3.1, R2.4)
   - `e1.Expression` の中に `targetValue` (5) と同じ閾値が現れることを assert し、将来 target 変更時の式更新忘れを catch する
   - `asyncMaxCapacity` を `1` で synth したとき `MaxCapacity == 1` で警告なし、`2` で synth したときに `Annotations.fromStack(stack).hasWarning("*async-endpoint-scale-in-protection*")` が成立することを assert する (R4.3, R4.4)

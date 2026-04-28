@@ -1,4 +1,8 @@
-import { Match, Template } from "aws-cdk-lib/assertions";
+import {
+  Annotations as AssertionAnnotations,
+  Match,
+  Template,
+} from "aws-cdk-lib/assertions";
 import { Bucket } from "aws-cdk-lib/aws-s3";
 import { App, Stack } from "aws-cdk-lib/core";
 import { describe, expect, it } from "vitest";
@@ -403,28 +407,165 @@ describe("SagemakerStack", () => {
       expect(dependsOn?.some((d) => endpointLogicalIds.includes(d))).toBe(true);
     });
 
-    it("ScalingPolicy が TargetTracking + ApproximateBacklogSizePerInstance CustomizedMetric", () => {
+    it("AsyncBacklogScalingPolicy が backlog + inflight の metric math 式を使う", () => {
       const { template } = createStack({
         asyncRuntime: { scaleInCooldownSeconds: 900 },
       });
       template.hasResourceProperties(
         "AWS::ApplicationAutoScaling::ScalingPolicy",
         {
+          PolicyName: "AsyncBacklogTargetTracking",
           PolicyType: "TargetTrackingScaling",
           TargetTrackingScalingPolicyConfiguration: Match.objectLike({
             CustomizedMetricSpecification: Match.objectLike({
-              MetricName: "ApproximateBacklogSizePerInstance",
-              Namespace: "AWS/SageMaker",
-              Statistic: "Average",
-              Dimensions: Match.arrayWith([
-                { Name: "EndpointName", Value: TEST_ENDPOINT_NAME },
+              Metrics: Match.arrayWith([
+                Match.objectLike({
+                  Id: "m1",
+                  ReturnData: false,
+                  MetricStat: Match.objectLike({
+                    Period: 60,
+                    Stat: "Average",
+                    Metric: Match.objectLike({
+                      Namespace: "AWS/SageMaker",
+                      MetricName: "ApproximateBacklogSize",
+                      Dimensions: [
+                        { Name: "EndpointName", Value: TEST_ENDPOINT_NAME },
+                      ],
+                    }),
+                  }),
+                }),
+                Match.objectLike({
+                  Id: "m2",
+                  ReturnData: false,
+                  MetricStat: Match.objectLike({
+                    Period: 60,
+                    Stat: "Sum",
+                    Metric: Match.objectLike({
+                      Namespace: "Yomitoku/AsyncEndpoint",
+                      MetricName: "InflightInvocations",
+                      Dimensions: [
+                        { Name: "EndpointName", Value: TEST_ENDPOINT_NAME },
+                      ],
+                    }),
+                  }),
+                }),
+                Match.objectLike({
+                  Id: "e1",
+                  Expression: "FILL(m1, 0) + IF(FILL(m2, 0) > 0, 5, 0)",
+                  Label: "BacklogPlusInflightFloor",
+                  ReturnData: true,
+                }),
               ]),
             }),
+            TargetValue: 5,
             ScaleInCooldown: 900,
             ScaleOutCooldown: 60,
           }),
         },
       );
+    });
+
+    it("AsyncBacklogScalingPolicy の targetValue と metric math 閾値が同期している", () => {
+      const { template } = createStack();
+      const policies = template.findResources(
+        "AWS::ApplicationAutoScaling::ScalingPolicy",
+      );
+      const targetTrackingPolicy = Object.values(policies).find(
+        (resource) =>
+          (
+            resource.Properties as {
+              PolicyName?: string;
+            }
+          ).PolicyName === "AsyncBacklogTargetTracking",
+      );
+      expect(targetTrackingPolicy).toBeDefined();
+
+      const config = (
+        targetTrackingPolicy?.Properties as {
+          TargetTrackingScalingPolicyConfiguration: {
+            TargetValue: number;
+            CustomizedMetricSpecification: {
+              Metrics: Array<{
+                Id?: string;
+                Expression?: string;
+              }>;
+            };
+          };
+        }
+      ).TargetTrackingScalingPolicyConfiguration;
+      const expression = config.CustomizedMetricSpecification.Metrics.find(
+        (metric) => metric.Id === "e1",
+      )?.Expression;
+      expect(config.TargetValue).toBe(5);
+      expect(expression).toContain(`> 0, ${config.TargetValue}, 0`);
+    });
+
+    it("asyncMaxCapacity=1 では MaxCapacity=1 かつ前提崩れ警告なし", () => {
+      const { stack, template } = createStack({
+        asyncRuntime: { asyncMaxCapacity: 1 },
+      });
+
+      template.hasResourceProperties(
+        "AWS::ApplicationAutoScaling::ScalableTarget",
+        {
+          MaxCapacity: 1,
+        },
+      );
+      AssertionAnnotations.fromStack(stack).hasNoWarning(
+        "*",
+        Match.stringLikeRegexp("async-endpoint-scale-in-protection"),
+      );
+    });
+
+    it("asyncMaxCapacity=2 では前提崩れ警告を synth annotation として出す", () => {
+      const { stack, template } = createStack({
+        asyncRuntime: { asyncMaxCapacity: 2 },
+      });
+
+      template.hasResourceProperties(
+        "AWS::ApplicationAutoScaling::ScalableTarget",
+        {
+          MaxCapacity: 2,
+        },
+      );
+      AssertionAnnotations.fromStack(stack).hasWarning(
+        "*",
+        Match.stringLikeRegexp("async-endpoint-scale-in-protection"),
+      );
+    });
+
+    it("scale-from-zero の StepScaling policy と HasBacklogWithoutCapacity alarm を維持する", () => {
+      const { template } = createStack();
+
+      template.hasResourceProperties(
+        "AWS::ApplicationAutoScaling::ScalingPolicy",
+        {
+          PolicyName: "AsyncScaleOutOnBacklogWithoutCapacity",
+          PolicyType: "StepScaling",
+          StepScalingPolicyConfiguration: Match.objectLike({
+            AdjustmentType: "ChangeInCapacity",
+            Cooldown: 60,
+            MetricAggregationType: "Maximum",
+            StepAdjustments: [
+              {
+                MetricIntervalLowerBound: 0,
+                ScalingAdjustment: 1,
+              },
+            ],
+          }),
+        },
+      );
+      template.hasResourceProperties("AWS::CloudWatch::Alarm", {
+        MetricName: "HasBacklogWithoutCapacity",
+        Namespace: "AWS/SageMaker",
+        Statistic: "Maximum",
+        Period: 60,
+        EvaluationPeriods: 2,
+        Threshold: 1,
+        ComparisonOperator: "GreaterThanOrEqualToThreshold",
+        TreatMissingData: "notBreaching",
+        Dimensions: [{ Name: "EndpointName", Value: TEST_ENDPOINT_NAME }],
+      });
     });
   });
 
