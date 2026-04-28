@@ -260,6 +260,7 @@ aws sagemaker describe-endpoint-config --endpoint-config-name yomitoku-pro-confi
 - 設計背景 (Realtime → Async 選定理由, Auto Scaling パラメータ根拠, 呼び出し契約変更): `.kiro/specs/sagemaker-async-inference-migration/design.md`
 - 要件トレース: `.kiro/specs/sagemaker-async-inference-migration/requirements.md` §7, §8, §9, §11
 - 関連 CDK 実装: `lib/sagemaker-stack.ts`, `lib/batch-execution-stack.ts`, `lib/monitoring-stack.ts`, `lib/region-context.ts`
+- scale-in 進捗停滞の切り分け: [`async-endpoint-scale-in-debug.md`](./async-endpoint-scale-in-debug.md)
 
 ## ロールバック可否サマリ
 

@@ -14,6 +14,19 @@ import type { Node } from "constructs";
  *   - `scaleInCooldownSeconds = 900`          : TargetTracking の ScaleInCooldown
  */
 export interface AsyncRuntimeContext {
+  /**
+   * Application Auto Scaling MaxCapacity (MinCapacity=0)。
+   *
+   * **本値を 2 以上に変更すると `async-endpoint-scale-in-protection` spec の
+   * math 式前提 (`FILL(m1, 0) + IF(FILL(m2, 0) > 0, 5, 0)` を per-instance
+   * utilization と等価とみなす) が崩れるため、当該 spec の TargetTracking
+   * ポリシーおよび scale-in 抑止ロジックを per-instance 化された設計へ
+   * 再設計する必要がある** (要件 4.2 / design.md "Revalidation Triggers")。
+   *
+   * 引き上げを伴う変更時は `.kiro/specs/async-endpoint-scale-in-protection/`
+   * の design / tests を再評価し、`batch-scale-out` spec 等で per-instance
+   * scale-in 保護を再設計してから合わせて変更すること。
+   */
   readonly asyncMaxCapacity: number;
   readonly maxConcurrentInvocationsPerInstance: number;
   readonly invocationTimeoutSeconds: number;
@@ -21,6 +34,9 @@ export interface AsyncRuntimeContext {
 }
 
 export const DEFAULT_ASYNC_RUNTIME_CONTEXT: AsyncRuntimeContext = {
+  // NOTE: 1 固定前提。2 以上に上げる場合は
+  // `async-endpoint-scale-in-protection` spec のポリシー再設計が必要
+  // (要件 4.2 / 上記 interface のコメント参照)。
   asyncMaxCapacity: 1,
   maxConcurrentInvocationsPerInstance: 4,
   invocationTimeoutSeconds: 3600,

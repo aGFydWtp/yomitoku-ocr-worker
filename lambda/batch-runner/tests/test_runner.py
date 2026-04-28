@@ -74,23 +74,36 @@ class _FakeBatchResult:
 
 
 class _FakeAsyncInvoker:
-    """AsyncInvoker のテスト置換。__init__ と run_batch の引数を記録する。"""
+    """AsyncInvoker のテスト置換。__init__ と run_batch の引数を記録する。
+
+    Task 4.1 で ``runner.run_async_batch`` が ``InflightPublisher`` の
+    ``provider`` として ``invoker.inflight_count`` を直接参照するように
+    なったため、このフェイクにも同名メソッドを生やしている (戻り値 0 固定で
+    十分。本フェイクを使うテストは publisher の振る舞いを検証しない)。
+    """
 
     last_init: dict | None = None
     last_run: dict | None = None
+    events: list[str] = []
 
     def __init__(self, **kwargs):
         _FakeAsyncInvoker.last_init = kwargs
+        _FakeAsyncInvoker.events.append("invoker_init")
 
     async def run_batch(self, **kwargs):
         _FakeAsyncInvoker.last_run = kwargs
+        _FakeAsyncInvoker.events.append("run_batch")
         return _FakeBatchResult()
+
+    def inflight_count(self) -> int:  # noqa: D401 — fake getter
+        return 0
 
 
 class TestRunAsyncBatch:
     def setup_method(self, _method):
         _FakeAsyncInvoker.last_init = None
         _FakeAsyncInvoker.last_run = None
+        _FakeAsyncInvoker.events = []
 
     def test_constructs_async_invoker_from_settings(
         self, settings_stub, reload_runner, monkeypatch, tmp_path
@@ -176,6 +189,205 @@ class TestRunAsyncBatch:
         )
         assert not hasattr(runner, "run_analyze_batch"), (
             "run_analyze_batch は Task 5.1 で撤去されているはず"
+        )
+
+
+# ---------------------------------------------------------------------------
+# InflightPublisher 統合 (Task 5.3, R2.2 / R2.3 / R2.7 / R3.6)
+# ---------------------------------------------------------------------------
+
+
+class _SpyInflightPublisher:
+    """``runner.InflightPublisher`` のテスト置換 spy。
+
+    ``__init__`` / ``start`` / ``stop`` の呼び出しを ``calls`` リストに
+    記録し、`runner.run_async_batch` 内のライフサイクル順序検証に使う。
+    """
+
+    instances: list["_SpyInflightPublisher"] = []
+    start_should_raise: bool = False
+
+    def __init__(self, *, endpoint_name: str, provider, **_kwargs) -> None:
+        self.endpoint_name = endpoint_name
+        self.provider = provider
+        self.calls: list[str] = []
+        _FakeAsyncInvoker.events.append("publisher_init")
+        _SpyInflightPublisher.instances.append(self)
+
+    def start(self) -> None:
+        _FakeAsyncInvoker.events.append("publisher_start")
+        self.calls.append("start")
+        if _SpyInflightPublisher.start_should_raise:
+            raise RuntimeError("publisher start failed")
+
+    def stop(self, *, timeout_sec: float = 5.0) -> None:  # noqa: ARG002
+        _FakeAsyncInvoker.events.append("publisher_stop")
+        self.calls.append("stop")
+
+
+class _RaisingFakeAsyncInvoker(_FakeAsyncInvoker):
+    """``run_batch`` が例外を投げる版の fake (publisher の finally 動作確認用)。"""
+
+    async def run_batch(self, **kwargs):  # noqa: D401 — fake
+        _FakeAsyncInvoker.last_run = kwargs
+        _FakeAsyncInvoker.events.append("run_batch")
+        raise RuntimeError("run_batch failed for finally test")
+
+
+class TestRunAsyncBatchPublisherIntegration:
+    """``runner.run_async_batch`` の `InflightPublisher` 統合テスト (Task 5.3)。"""
+
+    def setup_method(self, _method):
+        _FakeAsyncInvoker.last_init = None
+        _FakeAsyncInvoker.last_run = None
+        _FakeAsyncInvoker.events = []
+        _SpyInflightPublisher.instances = []
+        _SpyInflightPublisher.start_should_raise = False
+
+    def _prepare_dirs(self, tmp_path):
+        input_dir = tmp_path / "input"
+        output_dir = tmp_path / "output"
+        input_dir.mkdir(parents=True, exist_ok=True)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        return input_dir, output_dir
+
+    def test_publisher_started_after_invoker_construction_and_stopped_in_finally(
+        self, settings_stub, reload_runner, monkeypatch, tmp_path
+    ):
+        """R2.2 / R2.3: ``run_async_batch`` 成功時 / 例外時の双方で
+        ``__init__`` → ``start`` → ``stop`` の順序が成立し、`stop` は
+        ``finally`` 句経由で必ず呼ばれることを assert する。"""
+        runner = reload_runner()
+        monkeypatch.setattr(runner, "AsyncInvoker", _FakeAsyncInvoker)
+        monkeypatch.setattr(runner, "InflightPublisher", _SpyInflightPublisher)
+
+        # --- 成功経路 -----------------------------------------------------
+        input_dir, output_dir = self._prepare_dirs(tmp_path / "ok")
+        result = asyncio.run(
+            runner.run_async_batch(
+                settings=settings_stub,
+                input_dir=str(input_dir),
+                output_dir=str(output_dir),
+                log_path=str(output_dir / "process_log.jsonl"),
+            )
+        )
+        assert result.succeeded_files == ["a"]
+
+        assert len(_SpyInflightPublisher.instances) == 1, (
+            "publisher は run_async_batch ごとに 1 度だけ構築されるはず"
+        )
+        spy_ok = _SpyInflightPublisher.instances[0]
+        assert spy_ok.endpoint_name == settings_stub.endpoint_name
+        assert callable(spy_ok.provider)
+        # 構築 → 起動 → 停止 の順で呼ばれていること (= finally で stop が走る)。
+        assert spy_ok.calls == ["start", "stop"]
+        assert _FakeAsyncInvoker.events == [
+            "invoker_init",
+            "publisher_init",
+            "publisher_start",
+            "run_batch",
+            "publisher_stop",
+        ]
+
+        # --- 例外経路 (run_batch が例外を投げても finally で stop が呼ばれる) --
+        _SpyInflightPublisher.instances = []  # リセットして例外経路用に再評価
+        _FakeAsyncInvoker.events = []
+        monkeypatch.setattr(runner, "AsyncInvoker", _RaisingFakeAsyncInvoker)
+
+        input_dir2, output_dir2 = self._prepare_dirs(tmp_path / "ng")
+        with pytest.raises(RuntimeError, match="run_batch failed for finally test"):
+            asyncio.run(
+                runner.run_async_batch(
+                    settings=settings_stub,
+                    input_dir=str(input_dir2),
+                    output_dir=str(output_dir2),
+                    log_path=str(output_dir2 / "process_log.jsonl"),
+                )
+            )
+
+        assert len(_SpyInflightPublisher.instances) == 1
+        spy_ng = _SpyInflightPublisher.instances[0]
+        # 例外経路でも start → stop の順序が維持されている (= finally 句経由で
+        # stop が必ず呼ばれている)。
+        assert spy_ng.calls == ["start", "stop"]
+        assert _FakeAsyncInvoker.events == [
+            "invoker_init",
+            "publisher_init",
+            "publisher_start",
+            "run_batch",
+            "publisher_stop",
+        ]
+
+    def test_publisher_provider_is_invoker_inflight_count(
+        self, settings_stub, reload_runner, monkeypatch, tmp_path
+    ):
+        """R3.6: publisher に渡される ``provider`` callable は構築済
+        ``invoker.inflight_count`` の bound method そのものであること
+        (holder/closure を介さない直接渡し)。"""
+        runner = reload_runner()
+        monkeypatch.setattr(runner, "AsyncInvoker", _FakeAsyncInvoker)
+        monkeypatch.setattr(runner, "InflightPublisher", _SpyInflightPublisher)
+
+        input_dir, output_dir = self._prepare_dirs(tmp_path)
+        asyncio.run(
+            runner.run_async_batch(
+                settings=settings_stub,
+                input_dir=str(input_dir),
+                output_dir=str(output_dir),
+                log_path=str(output_dir / "process_log.jsonl"),
+            )
+        )
+
+        assert len(_SpyInflightPublisher.instances) == 1
+        spy = _SpyInflightPublisher.instances[0]
+        provider = spy.provider
+
+        # bound method の identity を厳密に比較する:
+        # - ``provider.__self__`` は ``AsyncInvoker`` インスタンス本体
+        # - ``provider.__func__`` は class 上の関数オブジェクト
+        # この組み合わせで、closure / lambda / partial を介さない直接渡しを
+        # 機械的に検証できる (R3.6: 副作用なしの read-only 公開)。
+        assert hasattr(provider, "__self__"), (
+            "provider は bound method であるべき (closure 経由ではない)"
+        )
+        assert hasattr(provider, "__func__")
+        assert isinstance(provider.__self__, _FakeAsyncInvoker)
+        assert provider.__func__ is _FakeAsyncInvoker.inflight_count
+        # 呼び出し可能性も確認 (fake は 0 を返す)。
+        assert provider() == 0
+
+    def test_publisher_failure_does_not_fail_run_async_batch(
+        self, settings_stub, reload_runner, monkeypatch, tmp_path
+    ):
+        """R2.7: ``InflightPublisher.start`` が ``RuntimeError`` を投げても
+        ``run_async_batch`` は ``BatchResult`` を返して正常終了する。
+        publisher は observability-only であり、OCR 本体を中断しない。"""
+        runner = reload_runner()
+        monkeypatch.setattr(runner, "AsyncInvoker", _FakeAsyncInvoker)
+        monkeypatch.setattr(runner, "InflightPublisher", _SpyInflightPublisher)
+        # spy の start() 内で RuntimeError を投げさせる。
+        _SpyInflightPublisher.start_should_raise = True
+
+        input_dir, output_dir = self._prepare_dirs(tmp_path)
+        result = asyncio.run(
+            runner.run_async_batch(
+                settings=settings_stub,
+                input_dir=str(input_dir),
+                output_dir=str(output_dir),
+                log_path=str(output_dir / "process_log.jsonl"),
+            )
+        )
+
+        # 例外を投げず BatchResult が返る (= publisher 失敗を吸収している)。
+        assert result.succeeded_files == ["a"]
+        assert result.failed_files == [("b", "ModelError: test")]
+
+        # publisher オブジェクト自体は構築済なので、finally 句で stop() が
+        # 呼ばれるはず (start 失敗後でも publisher.stop() を防御的に呼ぶ R2.7 経路)。
+        assert len(_SpyInflightPublisher.instances) == 1
+        spy = _SpyInflightPublisher.instances[0]
+        assert spy.calls == ["start", "stop"], (
+            "start が例外を投げても finally で stop が呼ばれることが必要"
         )
 
 
