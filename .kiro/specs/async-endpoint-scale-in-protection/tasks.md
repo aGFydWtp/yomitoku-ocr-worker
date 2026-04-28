@@ -75,7 +75,7 @@
   - _Requirements: 2.1, 3.6_
   - _Boundary: lambda/batch-runner/tests/test_async_invoker.py_
 
-- [ ] 5.3 (P) `runner.run_async_batch` の publisher 統合テストを既存テストファイルに追加する
+- [x] 5.3 (P) `runner.run_async_batch` の publisher 統合テストを既存テストファイルに追加する
   - `InflightPublisher` を monkeypatch (spy/recorder) し、`AsyncInvoker` 構築後に `start()` が呼ばれ、`run_batch` 成功 / 例外いずれの場合も `finally` 句で `stop()` が呼ばれる順序を assert する (R2.2, R2.3)
   - publisher に渡される `provider` callable が構築済 `invoker` インスタンスの `inflight_count` メソッド (bound method) であることを assert する (R3.6)
   - `InflightPublisher.start` が `RuntimeError` を投げても `run_async_batch` が `BatchResult` を返し正常終了することを assert する (R2.7)
