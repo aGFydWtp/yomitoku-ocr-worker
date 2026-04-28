@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Orphan / GSI 乖離した META アイテムを検出して修復するメンテナンス CLI.
 
-発見済の 3 種類の整合性不具合を一括で棚卸しする:
+発見済の 4 種類の整合性不具合を一括で棚卸しする:
 
 1. **GSI 乖離**: META の ``status`` と ``GSI1PK`` (= ``STATUS#{status}#{YYYYMM}``)
    が不一致。Step Functions の ``MarkFailedForced`` / ``MarkCompleted`` 等は
@@ -15,6 +15,11 @@
    ``finalize_batch_status`` 前に異常終了し、SFN ``MarkFailedForced`` が status
    のみ更新して ``totals`` を初期値 (failed=0) のまま放置した場合に発生。
    ``GET /batches/{id}`` で「FAILED なのに失敗件数 0」が観測される。
+4. **ControlTable heartbeat 孤児 + ACTIVE#COUNT drift**: runner が
+   ``delete_heartbeat`` を呼ばずに終了した場合、``BATCH_IN_FLIGHT#{id}`` 行が
+   残置され ``ACTIVE#COUNT`` が +1 のまま下がらない。BatchTable META の status が
+   既に終端 (COMPLETED/PARTIAL/FAILED/CANCELLED) のものは安全に削除可能で、
+   削除と同時に count を再計算 (実在 BATCH_IN_FLIGHT 行数 = count) する。
 
 モード:
   - ``--dry-run`` (既定): 検出件数と各アイテムを表示するだけ
@@ -23,14 +28,20 @@
     ``GSI1PK`` も同時に更新する
   - ``--fix-failed-totals``: FAILED の ``totals`` を
     ``failed = total - succeeded``, ``inProgress = 0`` に補正する
+  - ``--reap-control-table``: ControlTable の孤児 heartbeat を削除し
+    ``ACTIVE#COUNT`` を実在数に揃える (要 ``--control-table`` 引数)
 
 使い方:
   python3 scripts/cleanup-orphan-batches.py --dry-run
   python3 scripts/cleanup-orphan-batches.py --fix-gsi
   python3 scripts/cleanup-orphan-batches.py --force-fail --older-than 3h
   python3 scripts/cleanup-orphan-batches.py --fix-failed-totals
+  python3 scripts/cleanup-orphan-batches.py --reap-control-table \
+      --control-table <ControlTableName>
 
 必要な IAM: ``dynamodb:Scan`` と ``dynamodb:UpdateItem`` を BatchTable に対して。
+``--reap-control-table`` 利用時はさらに ControlTable に対する ``Scan`` /
+``GetItem`` / ``DeleteItem`` / ``UpdateItem`` が必要。
 """
 
 from __future__ import annotations
@@ -225,12 +236,209 @@ def fix_failed_totals(table: Any, item: dict[str, Any]) -> None:
     )
 
 
+BATCH_IN_FLIGHT_PREFIX = "BATCH_IN_FLIGHT#"
+ACTIVE_COUNT_KEY = "ACTIVE#COUNT"
+
+
+def scan_in_flight_items(control_table: Any) -> Iterator[dict[str, Any]]:
+    """ControlTable から ``BATCH_IN_FLIGHT#`` で始まる lock_key の行を yield する."""
+    kwargs: dict[str, Any] = {
+        "FilterExpression": "begins_with(lock_key, :p)",
+        "ExpressionAttributeValues": {":p": BATCH_IN_FLIGHT_PREFIX},
+    }
+    while True:
+        res = control_table.scan(**kwargs)
+        for item in res.get("Items", []):
+            yield item
+        last = res.get("LastEvaluatedKey")
+        if not last:
+            return
+        kwargs["ExclusiveStartKey"] = last
+
+
+def is_terminal(meta: dict[str, Any] | None) -> bool:
+    """META の status が終端 (COMPLETED/PARTIAL/FAILED/CANCELLED) かを判定."""
+    if not meta:
+        return False
+    status = meta.get("status")
+    return status in STATUSES_TERMINAL
+
+
+def _classify_in_flight(
+    *,
+    batch_table: Any,
+    control_table: Any,
+) -> tuple[int, list[dict[str, Any]], list[dict[str, Any]]]:
+    """ControlTable を 1 周 scan し (in_flight_total, terminal, active) を返す.
+
+    純関数 (副作用は scan / get_item の read のみ)。``reap_control_table`` から
+    複数回呼ばれて diff/再カウントを行う。
+    """
+    in_flight_total = 0
+    orphans_terminal: list[dict[str, Any]] = []
+    orphans_active: list[dict[str, Any]] = []
+    for hb in scan_in_flight_items(control_table):
+        in_flight_total += 1
+        batch_job_id = hb.get("batchJobId") or hb["lock_key"][
+            len(BATCH_IN_FLIGHT_PREFIX) :
+        ]
+        meta_res = batch_table.get_item(
+            Key={"PK": f"BATCH#{batch_job_id}", "SK": "META"},
+        )
+        meta = meta_res.get("Item")
+        if is_terminal(meta):
+            orphans_terminal.append(hb)
+        else:
+            orphans_active.append(hb)
+    return in_flight_total, orphans_terminal, orphans_active
+
+
+def reap_control_table(
+    *,
+    batch_table: Any,
+    control_table: Any,
+    apply: bool,
+) -> dict[str, int]:
+    """ControlTable の孤児 heartbeat を削除し ACTIVE#COUNT を再計算する.
+
+    手順 (Codex M1 対応で「削除後に再 scan」方式に変更):
+      1. 1 周目の scan: ``BATCH_IN_FLIGHT#*`` を列挙し、対応 META が終端の
+         heartbeat を削除候補に分類
+      2. 終端済 heartbeat を ``ConditionalDelete`` (attribute_exists(lock_key))
+         で削除する。**ACTIVE#COUNT は同時に減算する** ため
+         ``TransactWriteItems`` を使い、heartbeat 行が既に消えている場合は
+         transaction が cancel されて二重 decrement を防ぐ。
+      3. 削除完了後に **2 周目の scan** で実在 BATCH_IN_FLIGHT 行数を再カウントし、
+         ``ACTIVE#COUNT`` の値と乖離があれば ``SET`` で再較正する。
+         この再 scan により「削除中に新規登録された heartbeat」も実カウントに
+         算入され、quiesce 不要で安全に補正できる。
+      4. それでも race で N±1 ズレる可能性は残るが、再実行で収束する
+         (新規登録は ACTIVE#COUNT を ADD +1 するため scan/SET の race window が
+         極小化されている点に依拠)。
+
+    Returns:
+        ``{"in_flight_total": int, "orphans_terminal": int,
+            "orphans_active": int, "active_count_before": int,
+            "active_count_after": int, "in_flight_after_delete": int}``
+    """
+    in_flight_total, orphans_terminal, orphans_active = _classify_in_flight(
+        batch_table=batch_table,
+        control_table=control_table,
+    )
+
+    for hb in orphans_terminal:
+        batch_job_id = hb.get("batchJobId") or hb["lock_key"][
+            len(BATCH_IN_FLIGHT_PREFIX) :
+        ]
+        print(f"- ORPHAN heartbeat: batchJobId={batch_job_id}")
+    for hb in orphans_active:
+        batch_job_id = hb.get("batchJobId") or hb["lock_key"][
+            len(BATCH_IN_FLIGHT_PREFIX) :
+        ]
+        print(f"- skip heartbeat (non-terminal): batchJobId={batch_job_id}")
+
+    # ACTIVE#COUNT 現在値
+    count_res = control_table.get_item(Key={"lock_key": ACTIVE_COUNT_KEY})
+    count_item = count_res.get("Item") or {}
+    active_count_before = int(count_item.get("count", 0))
+
+    if not apply:
+        return {
+            "in_flight_total": in_flight_total,
+            "orphans_terminal": len(orphans_terminal),
+            "orphans_active": len(orphans_active),
+            "active_count_before": active_count_before,
+            "active_count_after": active_count_before,
+            "in_flight_after_delete": in_flight_total,
+        }
+
+    # 終端済 heartbeat を TransactWriteItems で「Delete + ACTIVE#COUNT -1」する。
+    # 既に runner が削除済の heartbeat に対しては ConditionExpression で
+    # transaction 全体が cancel され、ACTIVE#COUNT も減算されない (二重 decrement
+    # 防止)。
+    client = boto3.client("dynamodb", region_name=control_table.meta.client.meta.region_name)
+    table_name = control_table.name
+    actually_deleted = 0
+    for hb in orphans_terminal:
+        try:
+            client.transact_write_items(
+                TransactItems=[
+                    {
+                        "Delete": {
+                            "TableName": table_name,
+                            "Key": {"lock_key": {"S": hb["lock_key"]}},
+                            "ConditionExpression": "attribute_exists(lock_key)",
+                        },
+                    },
+                    {
+                        "Update": {
+                            "TableName": table_name,
+                            "Key": {"lock_key": {"S": ACTIVE_COUNT_KEY}},
+                            "UpdateExpression": "ADD #c :minus",
+                            "ConditionExpression":
+                                "attribute_exists(#c) AND #c > :zero",
+                            "ExpressionAttributeNames": {"#c": "count"},
+                            "ExpressionAttributeValues": {
+                                ":minus": {"N": "-1"},
+                                ":zero": {"N": "0"},
+                            },
+                        },
+                    },
+                ],
+            )
+            actually_deleted += 1
+        except client.exceptions.TransactionCanceledException:
+            # heartbeat が既に消えている / count が 0 以下のいずれか。
+            # 二重 decrement 防止が機能しているので無視。
+            print(
+                f"  (skip {hb['lock_key']}: already removed or count==0)",
+            )
+
+    # **2 周目の scan**: 削除中に新規登録された heartbeat も含めて再カウントする。
+    # 削除直後の最終 count は「再 scan で見える実在 BATCH_IN_FLIGHT 行数」に揃える。
+    in_flight_after_delete, _, _ = _classify_in_flight(
+        batch_table=batch_table,
+        control_table=control_table,
+    )
+    # 現在の ACTIVE#COUNT を再取得し、実在数と乖離があれば SET で較正する。
+    count_after_res = control_table.get_item(Key={"lock_key": ACTIVE_COUNT_KEY})
+    count_after_item = count_after_res.get("Item") or {}
+    current_count = int(count_after_item.get("count", 0))
+
+    new_count = current_count
+    if current_count != in_flight_after_delete:
+        # 過去の drift / TransactWrite でうまく減算できなかった分などを
+        # 実カウントに揃える。新規登録は別経路で ADD +1 されているため、
+        # SET 直後に増減する race window はあるが運用一括補修としては許容。
+        control_table.update_item(
+            Key={"lock_key": ACTIVE_COUNT_KEY},
+            UpdateExpression="SET #c = :c",
+            ExpressionAttributeNames={"#c": "count"},
+            ExpressionAttributeValues={":c": in_flight_after_delete},
+        )
+        new_count = in_flight_after_delete
+
+    return {
+        "in_flight_total": in_flight_total,
+        "orphans_terminal": len(orphans_terminal),
+        "orphans_active": len(orphans_active),
+        "active_count_before": active_count_before,
+        "active_count_after": new_count,
+        "in_flight_after_delete": in_flight_after_delete,
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--table",
         default=os.environ.get("BATCH_TABLE_NAME"),
         help="DynamoDB BatchTable 名 (env BATCH_TABLE_NAME と同義)",
+    )
+    parser.add_argument(
+        "--control-table",
+        default=os.environ.get("CONTROL_TABLE_NAME"),
+        help="DynamoDB ControlTable 名 (--reap-control-table モード時に必須)",
     )
     parser.add_argument("--region", default="ap-northeast-1")
     parser.add_argument(
@@ -249,6 +457,11 @@ def main() -> int:
         action="store_true",
         help="FAILED の totals.failed/inProgress を補正",
     )
+    mode.add_argument(
+        "--reap-control-table",
+        action="store_true",
+        help="ControlTable の孤児 heartbeat 削除 + ACTIVE#COUNT 再計算",
+    )
     args = parser.parse_args()
 
     if not args.table:
@@ -262,6 +475,35 @@ def main() -> int:
     ddb = boto3.resource("dynamodb", region_name=args.region)
     table = ddb.Table(args.table)
     now = datetime.now(tz=timezone.utc)
+
+    # ControlTable リーパは META スキャンを使わない独立処理
+    if args.reap_control_table:
+        if not args.control_table:
+            print(
+                "ERROR: --reap-control-table には --control-table または "
+                "CONTROL_TABLE_NAME 環境変数が必要です",
+                file=sys.stderr,
+            )
+            return 2
+        control_table = ddb.Table(args.control_table)
+        print(f"Reaping ControlTable: {args.control_table}")
+        result = reap_control_table(
+            batch_table=table,
+            control_table=control_table,
+            apply=True,
+        )
+        print()
+        print(f"Scanned BATCH_IN_FLIGHT items: {result['in_flight_total']}")
+        print(f"  終端済 (削除候補):       {result['orphans_terminal']}")
+        print(f"  非終端 (温存):           {result['orphans_active']}")
+        print(
+            f"  削除後の再 scan 件数:    {result['in_flight_after_delete']}",
+        )
+        print(
+            f"  ACTIVE#COUNT: "
+            f"{result['active_count_before']} → {result['active_count_after']}",
+        )
+        return 0
 
     total = 0
     fixable_gsi: list[dict[str, Any]] = []

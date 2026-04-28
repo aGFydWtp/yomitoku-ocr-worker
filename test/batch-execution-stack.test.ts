@@ -642,6 +642,119 @@ describe("BatchExecutionStack", () => {
       }
     });
 
+    it("DeleteHeartbeat / DeleteHeartbeatOnError が ACTIVE#COUNT 減算 + heartbeat 削除を atomic に行う", () => {
+      // runner が SIGKILL / OOM 等で `delete_heartbeat` を呼ばずに終了した場合、
+      // ControlTable の `BATCH_IN_FLIGHT#{id}` 行と `ACTIVE#COUNT` カウンタが
+      // 不整合 (孤児 + drift) になる。SFN の終端パスで明示的に補完する。
+      const definition = parseStateMachineDefinition(createStack().template);
+      for (const id of ["DeleteHeartbeat", "DeleteHeartbeatOnError"]) {
+        const state = definition.States[id];
+        expect(state, `state ${id} not found`).toBeDefined();
+        expect(state.Type).toBe("Task");
+        expect(state.Resource).toContain("aws-sdk:dynamodb:transactWriteItems");
+
+        const params = state.Parameters as Record<string, unknown>;
+        const items = params.TransactItems as Array<Record<string, unknown>>;
+        expect(items).toHaveLength(2);
+
+        // 1: BATCH_IN_FLIGHT#{batchJobId} を Delete (States.Format で動的構築)
+        const del = items[0].Delete as Record<string, unknown>;
+        expect(del).toBeDefined();
+        const delKey = del.Key as Record<string, Record<string, string>>;
+        expect(delKey.lock_key["S.$"]).toContain("BATCH_IN_FLIGHT#");
+        expect(delKey.lock_key["S.$"]).toContain("$.batchJobId");
+
+        // 2: ACTIVE#COUNT を ConditionalAdd -1 (count > 0 ガード付き)
+        const upd = items[1].Update as Record<string, unknown>;
+        expect(upd).toBeDefined();
+        const updKey = upd.Key as Record<string, Record<string, string>>;
+        expect(updKey.lock_key.S).toBe("ACTIVE#COUNT");
+        expect(upd.UpdateExpression).toBe("ADD #c :minus");
+        expect(upd.ConditionExpression).toBe(
+          "attribute_exists(#c) AND #c > :zero",
+        );
+        const eav = upd.ExpressionAttributeValues as Record<
+          string,
+          Record<string, string>
+        >;
+        expect(eav[":minus"].N).toBe("-1");
+        expect(eav[":zero"].N).toBe("0");
+      }
+    });
+
+    it("DeleteHeartbeat の Delete に attribute_exists(lock_key) があり二重 decrement を防止する", () => {
+      // runner が finally で `delete_heartbeat` を呼んで heartbeat を消した後でも、
+      // SFN 終端の DeleteHeartbeat は通常通り走る。DDB の Delete は対象不在でも
+      // 成功するため、Delete 側に ConditionExpression を入れないと
+      // ACTIVE#COUNT だけ二重 decrement されて他バッチの分まで減算されてしまう。
+      // Delete に `attribute_exists(lock_key)` を入れて、heartbeat が消えていれば
+      // transaction 全体を cancel させる (TransactionCanceledException → SFN catch)。
+      const definition = parseStateMachineDefinition(createStack().template);
+      for (const id of ["DeleteHeartbeat", "DeleteHeartbeatOnError"]) {
+        const state = definition.States[id];
+        const params = state.Parameters as Record<string, unknown>;
+        const items = params.TransactItems as Array<Record<string, unknown>>;
+        const del = items[0].Delete as Record<string, unknown>;
+        expect(del.ConditionExpression).toBe("attribute_exists(lock_key)");
+      }
+    });
+
+    it("DeleteHeartbeat 失敗時は SFN 全体を失敗させず後続 (Done/Failed) に進む", () => {
+      // runner が既に decrement 済みのケース (DynamoDB.TransactionCanceledException)
+      // や、それ以外の DDB 例外でも、SFN 実行を巻き込んでバッチ判定を上書きしない。
+      // TTL (`expiresAt`) による遅延 sweep がバックストップとして機能するため、
+      // 最終整合性は別レイヤで担保される。
+      const definition = parseStateMachineDefinition(createStack().template);
+      for (const [id, expectedNext] of [
+        ["DeleteHeartbeat", "Done"],
+        ["DeleteHeartbeatOnError", "Failed"],
+      ] as const) {
+        const state = definition.States[id];
+        expect(state).toBeDefined();
+        const catches = state.Catch as Array<{
+          ErrorEquals: string[];
+          Next: string;
+        }>;
+        expect(catches).toBeDefined();
+        const allCatch = catches.find((c) =>
+          c.ErrorEquals.includes("States.ALL"),
+        );
+        expect(allCatch, `${id} catch missing States.ALL`).toBeDefined();
+        expect(allCatch!.Next).toBe(expectedNext);
+      }
+    });
+
+    it("成功 / 失敗の終端遷移に DeleteHeartbeat が組み込まれている (ReleaseBatchLock の後段)", () => {
+      const definition = parseStateMachineDefinition(createStack().template);
+      // 成功系: ReleaseBatchLock → DeleteHeartbeat → Done
+      expect(definition.States.ReleaseBatchLock.Next).toBe("DeleteHeartbeat");
+      expect(definition.States.DeleteHeartbeat.Next).toBe("Done");
+      // 失敗系: ReleaseBatchLockOnError → DeleteHeartbeatOnError → Failed
+      expect(definition.States.ReleaseBatchLockOnError.Next).toBe(
+        "DeleteHeartbeatOnError",
+      );
+      expect(definition.States.DeleteHeartbeatOnError.Next).toBe("Failed");
+    });
+
+    it("SFN 実行ロールが ControlTable への dynamodb:UpdateItem 権限を持つ (ACTIVE#COUNT 減算用)", () => {
+      // DeleteHeartbeat の TransactWriteItems 内で `ACTIVE#COUNT` を ConditionalAdd
+      // -1 する。`dynamodb:DeleteItem` (BATCH_IN_FLIGHT 削除) は ReleaseBatchLock の
+      // DynamoDeleteItem が auto-grant 済みだが、UpdateItem は明示付与が必要。
+      const { template } = createStack();
+      template.hasResourceProperties(
+        "AWS::IAM::Policy",
+        Match.objectLike({
+          PolicyDocument: Match.objectLike({
+            Statement: Match.arrayWith([
+              Match.objectLike({
+                Action: Match.arrayWith(["dynamodb:UpdateItem"]),
+              }),
+            ]),
+          }),
+        }),
+      );
+    });
+
     it("MarkCompleted / MarkPartial は status のみ更新する (runner が META を確定済み)", () => {
       // 成功系は runner が finalize_batch_status で
       // status / totals / updatedAt / GSI1PK を書き終えているので、SFN 側は

@@ -146,6 +146,28 @@ describe("ProcessingStack (legacy resources removed)", () => {
       const { stack } = createStack();
       expect(stack.controlTable).toBeDefined();
     });
+
+    it("TTL 属性 (expiresAt) が有効化されている (heartbeat 孤児の最終 sweep)", () => {
+      // ECS タスクが SIGKILL / OOM で `delete_heartbeat` を呼ばずに終了した
+      // 場合、`BATCH_IN_FLIGHT#{id}` 行が残置される。runner と SFN 双方の
+      // 明示削除が漏れた最後の防衛線として、`expiresAt` (epoch sec) を TTL に
+      // 指定し DDB に遅延 sweep させる。`ACTIVE#COUNT` の整合性は SFN の
+      // DeleteHeartbeat ステートが担う (TTL は count を減らさない)。
+      const { template } = createStack();
+      const tables = template.findResources("AWS::DynamoDB::Table");
+      const controlTable = Object.values(tables).find(
+        (t) =>
+          (t.Properties.KeySchema as { AttributeName: string }[]).length ===
+            1 &&
+          (t.Properties.KeySchema as { AttributeName: string }[])[0]
+            .AttributeName === "lock_key",
+      );
+      expect(controlTable, "ControlTable not found").toBeDefined();
+      expect(controlTable!.Properties.TimeToLiveSpecification).toEqual({
+        AttributeName: "expiresAt",
+        Enabled: true,
+      });
+    });
   });
 
   // --- DynamoDB BatchTable (Single-table: PK/SK + GSI1 + GSI2 + TTL) ---
