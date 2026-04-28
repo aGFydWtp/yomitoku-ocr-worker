@@ -95,7 +95,7 @@
   - _Boundary: test/sagemaker-stack.test.ts_
 
 - [ ] 6. Operations: 障害切り分け Runbook を新規追加
-- [ ] 6.1 進捗停滞時の切り分け手順と本機能の保証境界を `docs/runbooks/async-endpoint-scale-in-debug.md` に記載する
+- [x] 6.1 進捗停滞時の切り分け手順と本機能の保証境界を `docs/runbooks/async-endpoint-scale-in-debug.md` に記載する
   - 既存 `docs/runbooks/sagemaker-async-cutover.md` の構造 (目的 → 適用範囲 → 事前条件 → 手順 → 補足) を踏襲する
   - CloudWatch コンソールで `Yomitoku/AsyncEndpoint::InflightInvocations` を確認する手順、`HasBacklogWithoutCapacity` アラーム / `ApproximateAgeOfOldestRequest` を組み合わせた切り分けフロー、`aws application-autoscaling describe-scaling-activities` を使った scale-in 履歴確認手順を含む
   - batch-runner プロセス異常終了 (OOM / SIGKILL) 時に「最後の publish 値が period 経過まで残る」事象の確認手順 (CloudWatch メトリクス直近値と ECS タスクの実行状態の突き合わせ) を含む
