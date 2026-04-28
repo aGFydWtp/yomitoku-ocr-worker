@@ -56,7 +56,7 @@
   - _Boundary: lambda/batch-runner/runner.py_
 
 - [ ] 5. Validation: テスト網羅 (4 ファイル独立、並列実行可能)
-- [ ] 5.1 (P) `InflightPublisher` の単体テストを新規作成する
+- [x] 5.1 (P) `InflightPublisher` の単体テストを新規作成する
   - `start()` 直後に stdout に書かれた EMF JSON の `_aws.CloudWatchMetrics[0]` の Namespace / Dimensions / Metrics、および `EndpointName` / `InflightInvocations` フィールドが想定通りであることを `capsys` キャプチャで assert する (R2.2, R2.5)
   - `time.sleep` を monkeypatch し provider が `1, 3, 0` を返す状況で 3 周期分の datapoint が publish されることを assert する (R2.1, R2.6)
   - `stop()` 後に最後の datapoint が 0 で thread が `is_alive() == False` になることを assert する (R2.3)
