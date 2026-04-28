@@ -160,6 +160,60 @@ describe("BatchStore (write-path)", () => {
         }),
       ).rejects.toMatchObject({ name: "ConflictError" });
     });
+
+    it("startedAt 未指定時に #startedAt エイリアスを ExpressionAttributeNames に含めない (DELETE 経路)", async () => {
+      // DELETE /batches/{id} は PENDING → CANCELLED 遷移で startedAt を渡さない。
+      // 旧実装は #startedAt を常に EAN に入れており、DDB が
+      // `Value provided in ExpressionAttributeNames unused in expressions` で
+      // ValidationException を返していた (本番再現バグ)。
+      mockSend.mockResolvedValue({});
+
+      await store.transitionBatchStatus({
+        batchJobId: "batch-001",
+        newStatus: "CANCELLED",
+        expectedCurrent: "PENDING",
+      });
+
+      const cmd: AnyRecord = mockSend.mock.calls[0][0];
+      const ean = cmd.input.ExpressionAttributeNames as Record<string, string>;
+      const expr = cmd.input.UpdateExpression as string;
+
+      expect(ean["#startedAt"]).toBeUndefined();
+      expect(expr).not.toContain("#startedAt");
+      // 通常の SET 句は変わらず存在
+      expect(expr).toContain("#status = :new");
+      expect(expr).toContain("#updatedAt = :now");
+      expect(expr).toContain("#GSI1PK = :newGSI1PK");
+      // CANCELLED は terminal で TTL を消す → #ttl は EAN に入る
+      expect(ean["#ttl"]).toBe("ttl");
+      expect(expr).toContain("REMOVE #ttl");
+
+      // ExpressionAttributeNames で実際に使われていないキーがないこと
+      // (DDB ValidationException の根本条件)
+      for (const alias of Object.keys(ean)) {
+        expect(expr, `alias ${alias} unused in expression`).toContain(alias);
+      }
+    });
+
+    it("PENDING 遷移は REMOVE #ttl 句を出さず #ttl エイリアスも EAN に含めない", async () => {
+      // 例えば PENDING 自体への遷移 (将来パターン) で #ttl が未参照になる
+      // ケースに対する保険。
+      mockSend.mockResolvedValue({});
+
+      await store.transitionBatchStatus({
+        batchJobId: "batch-001",
+        newStatus: "PENDING",
+        expectedCurrent: "PENDING",
+      });
+
+      const cmd: AnyRecord = mockSend.mock.calls[0][0];
+      const ean = cmd.input.ExpressionAttributeNames as Record<string, string>;
+      const expr = cmd.input.UpdateExpression as string;
+
+      expect(ean["#ttl"]).toBeUndefined();
+      expect(expr).not.toContain("REMOVE #ttl");
+      expect(expr).not.toContain("#ttl");
+    });
   });
 
   // --- updateFileResult ---

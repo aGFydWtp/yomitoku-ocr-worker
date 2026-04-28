@@ -230,14 +230,26 @@ export class BatchStore {
       ":now": iso,
       ":newGSI1PK": gsi1pk(newStatus, now),
     };
+    // ExpressionAttributeNames は `UpdateExpression` で実際に参照されるエイリアス
+    // のみを含める。未使用エイリアスがあると DDB は
+    // `Value provided in ExpressionAttributeNames unused in expressions` で
+    // ValidationException を返す (例: DELETE /batches/{id} の PENDING→CANCELLED
+    // 遷移は `startedAt` を渡さないため `#startedAt` が未参照になる)。
+    const eanMap: Record<string, string> = {
+      "#status": "status",
+      "#updatedAt": "updatedAt",
+      "#GSI1PK": "GSI1PK",
+    };
 
     if (startedAt) {
       updateExpr += ", #startedAt = :startedAt";
       eavMap[":startedAt"] = startedAt;
+      eanMap["#startedAt"] = "startedAt";
     }
 
     if (newStatus !== "PENDING") {
       updateExpr += " REMOVE #ttl";
+      eanMap["#ttl"] = "ttl";
     }
 
     try {
@@ -247,13 +259,7 @@ export class BatchStore {
           Key: { PK: `BATCH#${batchJobId}`, SK: "META" },
           UpdateExpression: updateExpr,
           ConditionExpression: "#status = :expected",
-          ExpressionAttributeNames: {
-            "#status": "status",
-            "#updatedAt": "updatedAt",
-            "#GSI1PK": "GSI1PK",
-            "#startedAt": "startedAt",
-            "#ttl": "ttl",
-          },
+          ExpressionAttributeNames: eanMap,
           ExpressionAttributeValues: eavMap,
         }),
       );
