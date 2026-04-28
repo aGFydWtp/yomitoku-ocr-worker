@@ -36,7 +36,7 @@
   - _Boundary: lib/sagemaker-stack.ts_
 
 - [ ] 3. ECS 配布: Dockerfile に新モジュールを組み込む
-- [ ] 3.1 Fargate Docker image に `inflight_publisher.py` を確実に同梱する
+- [x] 3.1 Fargate Docker image に `inflight_publisher.py` を確実に同梱する
   - `lambda/batch-runner/Dockerfile` の `COPY` ターゲットに `inflight_publisher.py` を追加する
   - `lambda/batch-runner/tests/test_dockerfile_completeness.py` の対象モジュール一覧に `inflight_publisher.py` を加え、欠落時にテストが失敗する状態を作る
   - 完了時には `pytest lambda/batch-runner/tests/test_dockerfile_completeness.py` が green

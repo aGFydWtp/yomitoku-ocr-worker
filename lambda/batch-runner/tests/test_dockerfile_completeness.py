@@ -91,6 +91,7 @@ class TestDockerfileCompleteness:
             "s3_sync.py",
             "control_table.py",
             "ddb_client.py",
+            "inflight_publisher.py",  # async-endpoint-scale-in-protection anchor
         ],
     )
     def test_known_modules_are_present(self, required: str) -> None:
