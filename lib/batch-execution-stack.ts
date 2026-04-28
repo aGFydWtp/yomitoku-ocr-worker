@@ -25,6 +25,7 @@ import {
   Timeout,
 } from "aws-cdk-lib/aws-stepfunctions";
 import {
+  CallAwsService,
   DynamoAttributeValue,
   DynamoDeleteItem,
   DynamoGetItem,
@@ -378,6 +379,13 @@ export class BatchExecutionStack extends Stack {
       timeout: Duration.seconds(SFN_EXECUTION_TIMEOUT_SECONDS),
     });
 
+    // DeleteHeartbeat / DeleteHeartbeatOnError の TransactWriteItems 用に
+    // ACTIVE#COUNT を減算する `dynamodb:UpdateItem` を SFN ロールに付与する。
+    // BATCH_IN_FLIGHT#{id} 削除側 (`dynamodb:DeleteItem`) は ReleaseBatchLock が
+    // 既に付与済み。`dynamodb:transactWriteItems` 自体は CallAwsService の
+    // 既定 IAM Action として自動付与される。
+    controlTable.grant(this.stateMachine, "dynamodb:UpdateItem");
+
     // --- CDK Nag suppressions ---
     NagSuppressions.addResourceSuppressions(
       this.taskDefinition,
@@ -650,6 +658,64 @@ export class BatchExecutionStack extends Stack {
       },
     );
 
+    // --- DeleteHeartbeat (heartbeat 行 + ACTIVE#COUNT を一括クリーンアップ) ---
+    //
+    // 通常は runner が `delete_heartbeat` (control_table.py) を `try/finally` で
+    // 呼ぶため heartbeat は自然に消滅するが、ECS タスクが SIGKILL / OOM /
+    // States.Timeout で finally に到達せず終了した場合、
+    //   - `BATCH_IN_FLIGHT#{id}` 行が孤児化
+    //   - `ACTIVE#COUNT` が +1 のまま減算されず、並行バッチ枠を圧迫
+    // という不整合が残る。SFN の終端パスでこれを補完する。
+    //
+    // `dynamodb:transactWriteItems` を `CallAwsService` で呼び、runner の
+    // `delete_heartbeat` と同じ「Delete + ConditionalAdd -1」を atomic に実行する。
+    // ConditionExpression `count > 0` で 0 未満への drift を防ぎ、ConditionCheck
+    // 失敗 (DynamoDB.TransactionCanceledException) は catch して握り潰す
+    // (runner が既に decrement 済みのケース = 二重 decrement を防止)。
+    const buildDeleteHeartbeat = (id: string) =>
+      new CallAwsService(this, id, {
+        service: "dynamodb",
+        action: "transactWriteItems",
+        iamResources: [controlTable.tableArn],
+        // 既定の `dynamodb:transactWriteItems` だけでは TransactWriteItems の
+        // 実行は通るが、内側の Put/Update/Delete に対する個別 IAM Action は
+        // 別途必要。`dynamodb:DeleteItem` は ReleaseBatchLock の DynamoDeleteItem
+        // が自動付与し、`dynamodb:UpdateItem` (ACTIVE#COUNT 減算用) は本ファイル
+        // 末尾で `controlTable.grant(...)` により明示的に付与する。
+        parameters: {
+          TransactItems: [
+            {
+              Delete: {
+                TableName: controlTable.tableName,
+                Key: {
+                  lock_key: {
+                    "S.$": "States.Format('BATCH_IN_FLIGHT#{}', $.batchJobId)",
+                  },
+                },
+              },
+            },
+            {
+              Update: {
+                TableName: controlTable.tableName,
+                Key: { lock_key: { S: "ACTIVE#COUNT" } },
+                UpdateExpression: "ADD #c :minus",
+                ConditionExpression: "attribute_exists(#c) AND #c > :zero",
+                ExpressionAttributeNames: { "#c": "count" },
+                ExpressionAttributeValues: {
+                  ":minus": { N: "-1" },
+                  ":zero": { N: "0" },
+                },
+              },
+            },
+          ],
+        },
+        resultPath: JsonPath.DISCARD,
+      });
+    const deleteHeartbeat = buildDeleteHeartbeat("DeleteHeartbeat");
+    const deleteHeartbeatOnError = buildDeleteHeartbeat(
+      "DeleteHeartbeatOnError",
+    );
+
     // StopBatchTask は意図的に省略する。`EcsRunTask` の RUN_JOB (.sync) 統合は
     // States.Timeout / States.TaskFailed 発生時に SFN ランタイムが自動的に
     // `ecs:StopTask` を発行する仕様であり、Cause (JSON 文字列) から TaskArn を
@@ -703,10 +769,25 @@ export class BatchExecutionStack extends Stack {
     markCompleted.next(releaseBatchLock);
     markPartial.next(releaseBatchLock);
     markFailed.next(releaseBatchLock);
-    releaseBatchLock.next(done);
+    releaseBatchLock.next(deleteHeartbeat);
+    // DeleteHeartbeat の失敗は後続の Done を妨げない:
+    //   - TransactionCanceledException: runner が既に decrement 済みケース。
+    //     これは想定内 (二重 decrement を防ぐ ConditionExpression が機能した)。
+    //   - States.ALL: それ以外の DDB 例外も同様に握り潰す。TTL (`expiresAt`)
+    //     による遅延 sweep がバックストップとして機能するため、最終整合性は保たれる。
+    deleteHeartbeat.addCatch(done, {
+      errors: ["States.ALL"],
+      resultPath: JsonPath.DISCARD,
+    });
+    deleteHeartbeat.next(done);
 
     markFailedForced.next(releaseBatchLockOnError);
-    releaseBatchLockOnError.next(failed);
+    releaseBatchLockOnError.next(deleteHeartbeatOnError);
+    deleteHeartbeatOnError.addCatch(failed, {
+      errors: ["States.ALL"],
+      resultPath: JsonPath.DISCARD,
+    });
+    deleteHeartbeatOnError.next(failed);
 
     return acquireBatchLock;
   }

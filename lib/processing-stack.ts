@@ -93,11 +93,23 @@ export class ProcessingStack extends Stack {
     ]);
 
     // --- DynamoDB エンドポイント制御テーブル ---
+    //
+    // TTL 設定: heartbeat アイテム (`BATCH_IN_FLIGHT#{id}`) は runner 終了時に
+    // `delete_heartbeat` で明示削除される設計だが、ECS タスクが SIGKILL / OOM
+    // 等で `try / finally` に到達せず終了した場合に孤児化する (`expiresAt`
+    // が単なる属性として残る)。最終防衛線として `expiresAt` を TTL 属性に指定し、
+    // DDB が遅延 (24-48h 内) で残置 heartbeat を自動 sweep するようにする。
+    //
+    // **注意**: TTL は heartbeat 行を消すだけで `ACTIVE#COUNT` を減算しない。
+    // 並行カウンタ整合性は SFN 側の `DeleteHeartbeatOn*` ステート
+    // (TransactWriteItems で BATCH_IN_FLIGHT 削除 + ACTIVE#COUNT -1) に委ねる。
+    // TTL は SFN ステートの実行漏れに対するバックストップとしてのみ機能する。
     this.controlTable = new Table(this, "ControlTable", {
       partitionKey: { name: "lock_key", type: AttributeType.STRING },
       billingMode: BillingMode.PAY_PER_REQUEST,
       removalPolicy: RemovalPolicy.RETAIN,
       pointInTimeRecoverySpecification: { pointInTimeRecoveryEnabled: true },
+      timeToLiveAttribute: "expiresAt",
     });
 
     // --- DynamoDB BatchTable (Single-table: task 1.2) ---
