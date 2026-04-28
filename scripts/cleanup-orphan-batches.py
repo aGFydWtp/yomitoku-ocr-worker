@@ -264,35 +264,19 @@ def is_terminal(meta: dict[str, Any] | None) -> bool:
     return status in STATUSES_TERMINAL
 
 
-def reap_control_table(
+def _classify_in_flight(
     *,
     batch_table: Any,
     control_table: Any,
-    apply: bool,
-) -> dict[str, int]:
-    """ControlTable の孤児 heartbeat を削除し ACTIVE#COUNT を再計算する.
+) -> tuple[int, list[dict[str, Any]], list[dict[str, Any]]]:
+    """ControlTable を 1 周 scan し (in_flight_total, terminal, active) を返す.
 
-    手順:
-      1. ControlTable の ``BATCH_IN_FLIGHT#*`` を全列挙
-      2. 各行について BatchTable の対応 META.status を取得
-      3. 終端 (COMPLETED/PARTIAL/FAILED/CANCELLED) のものを「削除候補」に分類
-         (PROCESSING / 不在 のものは触らない — runner が今まさに動作中の可能性)
-      4. ``--reap-control-table`` 指定時は削除候補を順次 ``DeleteItem``
-      5. 削除後の実在 BATCH_IN_FLIGHT 行数を再カウントし、
-         ``ACTIVE#COUNT.count`` を ``SET`` で上書きする
-         (TransactWriteItems で再カウントと SET を 1 トランザクションにまとめると
-         scan 後の race window で実カウントが変動する可能性があるが、本処理は
-         運用一括補修であり、再実行で収束するため許容)
-
-    Returns:
-        ``{"in_flight_total": int, "orphans_terminal": int,
-            "orphans_active": int, "active_count_before": int,
-            "active_count_after": int}``
+    純関数 (副作用は scan / get_item の read のみ)。``reap_control_table`` から
+    複数回呼ばれて diff/再カウントを行う。
     """
     in_flight_total = 0
     orphans_terminal: list[dict[str, Any]] = []
     orphans_active: list[dict[str, Any]] = []
-
     for hb in scan_in_flight_items(control_table):
         in_flight_total += 1
         batch_job_id = hb.get("batchJobId") or hb["lock_key"][
@@ -304,17 +288,54 @@ def reap_control_table(
         meta = meta_res.get("Item")
         if is_terminal(meta):
             orphans_terminal.append(hb)
-            print(
-                f"- ORPHAN heartbeat (META {meta.get('status')}): "
-                f"batchJobId={batch_job_id}",
-            )
         else:
             orphans_active.append(hb)
-            status_str = meta.get("status") if meta else "<missing>"
-            print(
-                f"- skip heartbeat (META status={status_str}): "
-                f"batchJobId={batch_job_id}",
-            )
+    return in_flight_total, orphans_terminal, orphans_active
+
+
+def reap_control_table(
+    *,
+    batch_table: Any,
+    control_table: Any,
+    apply: bool,
+) -> dict[str, int]:
+    """ControlTable の孤児 heartbeat を削除し ACTIVE#COUNT を再計算する.
+
+    手順 (Codex M1 対応で「削除後に再 scan」方式に変更):
+      1. 1 周目の scan: ``BATCH_IN_FLIGHT#*`` を列挙し、対応 META が終端の
+         heartbeat を削除候補に分類
+      2. 終端済 heartbeat を ``ConditionalDelete`` (attribute_exists(lock_key))
+         で削除する。**ACTIVE#COUNT は同時に減算する** ため
+         ``TransactWriteItems`` を使い、heartbeat 行が既に消えている場合は
+         transaction が cancel されて二重 decrement を防ぐ。
+      3. 削除完了後に **2 周目の scan** で実在 BATCH_IN_FLIGHT 行数を再カウントし、
+         ``ACTIVE#COUNT`` の値と乖離があれば ``SET`` で再較正する。
+         この再 scan により「削除中に新規登録された heartbeat」も実カウントに
+         算入され、quiesce 不要で安全に補正できる。
+      4. それでも race で N±1 ズレる可能性は残るが、再実行で収束する
+         (新規登録は ACTIVE#COUNT を ADD +1 するため scan/SET の race window が
+         極小化されている点に依拠)。
+
+    Returns:
+        ``{"in_flight_total": int, "orphans_terminal": int,
+            "orphans_active": int, "active_count_before": int,
+            "active_count_after": int, "in_flight_after_delete": int}``
+    """
+    in_flight_total, orphans_terminal, orphans_active = _classify_in_flight(
+        batch_table=batch_table,
+        control_table=control_table,
+    )
+
+    for hb in orphans_terminal:
+        batch_job_id = hb.get("batchJobId") or hb["lock_key"][
+            len(BATCH_IN_FLIGHT_PREFIX) :
+        ]
+        print(f"- ORPHAN heartbeat: batchJobId={batch_job_id}")
+    for hb in orphans_active:
+        batch_job_id = hb.get("batchJobId") or hb["lock_key"][
+            len(BATCH_IN_FLIGHT_PREFIX) :
+        ]
+        print(f"- skip heartbeat (non-terminal): batchJobId={batch_job_id}")
 
     # ACTIVE#COUNT 現在値
     count_res = control_table.get_item(Key={"lock_key": ACTIVE_COUNT_KEY})
@@ -328,20 +349,74 @@ def reap_control_table(
             "orphans_active": len(orphans_active),
             "active_count_before": active_count_before,
             "active_count_after": active_count_before,
+            "in_flight_after_delete": in_flight_total,
         }
 
-    # 終端済 heartbeat を削除
+    # 終端済 heartbeat を TransactWriteItems で「Delete + ACTIVE#COUNT -1」する。
+    # 既に runner が削除済の heartbeat に対しては ConditionExpression で
+    # transaction 全体が cancel され、ACTIVE#COUNT も減算されない (二重 decrement
+    # 防止)。
+    client = boto3.client("dynamodb", region_name=control_table.meta.client.meta.region_name)
+    table_name = control_table.name
+    actually_deleted = 0
     for hb in orphans_terminal:
-        control_table.delete_item(Key={"lock_key": hb["lock_key"]})
+        try:
+            client.transact_write_items(
+                TransactItems=[
+                    {
+                        "Delete": {
+                            "TableName": table_name,
+                            "Key": {"lock_key": {"S": hb["lock_key"]}},
+                            "ConditionExpression": "attribute_exists(lock_key)",
+                        },
+                    },
+                    {
+                        "Update": {
+                            "TableName": table_name,
+                            "Key": {"lock_key": {"S": ACTIVE_COUNT_KEY}},
+                            "UpdateExpression": "ADD #c :minus",
+                            "ConditionExpression":
+                                "attribute_exists(#c) AND #c > :zero",
+                            "ExpressionAttributeNames": {"#c": "count"},
+                            "ExpressionAttributeValues": {
+                                ":minus": {"N": "-1"},
+                                ":zero": {"N": "0"},
+                            },
+                        },
+                    },
+                ],
+            )
+            actually_deleted += 1
+        except client.exceptions.TransactionCanceledException:
+            # heartbeat が既に消えている / count が 0 以下のいずれか。
+            # 二重 decrement 防止が機能しているので無視。
+            print(
+                f"  (skip {hb['lock_key']}: already removed or count==0)",
+            )
 
-    # 削除後の実カウントで ACTIVE#COUNT を SET (ADD ではなく SET で再計算)
-    new_count = max(in_flight_total - len(orphans_terminal), 0)
-    control_table.update_item(
-        Key={"lock_key": ACTIVE_COUNT_KEY},
-        UpdateExpression="SET #c = :c",
-        ExpressionAttributeNames={"#c": "count"},
-        ExpressionAttributeValues={":c": new_count},
+    # **2 周目の scan**: 削除中に新規登録された heartbeat も含めて再カウントする。
+    # 削除直後の最終 count は「再 scan で見える実在 BATCH_IN_FLIGHT 行数」に揃える。
+    in_flight_after_delete, _, _ = _classify_in_flight(
+        batch_table=batch_table,
+        control_table=control_table,
     )
+    # 現在の ACTIVE#COUNT を再取得し、実在数と乖離があれば SET で較正する。
+    count_after_res = control_table.get_item(Key={"lock_key": ACTIVE_COUNT_KEY})
+    count_after_item = count_after_res.get("Item") or {}
+    current_count = int(count_after_item.get("count", 0))
+
+    new_count = current_count
+    if current_count != in_flight_after_delete:
+        # 過去の drift / TransactWrite でうまく減算できなかった分などを
+        # 実カウントに揃える。新規登録は別経路で ADD +1 されているため、
+        # SET 直後に増減する race window はあるが運用一括補修としては許容。
+        control_table.update_item(
+            Key={"lock_key": ACTIVE_COUNT_KEY},
+            UpdateExpression="SET #c = :c",
+            ExpressionAttributeNames={"#c": "count"},
+            ExpressionAttributeValues={":c": in_flight_after_delete},
+        )
+        new_count = in_flight_after_delete
 
     return {
         "in_flight_total": in_flight_total,
@@ -349,6 +424,7 @@ def reap_control_table(
         "orphans_active": len(orphans_active),
         "active_count_before": active_count_before,
         "active_count_after": new_count,
+        "in_flight_after_delete": in_flight_after_delete,
     }
 
 
@@ -418,8 +494,11 @@ def main() -> int:
         )
         print()
         print(f"Scanned BATCH_IN_FLIGHT items: {result['in_flight_total']}")
-        print(f"  終端済 (削除済):        {result['orphans_terminal']}")
-        print(f"  非終端 (温存):          {result['orphans_active']}")
+        print(f"  終端済 (削除候補):       {result['orphans_terminal']}")
+        print(f"  非終端 (温存):           {result['orphans_active']}")
+        print(
+            f"  削除後の再 scan 件数:    {result['in_flight_after_delete']}",
+        )
         print(
             f"  ACTIVE#COUNT: "
             f"{result['active_count_before']} → {result['active_count_after']}",

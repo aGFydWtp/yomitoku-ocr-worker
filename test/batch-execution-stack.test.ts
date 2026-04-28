@@ -682,6 +682,23 @@ describe("BatchExecutionStack", () => {
       }
     });
 
+    it("DeleteHeartbeat の Delete に attribute_exists(lock_key) があり二重 decrement を防止する", () => {
+      // runner が finally で `delete_heartbeat` を呼んで heartbeat を消した後でも、
+      // SFN 終端の DeleteHeartbeat は通常通り走る。DDB の Delete は対象不在でも
+      // 成功するため、Delete 側に ConditionExpression を入れないと
+      // ACTIVE#COUNT だけ二重 decrement されて他バッチの分まで減算されてしまう。
+      // Delete に `attribute_exists(lock_key)` を入れて、heartbeat が消えていれば
+      // transaction 全体を cancel させる (TransactionCanceledException → SFN catch)。
+      const definition = parseStateMachineDefinition(createStack().template);
+      for (const id of ["DeleteHeartbeat", "DeleteHeartbeatOnError"]) {
+        const state = definition.States[id];
+        const params = state.Parameters as Record<string, unknown>;
+        const items = params.TransactItems as Array<Record<string, unknown>>;
+        const del = items[0].Delete as Record<string, unknown>;
+        expect(del.ConditionExpression).toBe("attribute_exists(lock_key)");
+      }
+    });
+
     it("DeleteHeartbeat 失敗時は SFN 全体を失敗させず後続 (Done/Failed) に進む", () => {
       // runner が既に decrement 済みのケース (DynamoDB.TransactionCanceledException)
       // や、それ以外の DDB 例外でも、SFN 実行を巻き込んでバッチ判定を上書きしない。

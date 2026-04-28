@@ -669,9 +669,20 @@ export class BatchExecutionStack extends Stack {
     //
     // `dynamodb:transactWriteItems` を `CallAwsService` で呼び、runner の
     // `delete_heartbeat` と同じ「Delete + ConditionalAdd -1」を atomic に実行する。
-    // ConditionExpression `count > 0` で 0 未満への drift を防ぎ、ConditionCheck
-    // 失敗 (DynamoDB.TransactionCanceledException) は catch して握り潰す
-    // (runner が既に decrement 済みのケース = 二重 decrement を防止)。
+    //
+    // **二重 decrement 防止 (Codex H1 対応)**:
+    //   DDB の Delete は対象 item が存在しなくても成功してしまうため、
+    //   runner が `delete_heartbeat` を正常に呼んで heartbeat を消した後で
+    //   SFN の DeleteHeartbeat が走ると、Delete 側は no-op で success するが
+    //   Update 側 (`ACTIVE#COUNT -1`) は通り、結果として他バッチの分まで
+    //   減算してしまう。これを防ぐため、Delete 側に
+    //   `ConditionExpression: attribute_exists(lock_key)` を付け、heartbeat が
+    //   既に消えている場合は transaction 全体を `TransactionCanceledException`
+    //   で cancel させる。Update 側の `count > 0` ガードは 0 未満 drift 防止
+    //   のための独立した防御線として残す。
+    //
+    //   ConditionCheck 失敗は SFN 側で catch して握り潰すので、SFN 全体は
+    //   そのまま Done/Failed に進む (後段の addCatch を参照)。
     const buildDeleteHeartbeat = (id: string) =>
       new CallAwsService(this, id, {
         service: "dynamodb",
@@ -692,6 +703,10 @@ export class BatchExecutionStack extends Stack {
                     "S.$": "States.Format('BATCH_IN_FLIGHT#{}', $.batchJobId)",
                   },
                 },
+                // heartbeat が存在する時のみ Delete を実行する。runner が
+                // 既に削除済みの場合は ConditionCheck が失敗し、TransactWriteItems
+                // 全体が cancel される (= ACTIVE#COUNT も減算されない)。
+                ConditionExpression: "attribute_exists(lock_key)",
               },
             },
             {
