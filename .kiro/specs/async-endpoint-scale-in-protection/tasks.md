@@ -45,7 +45,7 @@
   - _Boundary: lambda/batch-runner/Dockerfile, lambda/batch-runner/tests/test_dockerfile_completeness.py_
 
 - [ ] 4. Integration: runner orchestration に publisher のライフサイクルを組み込む
-- [ ] 4.1 `runner.run_async_batch` で `AsyncInvoker` のライフサイクルに合わせて publisher を起動 / 停止する
+- [x] 4.1 `runner.run_async_batch` で `AsyncInvoker` のライフサイクルに合わせて publisher を起動 / 停止する
   - `AsyncInvoker` 構築直後に `InflightPublisher(endpoint_name=settings.endpoint_name, provider=invoker.inflight_count)` を生成し `publisher.start()` を呼ぶ
   - `await invoker.run_batch(...)` 呼び出しを `try/finally` で囲み、成功 / 例外 / deadline 切れのいずれでも `finally` 句で `publisher.stop()` を呼ぶ
   - publisher 起動失敗 (`Thread.start()` 等の例外) を `try/except` (`# noqa: BLE001 — ObservabilityOnly`) で吸収し、OCR バッチ本体の継続を妨げない
@@ -110,3 +110,4 @@
 - **Task 2.1 で発生した境界例外 (Dockerfile 1 行追加)**: `tests/test_dockerfile_completeness.py::test_every_source_module_is_copied` が top-level `*.py` を全スキャンして Dockerfile の `COPY` 列と突き合わせる動的検査を行うため、新規モジュール (`inflight_publisher.py`) 追加時は同一 commit で `COPY inflight_publisher.py .` を Dockerfile に追加しないと既存 pytest baseline が即 red になる。Task 3.1 の Dockerfile COPY 追加は 2.1 で完了済み。Task 3.1 は `tests/test_dockerfile_completeness.py` の `test_known_modules_are_present` parametrize list へのアンカー追加のみが残作業。
 - **Reviewer/Implementer subagent への指示**: 散文形式の status / verdict は parent の strict parser を通らない。`## Status Report` / `## Review Verdict` の見出し直下に `- STATUS: ...` / `- VERDICT: ...` の structured field block を必ず明示すること。
 - **Task 2.3 で発見した CDK 型定義の遅延**: `aws-cdk-lib` 2.240.0 (本リポジトリ使用バージョン) の `CfnScalingPolicy.TargetTrackingMetricStatProperty` 型が CFN spec の `Period` プロパティを未だ宣言していない。対処として `as CfnScalingPolicy.TargetTrackingMetricStatProperty` 型キャスト + `addPropertyOverride("...MetricStat.Period", 60)` の escape hatch を採用。`pnpm cdk synth` で `MetricStat.Period: 60` が CFN テンプレに正しく注入されることを目視確認済。CDK 型定義が CFN spec に追いついた段階で props 直接指定に戻すコメントを残してある。
+- **Task 4.1 で発生した境界例外 (`_FakeAsyncInvoker` 2 行追加)**: `runner.run_async_batch` 内で `provider=invoker.inflight_count` を直接渡す設計のため、既存 `tests/test_runner.py` の `_FakeAsyncInvoker` fixture に `def inflight_count(self) -> int: return 0` を追加しないと既存 27 件のテストが `AttributeError` で fail する。design.md は holder/closure 等の defensive wrapper を明確に reject しているため、fake 側で minimal な compat method を追加するのが正解。Task 5.3 は `_FakeAsyncInvoker` を spy/recorder 化するため、本 task の `return 0` 実装は 5.3 で置き換えられる前提。

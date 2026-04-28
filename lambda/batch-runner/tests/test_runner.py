@@ -74,7 +74,13 @@ class _FakeBatchResult:
 
 
 class _FakeAsyncInvoker:
-    """AsyncInvoker のテスト置換。__init__ と run_batch の引数を記録する。"""
+    """AsyncInvoker のテスト置換。__init__ と run_batch の引数を記録する。
+
+    Task 4.1 で ``runner.run_async_batch`` が ``InflightPublisher`` の
+    ``provider`` として ``invoker.inflight_count`` を直接参照するように
+    なったため、このフェイクにも同名メソッドを生やしている (戻り値 0 固定で
+    十分。本フェイクを使うテストは publisher の振る舞いを検証しない)。
+    """
 
     last_init: dict | None = None
     last_run: dict | None = None
@@ -85,6 +91,9 @@ class _FakeAsyncInvoker:
     async def run_batch(self, **kwargs):
         _FakeAsyncInvoker.last_run = kwargs
         return _FakeBatchResult()
+
+    def inflight_count(self) -> int:  # noqa: D401 — fake getter
+        return 0
 
 
 class TestRunAsyncBatch:

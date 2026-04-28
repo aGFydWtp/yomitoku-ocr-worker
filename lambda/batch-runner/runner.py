@@ -26,6 +26,7 @@ from yomitoku_client.models import correct_rotation_image  # type: ignore[import
 from yomitoku_client.utils import load_pdf  # type: ignore[import-not-found]
 
 from async_invoker import AsyncInvoker, BatchResult
+from inflight_publisher import InflightPublisher
 from settings import BatchRunnerSettings
 
 logger = logging.getLogger(__name__)
@@ -87,27 +88,57 @@ async def run_async_batch(
     )
 
     start = time.monotonic()
-    result = await invoker.run_batch(
-        batch_job_id=settings.batch_job_id,
-        input_files=input_files,
-        output_dir=Path(output_dir),
-        log_path=Path(log_path),
-        deadline_seconds=deadline,
-    )
-    elapsed = time.monotonic() - start
 
-    logger.info(
-        "run_async_batch complete",
-        extra={
-            "batch_job_id": settings.batch_job_id,
-            "file_count": file_count,
-            "succeeded": len(result.succeeded_files),
-            "failed": len(result.failed_files),
-            "timeout": len(result.in_flight_timeout),
-            "elapsed_sec": round(elapsed, 3),
-        },
+    # in-flight 数の CloudWatch カスタムメトリクス publisher を起動する
+    # (Task 4.1, R2.2 / R2.3 / R2.7 / R3.6)。
+    # provider には bound method ``invoker.inflight_count`` を直接渡すことで
+    # closure / holder を介さず ``AsyncInvoker`` のライフサイクルに揃える。
+    publisher = InflightPublisher(
+        endpoint_name=settings.endpoint_name,
+        provider=invoker.inflight_count,
     )
-    return result
+    try:
+        publisher.start()
+    except Exception:  # noqa: BLE001 — ObservabilityOnly
+        # publisher 起動失敗 (Thread.start() 例外等) は OCR バッチ本体の
+        # 継続を妨げない。旧来挙動 (= scale-in 抑止が機能しないだけで OCR は完走)
+        # に倒れるため、ログのみ残してそのまま処理を続行する (R2.7)。
+        logger.exception(
+            "inflight_publisher: start failed (non-fatal)"
+        )
+
+    try:
+        result = await invoker.run_batch(
+            batch_job_id=settings.batch_job_id,
+            input_files=input_files,
+            output_dir=Path(output_dir),
+            log_path=Path(log_path),
+            deadline_seconds=deadline,
+        )
+        elapsed = time.monotonic() - start
+
+        logger.info(
+            "run_async_batch complete",
+            extra={
+                "batch_job_id": settings.batch_job_id,
+                "file_count": file_count,
+                "succeeded": len(result.succeeded_files),
+                "failed": len(result.failed_files),
+                "timeout": len(result.in_flight_timeout),
+                "elapsed_sec": round(elapsed, 3),
+            },
+        )
+        return result
+    finally:
+        # 成功 / 例外 / deadline 切れのいずれでも publisher を停止する (R2.3)。
+        # publisher.stop() 自身は例外を投げない設計だが、防御的に try/except
+        # で囲み observability-only に倒す。
+        try:
+            publisher.stop()
+        except Exception:  # noqa: BLE001 — ObservabilityOnly
+            logger.exception(
+                "inflight_publisher: stop failed (non-fatal)"
+            )
 
 
 # -----------------------------------------------------------------------------
