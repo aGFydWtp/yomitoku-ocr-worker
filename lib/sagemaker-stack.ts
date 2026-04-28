@@ -20,6 +20,7 @@ import { type ITopic, Topic } from "aws-cdk-lib/aws-sns";
 import { SqsSubscription } from "aws-cdk-lib/aws-sns-subscriptions";
 import { type IQueue, Queue, QueueEncryption } from "aws-cdk-lib/aws-sqs";
 import {
+  Annotations,
   CfnOutput,
   Duration,
   Stack,
@@ -388,6 +389,21 @@ export class SagemakerStack extends Stack {
     //    Service-linked role `AWSServiceRoleForApplicationAutoScaling_SageMakerEndpoint`
     //    はアカウント初回利用時に AWS 側で自動作成される前提 (CDK 宣言は不要)。
     // -----------------------------------------------------------------------
+    // async-endpoint-scale-in-protection spec の前提崩れガード:
+    // `asyncMaxCapacity = 1` 前提下では (m1 + IF(m2>0, target, 0)) を per-instance
+    // utilization と等価とみなす設計。2 以上に引き上げる場合は per-instance 化された
+    // scale-in 保護に再設計する必要がある。CI 等で見落とさないよう synth 時に warning
+    // で表面化する (要件 4.4)。
+    if (asyncRuntime.asyncMaxCapacity > 1) {
+      Annotations.of(this).addWarning(
+        `async-endpoint-scale-in-protection: asyncMaxCapacity = ${asyncRuntime.asyncMaxCapacity} (>1) ` +
+          "では本 spec の TargetTracking math 式 (FILL(m1, 0) + IF(FILL(m2, 0) > 0, 5, 0)) が " +
+          "per-instance utilization と等価でなくなり scale-in 抑止が誤動作する。" +
+          ".kiro/specs/async-endpoint-scale-in-protection/ の design / tests を再評価し、" +
+          "per-instance 化されたポリシーへの再設計が必要。",
+      );
+    }
+
     const scalableTarget = new CfnScalableTarget(this, "AsyncScalableTarget", {
       serviceNamespace: "sagemaker",
       resourceId: `endpoint/${endpointName}/variant/AllTraffic`,
@@ -415,18 +431,79 @@ export class SagemakerStack extends Stack {
           // backlog per instance = 5 を越えたら scale-out。小さすぎると flapping、
           // 大きすぎると待ち時間悪化。PoC で調整する前提で保守的な初期値を設定。
           targetValue: 5,
-          customizedMetricSpecification: {
-            metricName: "ApproximateBacklogSizePerInstance",
-            namespace: "AWS/SageMaker",
-            statistic: "Average",
-            dimensions: [{ name: "EndpointName", value: endpointName }],
-          },
           scaleInCooldown: asyncRuntime.scaleInCooldownSeconds,
           scaleOutCooldown: 60,
+          customizedMetricSpecification: {
+            // 重要: 本 spec は asyncMaxCapacity = 1 前提で正しさが成立する。
+            // 2 以上に引き上げると (m1 + m2 floor saturation) が per-instance utilization と等価でなくなり
+            // scale-in 抑止が誤動作するため、async-endpoint-scale-in-protection spec を
+            // 再設計する必要がある (Revalidation Trigger)。
+            // NOTE: aws-cdk-lib 2.240.0 の `TargetTrackingMetricStatProperty` 型は
+            // CFN spec が後から追加した `Period` プロパティを未だ宣言していないため、
+            // `metricStat` レベルで型キャストして `period` を注入する。
+            // CFN テンプレ上は `MetricStat.Period` として正しく出力される。
+            metrics: [
+              {
+                id: "m1",
+                metricStat: {
+                  metric: {
+                    namespace: "AWS/SageMaker",
+                    metricName: "ApproximateBacklogSize",
+                    dimensions: [{ name: "EndpointName", value: endpointName }],
+                  },
+                  // SageMaker Async 系メトリクスは Sum を受理しない (公式: Average/Max/Min のみ)。
+                  // SageMaker が 1 分粒度で publish するため Average は Maximum と等価。
+                  stat: "Average",
+                  period: 60,
+                } as CfnScalingPolicy.TargetTrackingMetricStatProperty,
+                returnData: false,
+              },
+              {
+                id: "m2",
+                metricStat: {
+                  metric: {
+                    namespace: "Yomitoku/AsyncEndpoint",
+                    metricName: "InflightInvocations",
+                    dimensions: [{ name: "EndpointName", value: endpointName }],
+                  },
+                  // 複数 batch-runner task 並走時に同一 EndpointName dimension に
+                  // publish された値を合算する必要があるため Sum を採用 (R2.4)。
+                  stat: "Sum",
+                  period: 60,
+                } as CfnScalingPolicy.TargetTrackingMetricStatProperty,
+                returnData: false,
+              },
+              {
+                id: "e1",
+                // floor saturation: inflight>0 の間は出力を target=5 と同値以上に保つ。
+                // これにより in-flight 残存中の scale-in 判定を確実に阻止しつつ、
+                // scale-out は backlog 増加のみが駆動する。
+                // 注意: 式中の定数 5 は targetValue と同期している必要がある。
+                // `targetValue` を変更する場合はこの式の閾値も同時更新すること。
+                expression: "FILL(m1, 0) + IF(FILL(m2, 0) > 0, 5, 0)",
+                label: "BacklogPlusInflightFloor",
+                returnData: true,
+              },
+            ],
+          },
         },
       },
     );
     Tags.of(scalingPolicy).add("yomitoku:component", "autoscaling");
+    // aws-cdk-lib 2.240.0 の `TargetTrackingMetricStatProperty` 型は CFN spec の
+    // `Period` プロパティを未だ宣言しておらず、TypeScript レベルでは値を渡せても
+    // L1 コード生成器が unknown property として silently drop する。
+    // CDK 公式の escape hatch (`addPropertyOverride`) で MetricStat.Period を
+    // 直接 CFN テンプレに注入する。CDK 型定義が更新された段階で props 直接指定に
+    // 戻すこと (Revalidation Trigger)。
+    scalingPolicy.addPropertyOverride(
+      "TargetTrackingScalingPolicyConfiguration.CustomizedMetricSpecification.Metrics.0.MetricStat.Period",
+      60,
+    );
+    scalingPolicy.addPropertyOverride(
+      "TargetTrackingScalingPolicyConfiguration.CustomizedMetricSpecification.Metrics.1.MetricStat.Period",
+      60,
+    );
 
     // --------------------------------------------------------------
     // 7b. Scale-from-Zero bootstrap

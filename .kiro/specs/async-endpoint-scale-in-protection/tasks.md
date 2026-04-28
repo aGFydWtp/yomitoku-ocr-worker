@@ -26,7 +26,7 @@
   - _Requirements: 2.1, 3.6_
   - _Boundary: lambda/batch-runner/async_invoker.py_
 
-- [ ] 2.3 (P) `AsyncBacklogScalingPolicy` のターゲット追跡入力を floor saturation 形式の metric math 式に置き換え、`asyncMaxCapacity > 1` の synth 警告を組み込む
+- [x] 2.3 (P) `AsyncBacklogScalingPolicy` のターゲット追跡入力を floor saturation 形式の metric math 式に置き換え、`asyncMaxCapacity > 1` の synth 警告を組み込む
   - `customizedMetricSpecification` を `metrics: [...]` 配列構造に書き換え、`m1 = ApproximateBacklogSize (Average, 60s, EndpointName)`、`m2 = InflightInvocations (Sum, 60s, EndpointName)`、`e1 = FILL(m1, 0) + IF(FILL(m2, 0) > 0, 5, 0)` (label `BacklogPlusInflightFloor`, `ReturnData=true`) を定義する
   - `targetValue=5` / `scaleInCooldown=900` / `scaleOutCooldown=60` は不変で維持する。式中の閾値 `5` が `targetValue` と同期する旨を CDK コメントに明記する
   - `asyncRuntime.asyncMaxCapacity > 1` のときに `Annotations.of(this).addWarning("async-endpoint-scale-in-protection: ... 再設計が必要 ...")` を呼ぶガードロジックを Stack コンストラクタに追加する
@@ -109,3 +109,4 @@
 
 - **Task 2.1 で発生した境界例外 (Dockerfile 1 行追加)**: `tests/test_dockerfile_completeness.py::test_every_source_module_is_copied` が top-level `*.py` を全スキャンして Dockerfile の `COPY` 列と突き合わせる動的検査を行うため、新規モジュール (`inflight_publisher.py`) 追加時は同一 commit で `COPY inflight_publisher.py .` を Dockerfile に追加しないと既存 pytest baseline が即 red になる。Task 3.1 の Dockerfile COPY 追加は 2.1 で完了済み。Task 3.1 は `tests/test_dockerfile_completeness.py` の `test_known_modules_are_present` parametrize list へのアンカー追加のみが残作業。
 - **Reviewer/Implementer subagent への指示**: 散文形式の status / verdict は parent の strict parser を通らない。`## Status Report` / `## Review Verdict` の見出し直下に `- STATUS: ...` / `- VERDICT: ...` の structured field block を必ず明示すること。
+- **Task 2.3 で発見した CDK 型定義の遅延**: `aws-cdk-lib` 2.240.0 (本リポジトリ使用バージョン) の `CfnScalingPolicy.TargetTrackingMetricStatProperty` 型が CFN spec の `Period` プロパティを未だ宣言していない。対処として `as CfnScalingPolicy.TargetTrackingMetricStatProperty` 型キャスト + `addPropertyOverride("...MetricStat.Period", 60)` の escape hatch を採用。`pnpm cdk synth` で `MetricStat.Period: 60` が CFN テンプレに正しく注入されることを目視確認済。CDK 型定義が CFN spec に追いついた段階で props 直接指定に戻すコメントを残してある。
