@@ -1355,3 +1355,249 @@ class TestNewNamingConvention:
         assert not (output_dir / f"{safe_stem}.json").exists(), (
             "should not persist using SHA-1 hashed stem path"
         )
+
+
+# --------------------------------------------------------------------------
+# async-endpoint-scale-in-protection Task 5.2:
+# AsyncInvoker.inflight_count() の振る舞いテスト (R2.1, R3.6)
+#
+# 設計参照: design.md > Components and Interfaces > AsyncInvoker.inflight_count
+# (Service Interface, Implementation Notes) および Testing Strategy > Unit Tests
+# 5 件目 (test_inflight_count_reflects_in_flight_dict)。
+#
+# - Case 1: 初期 0 → run_batch 完走後 0 (finally clear の動作確認)
+# - Case 2: run_batch 中の遷移を `_drain_queue` spy で観測し、Phase A 後に
+#   max_concurrent 上限相当の値が読めること、Phase B 終了で 0 に戻ることを assert
+# - Case 3: deadline 切れ経路でも最終的に 0 に戻ること (in_flight_timeout の
+#   非空で「途中は非ゼロだった」事実も同時に証明)
+# - Case 4: getter 呼び出しで `_in_flight` dict が再生成・改変されないこと
+# --------------------------------------------------------------------------
+
+
+def test_inflight_count_starts_at_zero_and_clears_after_run_batch(
+    full_aws_env, tmp_path: Path
+) -> None:
+    """`inflight_count()` の初期値が 0 で、`run_batch` 完走後にも 0 に戻る (R2.1, R3.6).
+
+    `run_batch` の `finally: self._in_flight.clear()` が確実に実行され、
+    publisher が次回参照したときに残骸を観測しないことを保証する。
+    """
+    env = full_aws_env
+    invoker = _make_invoker(env, max_concurrent=2)
+
+    # 初期状態: まだ何も invoke していない
+    assert invoker.inflight_count() == 0
+
+    file_ok = _write_input(tmp_path, "ok.pdf")
+    _put_dummy_output(env["s3"], "ok")
+    env["sqs"].send_message(
+        QueueUrl=env["success_url"],
+        MessageBody=_sns_wrap(_success_body(f"{BATCH_JOB_ID}:ok")),
+    )
+
+    stubber = env["stubber"]
+    stubber.add_response(
+        "invoke_endpoint_async",
+        {"InferenceId": f"{BATCH_JOB_ID}:ok", "OutputLocation": "s3://x/y"},
+    )
+    stubber.activate()
+
+    result = asyncio.run(
+        invoker.run_batch(
+            batch_job_id=BATCH_JOB_ID,
+            input_files=[file_ok],
+            output_dir=tmp_path / "out",
+            log_path=tmp_path / "out" / "process_log.jsonl",
+            deadline_seconds=30.0,
+        )
+    )
+
+    # 正常完走の sanity check
+    assert result.succeeded_files == ["ok"]
+    # finally 句で `_in_flight.clear()` が呼ばれているため 0 に戻る
+    assert invoker.inflight_count() == 0
+    stubber.assert_no_pending_responses()
+
+
+def test_inflight_count_reflects_in_flight_during_run_batch(
+    full_aws_env, tmp_path: Path
+) -> None:
+    """`run_batch` 中に `inflight_count()` が `_in_flight` dict の状態に追従する (R2.1).
+
+    `_drain_queue` 呼び出し時点の `inflight_count()` を spy で記録し、
+    - 1 回目の drain (success queue) 直前: Phase A で全 N 件 invoke 済 → N
+    - drain 完了後: 通知受信で _in_flight から削除されている → 0
+    という 2 段階の遷移を観測する。
+    """
+    env = full_aws_env
+    invoker = _make_invoker(env, max_concurrent=4)
+
+    files = [_write_input(tmp_path, f"{stem}.pdf") for stem in ("a", "b", "c")]
+
+    # 3 ファイル分の Success メッセージ + outputLocation を事前投入
+    for stem in ("a", "b", "c"):
+        _put_dummy_output(env["s3"], stem)
+        env["sqs"].send_message(
+            QueueUrl=env["success_url"],
+            MessageBody=_sns_wrap(_success_body(f"{BATCH_JOB_ID}:{stem}")),
+        )
+
+    stubber = env["stubber"]
+    for stem in ("a", "b", "c"):
+        stubber.add_response(
+            "invoke_endpoint_async",
+            {"InferenceId": f"{BATCH_JOB_ID}:{stem}", "OutputLocation": "s3://x/y"},
+        )
+    stubber.activate()
+
+    # `_drain_queue` を spy 化し、呼び出し前後の inflight_count を記録する。
+    # `(queue_url, before, after)` のタプル列を `observations` に積む。
+    observations: list[tuple[str, int, int]] = []
+    original_drain = invoker._drain_queue
+
+    def spy_drain(*, queue_url: str, **kwargs: Any) -> None:
+        before = invoker.inflight_count()
+        original_drain(queue_url=queue_url, **kwargs)
+        after = invoker.inflight_count()
+        observations.append((queue_url, before, after))
+
+    invoker._drain_queue = spy_drain  # type: ignore[method-assign]
+
+    result = asyncio.run(
+        invoker.run_batch(
+            batch_job_id=BATCH_JOB_ID,
+            input_files=files,
+            output_dir=tmp_path / "out",
+            log_path=tmp_path / "out" / "process_log.jsonl",
+            deadline_seconds=30.0,
+        )
+    )
+
+    # 正常完走の sanity check
+    assert sorted(result.succeeded_files) == ["a", "b", "c"]
+
+    # 少なくとも 1 回は `_drain_queue` が呼ばれている (Phase B が走った証跡)
+    assert len(observations) >= 1, (
+        f"_drain_queue should be invoked at least once: observations={observations}"
+    )
+
+    # 最初の drain 呼び出しは success queue 向け (run_batch 内の順序)。
+    # Phase A で 3 件 invoke 済なので before = 3。
+    first_url, first_before, first_after = observations[0]
+    assert first_url == env["success_url"]
+    assert first_before == 3, (
+        f"inflight_count() before first drain should be 3 (Phase A invoked all): "
+        f"got {first_before}; observations={observations}"
+    )
+    # success drain が 3 件全部受信して in_flight から削除する
+    assert first_after == 0, (
+        f"inflight_count() after success drain should be 0 (all notifications "
+        f"consumed): got {first_after}; observations={observations}"
+    )
+
+    # 全観測値が `inflight_count()` の契約 (>= 0、max_concurrent 以下) を満たす
+    for queue_url, before, after in observations:
+        assert 0 <= before <= invoker.max_concurrent, (
+            f"inflight_count() out of bounds: before={before}, "
+            f"max_concurrent={invoker.max_concurrent}"
+        )
+        assert 0 <= after <= invoker.max_concurrent, (
+            f"inflight_count() out of bounds: after={after}, "
+            f"max_concurrent={invoker.max_concurrent}"
+        )
+
+    stubber.assert_no_pending_responses()
+
+
+def test_inflight_count_after_deadline_timeout_returns_zero(
+    full_aws_env, tmp_path: Path
+) -> None:
+    """deadline 切れ経路でも `inflight_count()` は最終的に 0 に戻る (R2.1, R3.6).
+
+    `run_batch` の `finally: self._in_flight.clear()` は正常終了経路だけでなく
+    deadline 超過経路 (= 通知未受信のまま break) でも実行される必要がある。
+    `result.in_flight_timeout` が非空であることで「途中は非ゼロだった」事実を
+    間接的に証明し、その上で `inflight_count() == 0` を確認することで
+    「途中は値あり / 終了時には clear」の二段の動作を 1 ケースで検証する。
+    """
+    env = full_aws_env
+    invoker = _make_invoker(env, max_concurrent=2)
+
+    file_a = _write_input(tmp_path, "a.pdf")
+    file_b = _write_input(tmp_path, "b.pdf")
+
+    # 通知メッセージは投入しない。deadline_seconds を極小にして即時タイムアウト。
+    stubber = env["stubber"]
+    for stem in ("a", "b"):
+        stubber.add_response(
+            "invoke_endpoint_async",
+            {"InferenceId": f"{BATCH_JOB_ID}:{stem}", "OutputLocation": "s3://x/y"},
+        )
+    stubber.activate()
+
+    result = asyncio.run(
+        invoker.run_batch(
+            batch_job_id=BATCH_JOB_ID,
+            input_files=[file_a, file_b],
+            output_dir=tmp_path / "out",
+            log_path=tmp_path / "out" / "process_log.jsonl",
+            deadline_seconds=0.1,
+        )
+    )
+
+    # 中間時点では in-flight が 2 件あったことを result 経由で間接的に確認
+    assert sorted(result.in_flight_timeout) == ["a", "b"]
+    assert result.succeeded_files == []
+    assert result.failed_files == []
+
+    # finally 句経由で必ず 0 に clear されている (R3.6: 終了後の永続的な過大値は不可)
+    assert invoker.inflight_count() == 0
+    stubber.assert_no_pending_responses()
+
+
+def test_inflight_count_does_not_mutate_in_flight_dict() -> None:
+    """`inflight_count()` 呼び出しで `_in_flight` dict が再生成も改変もされない (R3.6).
+
+    - `id(invoker._in_flight)` が呼び出し前後で同一 (= dict object が差し替わらない)
+    - `_in_flight` の中身も呼び出し前後で同一
+    の 2 段で「getter は read-only である」ことを厳密に証明する。
+
+    本テストは AsyncInvoker の生成のみで AWS service を一切呼ばないため
+    fixture 不要。`_in_flight` 属性に直接テスト用 entry を入れて観測する。
+    """
+    invoker = AsyncInvoker(
+        endpoint_name="yomitoku-async",
+        input_bucket=BUCKET,
+        input_prefix=INPUT_PREFIX,
+        output_bucket=BUCKET,
+        success_queue_url="https://sqs.invalid/success",
+        failure_queue_url="https://sqs.invalid/failure",
+        max_concurrent=2,
+    )
+
+    # 白箱: テスト目的で直接 `_in_flight` に entry を仕込む。
+    # 本番経路 (`run_batch` 内の Phase A) で行われる代入と同等の操作。
+    invoker._in_flight["batch-x:alpha"] = "alpha"
+    invoker._in_flight["batch-x:beta"] = "beta"
+    invoker._in_flight["batch-x:gamma"] = "gamma"
+
+    expected_id = id(invoker._in_flight)
+    expected_snapshot = dict(invoker._in_flight)
+
+    # `inflight_count()` を複数回呼んでも dict object も中身も変化しない
+    for _ in range(5):
+        count = invoker.inflight_count()
+        assert count == 3, (
+            f"inflight_count() should reflect current dict size: got {count}"
+        )
+        assert id(invoker._in_flight) == expected_id, (
+            "inflight_count() must not replace the _in_flight dict object"
+        )
+        assert invoker._in_flight == expected_snapshot, (
+            "inflight_count() must not mutate _in_flight contents"
+        )
+
+    # 念のため後続: 1 件削除しても getter 経由で同期的に観測できる
+    del invoker._in_flight["batch-x:beta"]
+    assert invoker.inflight_count() == 2
+    assert id(invoker._in_flight) == expected_id

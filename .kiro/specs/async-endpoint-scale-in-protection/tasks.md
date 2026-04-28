@@ -66,7 +66,7 @@
   - _Requirements: 1.3, 2.1, 2.2, 2.3, 2.5, 2.6, 2.7_
   - _Boundary: lambda/batch-runner/tests/test_inflight_publisher.py_
 
-- [ ] 5.2 (P) `AsyncInvoker.inflight_count` の振る舞いテストを既存テストファイルに追加する
+- [x] 5.2 (P) `AsyncInvoker.inflight_count` の振る舞いテストを既存テストファイルに追加する
   - invoke 直後に `inflight_count()` が増え、`_drain_queue` で通知受信した分だけ減ることを既存 fixture (`full_aws_env`) を使って assert する
   - deadline 切れで残った in-flight 件数も `inflight_count()` で読めることを assert する (timeout reaper の前後)
   - getter が `_in_flight` の中身を改変しないことを副次的に assert する (呼び出し前後で dict id が変わらない)
