@@ -197,11 +197,17 @@ class TestVerifyInputParity:
 
 class TestUploadOutputs:
     def _make_output_tree(self, output_dir: Path) -> None:
-        """yomitoku-client が生成するような出力ツリーを作成する。"""
-        # 結果 JSON
-        (output_dir / "sample_0.json").write_text(json.dumps({"pages": []}))
-        (output_dir / "sample_1.json").write_text(json.dumps({"pages": []}))
-        # 追加フォーマット
+        """yomitoku-client が生成するような出力ツリーを作成する。
+
+        メイン JSON は新仕様 (R1.1: {原本ファイル名}.json) で命名:
+          sample_0.pdf → sample_0.pdf.json
+          sample_1.pdf → sample_1.pdf.json
+        追加フォーマット (.md / .csv / .html / .pdf) は yomitoku-client 規約のまま。
+        """
+        # 結果 JSON (新仕様)
+        (output_dir / "sample_0.pdf.json").write_text(json.dumps({"pages": []}))
+        (output_dir / "sample_1.pdf.json").write_text(json.dumps({"pages": []}))
+        # 追加フォーマット (yomitoku-client 規約)
         (output_dir / "sample_0.md").write_text("# title")
         (output_dir / "sample_0.csv").write_text("a,b,c")
         (output_dir / "sample_0.html").write_text("<p>x</p>")
@@ -228,7 +234,7 @@ class TestUploadOutputs:
         )
 
         # カテゴリ別件数
-        assert result["output"] == 2  # sample_0.json, sample_1.json
+        assert result["output"] == 2  # sample_0.pdf.json, sample_1.pdf.json
         assert result["results"] == 4  # md, csv, html, pdf
         assert result["visualizations"] == 2  # 2 jpgs
         assert result["logs"] == 1  # process_log.jsonl
@@ -238,8 +244,8 @@ class TestUploadOutputs:
             Bucket=BUCKET, Prefix=f"batches/{BATCH_ID}/"
         )
         keys = sorted(obj["Key"] for obj in listed.get("Contents", []))
-        assert f"batches/{BATCH_ID}/output/sample_0.json" in keys
-        assert f"batches/{BATCH_ID}/output/sample_1.json" in keys
+        assert f"batches/{BATCH_ID}/output/sample_0.pdf.json" in keys
+        assert f"batches/{BATCH_ID}/output/sample_1.pdf.json" in keys
         assert f"batches/{BATCH_ID}/results/sample_0.md" in keys
         assert f"batches/{BATCH_ID}/results/sample_0.csv" in keys
         assert f"batches/{BATCH_ID}/results/sample_0.html" in keys
@@ -275,7 +281,7 @@ class TestUploadOutputs:
         (output_dir / "process_log.jsonl").write_text("{}\n")
         (output_dir / "sample.jpg").write_bytes(b"\xff\xd8")
         (output_dir / "sample.md").write_text("# x")
-        (output_dir / "sample.json").write_text("{}")
+        (output_dir / "sample.pdf.json").write_text("{}")
 
         import s3_sync
 
@@ -300,4 +306,4 @@ class TestUploadOutputs:
             "batch-content-type": "result"
         }
         # output/*.json はタグなし (長期保持)
-        assert _tags(f"batches/{BATCH_ID}/output/sample.json") == {}
+        assert _tags(f"batches/{BATCH_ID}/output/sample.pdf.json") == {}

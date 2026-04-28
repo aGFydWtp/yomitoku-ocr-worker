@@ -20,7 +20,7 @@ class TestReadProcessLog:
             json.dumps({
                 "timestamp": "2026-04-22T10:00:00Z",
                 "file_path": "/tmp/input/a.pdf",
-                "output_path": "/tmp/output/a.json",
+                "output_path": "/tmp/output/a.pdf.json",
                 "dpi": 200,
                 "executed": True,
                 "success": True,
@@ -41,7 +41,7 @@ class TestReadProcessLog:
         assert entries[0].filename == "a.pdf"
         assert entries[0].success is True
         assert entries[0].dpi == 200
-        assert entries[0].output_path == "/tmp/output/a.json"
+        assert entries[0].output_path == "/tmp/output/a.pdf.json"
         assert entries[1].filename == "b.pdf"
         assert entries[1].success is False
         assert entries[1].error == "SageMaker timeout"
@@ -96,7 +96,7 @@ class TestReadProcessLog:
             json.dumps({
                 "timestamp": "2026-04-22T10:00:00Z",
                 "file_path": "/tmp/input/old.pdf",
-                "output_path": "/tmp/output/old.json",
+                "output_path": "/tmp/output/old.pdf.json",
                 "dpi": 200,
                 "executed": True,
                 "success": True,

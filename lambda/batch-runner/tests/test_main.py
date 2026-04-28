@@ -415,6 +415,171 @@ class TestOfficeConversionPhase:
         assert called["delete_objects"] == 0
 
 
+class TestFilenameMapPropagation:
+    """Task 3.1: main.py が local_to_original / original_to_local を下流 3 箇所に注入する。
+
+    Design.md > Components > main.py orchestrator > Implementation Notes (案 A):
+        - `office_converter.build_filename_maps(convert_result)` で両 map を 1 箇所で
+          原子的に構築する (Drift 防止 / SSOT)
+        - `run_async_batch(local_to_original=local_to_original)`
+        - `generate_all_visualizations(original_to_local=original_to_local)`
+        - `apply_process_log(converted_filename_map=local_to_original)` (引数名は維持、
+          value のみ pdf_to_original → local_to_original にリネーム / Bug 001 互換維持)
+
+    PDF only バッチ (`is_office_format` がいずれも False) では convert_office_files が
+    呼ばれず、両 map は空 dict のまま下流に渡され identity 解決される (R5.3 維持)。
+    """
+
+    def test_pdf_only_batch_passes_empty_maps_to_downstream(
+        self, monkeypatch: pytest.MonkeyPatch, patched_main
+    ):
+        """PDF only バッチでは local_to_original / original_to_local とも空 dict が
+        run_async_batch / generate_all_visualizations / apply_process_log に届く。"""
+        main_module, rec = patched_main
+        # 既定の patched_main は PDF 2 件 (a.pdf, b.pdf) をダウンロードする
+
+        assert main_module.main() == 0
+
+        run_async_kw = next(c for c in rec.calls if c[0] == "run_async_batch")[1]
+        viz_kw = next(c for c in rec.calls if c[0] == "generate_all_visualizations")[1]
+        apply_kw = next(c for c in rec.calls if c[0] == "apply_process_log")[1]
+
+        assert run_async_kw.get("local_to_original") == {}, (
+            "PDF only batch must pass empty local_to_original to run_async_batch"
+        )
+        assert viz_kw.get("original_to_local") == {}, (
+            "PDF only batch must pass empty original_to_local to generate_all_visualizations"
+        )
+        assert apply_kw.get("converted_filename_map") == {}, (
+            "PDF only batch must pass empty converted_filename_map to apply_process_log"
+        )
+
+    def test_mixed_batch_propagates_both_maps_to_three_callsites(
+        self, monkeypatch: pytest.MonkeyPatch, patched_main, tmp_path: Path
+    ):
+        """混在バッチで両 map が各 callsite に届き、互いに逆引き関係である。"""
+        main_module, rec = patched_main
+
+        # downloaded を mixed (PDF + 2 種類の Office) に差し替え
+        monkeypatch.setattr(
+            main_module, "download_inputs",
+            lambda **kw: (
+                rec.record("download_inputs")(**kw),
+                [
+                    "batches/x/input/a.pdf",
+                    "batches/x/input/deck.pptx",
+                    "batches/x/input/report.docx",
+                ],
+            )[1],
+        )
+
+        # convert_office_files: 2 件成功 (deck.pptx → deck.pdf, report.docx → report.pdf)
+        # 1 件変換失敗 (broken.xlsx)
+        broken_path = tmp_path / "input" / "broken.xlsx"
+
+        def _fake_convert(input_dir, **kwargs):
+            rec.calls.append(("convert_office_files", {"input_dir": input_dir, **kwargs}))
+            return SimpleNamespace(
+                succeeded=[
+                    SimpleNamespace(
+                        original_path=Path(input_dir) / "deck.pptx",
+                        pdf_path=Path(input_dir) / "deck.pdf",
+                    ),
+                    SimpleNamespace(
+                        original_path=Path(input_dir) / "report.docx",
+                        pdf_path=Path(input_dir) / "report.pdf",
+                    ),
+                ],
+                failed=[
+                    SimpleNamespace(
+                        original_path=broken_path,
+                        reason="encrypted",
+                        detail="encrypted: broken.xlsx",
+                    )
+                ],
+            )
+
+        monkeypatch.setattr(main_module, "convert_office_files", _fake_convert)
+
+        assert main_module.main() == 0
+
+        run_async_kw = next(c for c in rec.calls if c[0] == "run_async_batch")[1]
+        viz_kw = next(c for c in rec.calls if c[0] == "generate_all_visualizations")[1]
+        apply_kw = next(c for c in rec.calls if c[0] == "apply_process_log")[1]
+
+        expected_local_to_original = {
+            "deck.pdf": "deck.pptx",
+            "report.pdf": "report.docx",
+        }
+        expected_original_to_local = {
+            "deck.pptx": "deck.pdf",
+            "report.docx": "report.pdf",
+        }
+
+        assert run_async_kw.get("local_to_original") == expected_local_to_original, (
+            "run_async_batch must receive local_to_original "
+            "(converted_pdf_basename → original_office_filename)"
+        )
+        assert viz_kw.get("original_to_local") == expected_original_to_local, (
+            "generate_all_visualizations must receive original_to_local "
+            "(original_office_filename → converted_pdf_basename)"
+        )
+        # apply_process_log は引数名 converted_filename_map を維持し、value は
+        # local_to_original を流用 (Bug 001 互換)
+        assert apply_kw.get("converted_filename_map") == expected_local_to_original, (
+            "apply_process_log must receive converted_filename_map=local_to_original "
+            "(arg name preserved, value swapped from pdf_to_original)"
+        )
+
+        # 両 map は完全な逆引き関係であること (Drift 防止 invariant)
+        local_to_original = run_async_kw["local_to_original"]
+        original_to_local = viz_kw["original_to_local"]
+        assert all(
+            local_to_original[v] == k for k, v in original_to_local.items()
+        ), (
+            "local_to_original and original_to_local must be perfect bijection "
+            "(SSOT invariant: build_filename_maps)"
+        )
+
+    def test_mixed_batch_no_office_failures_still_propagates_maps(
+        self, monkeypatch: pytest.MonkeyPatch, patched_main
+    ):
+        """変換失敗 0 件 / 成功 1 件のケースでも map が propagate される。"""
+        main_module, rec = patched_main
+
+        monkeypatch.setattr(
+            main_module, "download_inputs",
+            lambda **kw: (
+                rec.record("download_inputs")(**kw),
+                ["batches/x/input/deck.pptx"],
+            )[1],
+        )
+
+        def _fake_convert(input_dir, **kwargs):
+            rec.calls.append(("convert_office_files", {"input_dir": input_dir, **kwargs}))
+            return SimpleNamespace(
+                succeeded=[
+                    SimpleNamespace(
+                        original_path=Path(input_dir) / "deck.pptx",
+                        pdf_path=Path(input_dir) / "deck.pdf",
+                    )
+                ],
+                failed=[],
+            )
+
+        monkeypatch.setattr(main_module, "convert_office_files", _fake_convert)
+
+        assert main_module.main() == 0
+
+        run_async_kw = next(c for c in rec.calls if c[0] == "run_async_batch")[1]
+        viz_kw = next(c for c in rec.calls if c[0] == "generate_all_visualizations")[1]
+        apply_kw = next(c for c in rec.calls if c[0] == "apply_process_log")[1]
+
+        assert run_async_kw.get("local_to_original") == {"deck.pdf": "deck.pptx"}
+        assert viz_kw.get("original_to_local") == {"deck.pptx": "deck.pdf"}
+        assert apply_kw.get("converted_filename_map") == {"deck.pdf": "deck.pptx"}
+
+
 class TestAppendConversionFailuresHelper:
     """_append_conversion_failures_to_log の単体検証。"""
 
@@ -742,20 +907,31 @@ class TestEndToEndMixedBatch:
             # --- run_async_batch: a.pdf, deck.pdf を OCR success として
             # process_log.jsonl に直接書く。yomitoku-client が同じ log_path に追記する
             # 振る舞いを模倣 (CONVERSION_FAILED 行は main.py が先に書いている)。
+            #
+            # 新仕様 (result-filename-extension-preservation): persist パスは
+            # async_invoker が `local_to_original.get(file_path.name, file_path.name)`
+            # で解決するため、PDF native は `{name}.pdf.json`、変換後 PDF は
+            # 原本 Office 名 `{name}.pptx.json` で保存される。本 mock は
+            # async_invoker の実挙動を模擬する。
             async def _fake_run_async(**kwargs):
                 log_path = Path(kwargs["log_path"])
                 input_dir = Path(kwargs["input_dir"])
                 output_dir = Path(kwargs["output_dir"])
                 output_dir.mkdir(parents=True, exist_ok=True)
+                local_to_original = kwargs.get("local_to_original") or {}
                 # OCR 成功 PDF (a.pdf, 変換後 deck.pdf) の log エントリを追記する。
                 # CONVERSION_FAILED 行は main.py の _append_conversion_failures_to_log で
                 # 既に書かれているため、ここでは success 2 行のみ追記。
                 with log_path.open("a", encoding="utf-8") as fp:
-                    for stem in ("a", "deck"):
+                    for local_basename in ("a.pdf", "deck.pdf"):
+                        # 新仕様: output_filename = local_to_original.get(name, name)
+                        output_filename = local_to_original.get(
+                            local_basename, local_basename
+                        )
                         fp.write(json.dumps({
                             "timestamp": "2026-04-22T09:10:00.000+00:00",
-                            "file_path": str(input_dir / f"{stem}.pdf"),
-                            "output_path": str(output_dir / f"{stem}.json"),
+                            "file_path": str(input_dir / local_basename),
+                            "output_path": str(output_dir / f"{output_filename}.json"),
                             "dpi": 200,
                             "executed": True,
                             "success": True,
@@ -811,6 +987,11 @@ class TestEndToEndMixedBatch:
             assert a_item["status"] == "COMPLETED"
             assert "errorCategory" not in a_item
             assert "errorMessage" not in a_item
+            # 新仕様 (R1.1): native PDF も拡張子保持 → a.pdf.json
+            assert a_item.get("resultKey", "").endswith("/a.pdf.json"), (
+                "resultKey は native PDF でも拡張子保持: a.pdf.json のはず "
+                f"(実 {a_item.get('resultKey')})"
+            )
 
             # Bug 001 fix: deck.pptx (変換成功 → OCR success) は **deck.pptx 名のまま**
             # COMPLETED に更新される (apply_process_log が converted_filename_map で
@@ -826,9 +1007,12 @@ class TestEndToEndMixedBatch:
             )
             assert "errorCategory" not in deck_pptx_item
             assert "errorMessage" not in deck_pptx_item
-            # resultKey は変換後 PDF stem ベース (= deck.json) を指すこと
-            assert deck_pptx_item.get("resultKey", "").endswith("/deck.json"), (
-                f"resultKey は deck.json を指すはず: {deck_pptx_item.get('resultKey')}"
+            # 新仕様 (R1.2): resultKey は原本 Office 名 + ".json" 終端
+            # (deck.pptx → batches/{id}/output/deck.pptx.json)。
+            # 旧仕様 ({stem}.json = deck.json) からの変更点。
+            assert deck_pptx_item.get("resultKey", "").endswith("/deck.pptx.json"), (
+                "resultKey は deck.pptx.json (原本 Office 名 + .json) を指すはず: "
+                f"{deck_pptx_item.get('resultKey')}"
             )
 
             # Bug 001 fix: deck.pdf 名で phantom FILE 行が作られていないこと
@@ -952,12 +1136,18 @@ class TestEndToEndMixedBatch:
                 output_dir = Path(kwargs["output_dir"])
                 output_dir.mkdir(parents=True, exist_ok=True)
                 input_dir = Path(kwargs["input_dir"])
+                local_to_original = kwargs.get("local_to_original") or {}
+                # 新仕様: PDF のみバッチ → local_to_original は空 dict なので
+                # output_filename = identity ({name}.pdf)
                 with log_path.open("a", encoding="utf-8") as fp:
-                    for stem in ("a", "b"):
+                    for local_basename in ("a.pdf", "b.pdf"):
+                        output_filename = local_to_original.get(
+                            local_basename, local_basename
+                        )
                         fp.write(json.dumps({
                             "timestamp": "2026-04-22T09:10:00.000+00:00",
-                            "file_path": str(input_dir / f"{stem}.pdf"),
-                            "output_path": str(output_dir / f"{stem}.json"),
+                            "file_path": str(input_dir / local_basename),
+                            "output_path": str(output_dir / f"{output_filename}.json"),
                             "dpi": 200,
                             "executed": True,
                             "success": True,
@@ -976,6 +1166,18 @@ class TestEndToEndMixedBatch:
                 f"PDF only バッチで convert_office_files が {convert_calls['n']} 回呼ばれた "
                 "(R7.1 違反)"
             )
+
+            # PDF only バッチでは両 map が空 dict のまま下流に伝わり、
+            # native PDF identity 解決により resultKey は {name}.pdf.json になる (R5.3)
+            for fn in ("a.pdf", "b.pdf"):
+                item = table.get_item(Key={
+                    "PK": f"BATCH#{_E2E_BATCH_ID}",
+                    "SK": f"FILE#batches/{_E2E_BATCH_ID}/input/{fn}",
+                })["Item"]
+                assert item.get("resultKey", "").endswith(f"/{fn}.json"), (
+                    f"native PDF resultKey は {fn}.json (拡張子保持) のはず: "
+                    f"{item.get('resultKey')}"
+                )
 
             # META.status は COMPLETED (混在無し / 全件成功 / failed=0)
             meta = table.get_item(Key={

@@ -113,7 +113,8 @@ const MOCK_BATCH_WITH_FILES = {
       fileKey: "batches/00000000-0000-4000-8000-000000000001/input/a.pdf",
       filename: "a.pdf",
       status: "COMPLETED" as const,
-      resultKey: "batches/00000000-0000-4000-8000-000000000001/output/a.json",
+      resultKey:
+        "batches/00000000-0000-4000-8000-000000000001/output/a.pdf.json",
       updatedAt: "2026-04-22T00:10:00Z",
     },
     {

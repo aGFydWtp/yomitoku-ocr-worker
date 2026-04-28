@@ -42,6 +42,7 @@ from office_converter import (
     ConvertedFile,
     ConvertFailure,
     ConvertResult,
+    build_filename_maps,
     convert_office_files,
     convert_office_to_pdf,
     is_office_format,
@@ -710,3 +711,90 @@ class TestConvertOfficeFiles:
             )
         # office files = 4
         assert len(result.succeeded) + len(result.failed) == 4
+
+
+# ---------------------------------------------------------------------------
+# build_filename_maps (Task 1.1: result-filename-extension-preservation)
+# ---------------------------------------------------------------------------
+
+
+class TestBuildFilenameMaps:
+    """`build_filename_maps(convert_result)` ヘルパ関数のテスト。
+
+    Single Source of Truth (design 案 A) として `ConvertResult` から双方向の
+    filename マップ `(local_to_original, original_to_local)` を 1 箇所で
+    原子的に構築することを保証する。
+    """
+
+    def test_single_converted_file_builds_bidirectional_maps(self) -> None:
+        """単一 ConvertedFile から両 map が正しく構築される (R1.2, R1.3, R2.2, R2.3)。"""
+        convert_result = ConvertResult(
+            succeeded=[
+                ConvertedFile(
+                    original_path=Path("/in/deck.pptx"),
+                    pdf_path=Path("/in/deck.pdf"),
+                ),
+            ],
+            failed=[],
+        )
+
+        local_to_original, original_to_local = build_filename_maps(convert_result)
+
+        assert local_to_original == {"deck.pdf": "deck.pptx"}
+        assert original_to_local == {"deck.pptx": "deck.pdf"}
+
+    def test_multiple_converted_files_form_complete_inverse_relationship(self) -> None:
+        """複数 ConvertedFile で両 map が完全な逆引き関係を満たす (R1.2, R1.3, R2.2, R2.3)。
+
+        design Testing Strategy #7 invariant:
+            all(local_to_original[v] == k for k, v in original_to_local.items())
+        """
+        convert_result = ConvertResult(
+            succeeded=[
+                ConvertedFile(
+                    original_path=Path("/in/deck.pptx"),
+                    pdf_path=Path("/in/deck.pdf"),
+                ),
+                ConvertedFile(
+                    original_path=Path("/in/report.docx"),
+                    pdf_path=Path("/in/report.pdf"),
+                ),
+                ConvertedFile(
+                    original_path=Path("/in/sheet.xlsx"),
+                    pdf_path=Path("/in/sheet.pdf"),
+                ),
+            ],
+            failed=[],
+        )
+
+        local_to_original, original_to_local = build_filename_maps(convert_result)
+
+        # 期待値: 各エントリが原本ファイル名 ↔ 変換後 PDF basename の双方向対応
+        assert local_to_original == {
+            "deck.pdf": "deck.pptx",
+            "report.pdf": "report.docx",
+            "sheet.pdf": "sheet.xlsx",
+        }
+        assert original_to_local == {
+            "deck.pptx": "deck.pdf",
+            "report.docx": "report.pdf",
+            "sheet.xlsx": "sheet.pdf",
+        }
+        # invariant: 完全な逆引き関係 (entry 数同一・bidirectional)
+        assert len(local_to_original) == len(original_to_local)
+        assert len(local_to_original) == len(convert_result.succeeded)
+        assert all(
+            local_to_original[v] == k for k, v in original_to_local.items()
+        )
+        assert all(
+            original_to_local[v] == k for k, v in local_to_original.items()
+        )
+
+    def test_empty_succeeded_returns_empty_dicts(self) -> None:
+        """succeeded が空 (ネイティブ PDF のみのバッチ) では両 map とも空 dict。"""
+        convert_result = ConvertResult(succeeded=[], failed=[])
+
+        local_to_original, original_to_local = build_filename_maps(convert_result)
+
+        assert local_to_original == {}
+        assert original_to_local == {}

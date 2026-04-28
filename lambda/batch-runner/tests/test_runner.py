@@ -229,6 +229,7 @@ class TestGenerateVisualizations:
     def test_generates_layout_and_ocr_per_page(
         self, reload_runner, monkeypatch, tmp_path
     ):
+        """R2.1: PDF native — 新命名規約 ``sample.pdf.json`` から ``sample.pdf`` を解決。"""
         runner = reload_runner()
         self._install_fakes(runner, monkeypatch, pages=2)
 
@@ -238,13 +239,14 @@ class TestGenerateVisualizations:
         output_dir.mkdir()
 
         (input_dir / "sample.pdf").write_bytes(b"%PDF-")
-        (output_dir / "sample.json").write_text(json.dumps({"pages": []}))
+        (output_dir / "sample.pdf.json").write_text(json.dumps({"pages": []}))
 
         errors = runner.generate_all_visualizations(
             input_dir=str(input_dir), output_dir=str(output_dir)
         )
 
         assert errors == {}
+        # JPEG basename は pdf_path.stem (= "sample") のまま据え置き (R2.4)。
         generated = sorted(p.name for p in output_dir.glob("*.jpg"))
         assert generated == [
             "sample_layout_page_0.jpg",
@@ -256,6 +258,12 @@ class TestGenerateVisualizations:
     def test_skips_json_without_matching_pdf(
         self, reload_runner, monkeypatch, tmp_path
     ):
+        """lookup miss: 対応 PDF が input_dir に不在 → silent skip + warning ログ。
+
+        ``errors_per_file`` のキーは ``original_input_name``
+        (= ``json_file.name[:-len(".json")]``)、エラーメッセージは
+        ``"local PDF not found: {local_pdf_basename}"`` (R2.4 関連)。
+        """
         runner = reload_runner()
         self._install_fakes(runner, monkeypatch)
 
@@ -264,17 +272,18 @@ class TestGenerateVisualizations:
         input_dir.mkdir()
         output_dir.mkdir()
 
-        (output_dir / "missing.json").write_text("{}")
+        (output_dir / "missing.pdf.json").write_text("{}")
 
         errors = runner.generate_all_visualizations(
             input_dir=str(input_dir), output_dir=str(output_dir)
         )
-        assert "missing" in errors
+        assert errors == {"missing.pdf": ["local PDF not found: missing.pdf"]}
         assert not list(output_dir.glob("*.jpg"))
 
     def test_collects_per_page_errors_without_aborting(
         self, reload_runner, monkeypatch, tmp_path
     ):
+        """ページ単位の失敗を収集して継続する非リグレッション (新命名規約)。"""
         runner = reload_runner()
         self._install_fakes(runner, monkeypatch, pages=2)
 
@@ -296,30 +305,31 @@ class TestGenerateVisualizations:
         input_dir.mkdir()
         output_dir.mkdir()
         (input_dir / "a.pdf").write_bytes(b"%PDF-")
-        (output_dir / "a.json").write_text("{}")
+        (output_dir / "a.pdf.json").write_text("{}")
 
         errors = runner.generate_all_visualizations(
             input_dir=str(input_dir), output_dir=str(output_dir)
         )
 
-        assert "a" in errors
-        assert any("page 0" in e for e in errors["a"])
+        # キーは original_input_name (= "a.pdf")。
+        assert "a.pdf" in errors
+        assert any("page 0" in e for e in errors["a.pdf"])
         generated = sorted(p.name for p in output_dir.glob("*.jpg"))
         assert generated == [
             "a_layout_page_1.jpg",
             "a_ocr_page_1.jpg",
         ]
 
-    def test_visualizes_converted_pdf_after_office_original_removed(
+    def test_visualizes_converted_pdf_with_office_lookup(
         self, reload_runner, monkeypatch, tmp_path
     ):
-        """R8.1-8.3 非退行: Office 原本が削除済 + 変換後 PDF のみ存在する状態でも、
-        runner.py の ``in_path / f"{basename}.pdf"`` 解決で可視化が生成される。
+        """R2.2 / R2.3: Office case — ``deck.pptx.json`` + ``original_to_local`` 経由で
+        変換後 PDF ``deck.pdf`` を逆引き解決する。
 
         office_converter.convert_office_files() は変換後に原本 (.pptx/.docx/.xlsx)
-        を削除し ``{stem}.pdf`` のみを並置するため、本テストでは事後状態
-        (input_dir に .pdf のみが存在し、原本拡張子のファイルは存在しない) を
-        再現する。
+        を削除し ``{stem}.pdf`` のみを並置する。本テストでは新命名規約
+        (``deck.pptx.json``) と双方向 map (``{"deck.pptx": "deck.pdf"}``) を渡し、
+        ``input_dir/deck.pdf`` が解決され可視化が生成されることを検証する。
         """
         runner = reload_runner()
         self._install_fakes(runner, monkeypatch, pages=2)
@@ -332,7 +342,8 @@ class TestGenerateVisualizations:
         # Office 変換後の状態: 原本 (.pptx 等) は既に削除済。
         # input_dir には変換後 PDF のみ残っている。
         (input_dir / "deck.pdf").write_bytes(b"%PDF-")
-        (output_dir / "deck.json").write_text(json.dumps({"pages": []}))
+        # メイン JSON は新命名規約 (原本ファイル名 + ".json") で保存済。
+        (output_dir / "deck.pptx.json").write_text(json.dumps({"pages": []}))
 
         # Office 原本拡張子のファイルは置かない (削除済を表現)。
         assert not list(input_dir.glob("*.pptx"))
@@ -340,11 +351,12 @@ class TestGenerateVisualizations:
         assert not list(input_dir.glob("*.xlsx"))
 
         errors = runner.generate_all_visualizations(
-            input_dir=str(input_dir), output_dir=str(output_dir)
+            input_dir=str(input_dir),
+            output_dir=str(output_dir),
+            original_to_local={"deck.pptx": "deck.pdf"},
         )
 
-        # PDF 可視化パイプラインがそのまま再利用され、命名規則も維持されること
-        # (R8.1 / R8.2 / R8.3)。
+        # 可視化 JPEG basename は ``pdf_path.stem`` (= "deck") のまま (R2.4 据え置き)。
         assert errors == {}
         generated = sorted(p.name for p in output_dir.glob("*.jpg"))
         assert generated == [
@@ -354,14 +366,16 @@ class TestGenerateVisualizations:
             "deck_ocr_page_1.jpg",
         ]
 
-    def test_visualizes_pdf_and_converted_pdf_are_indistinguishable(
+    def test_visualizes_pdf_and_converted_pdf_mixed(
         self, reload_runner, monkeypatch, tmp_path
     ):
-        """R8.3 非退行: 既存 PDF 入力と Office 由来の変換後 PDF が input_dir に
-        混在しても、両方とも同一の可視化命名規則で処理される。
+        """R2.3 非退行: 既存 PDF 入力と Office 由来の変換後 PDF が混在しても、
+        新命名規約 + ``original_to_local`` map で正しく逆引き解決される。
 
-        runner.py からは両者の出自を区別できず ``.pdf`` として一括処理される
-        ことを検証する。
+        - native PDF は identity (map に entry なし) で ``native.pdf.json``
+          → ``native.pdf`` に解決
+        - Office case は ``original_to_local`` 経由で ``deck.pptx.json``
+          → ``deck.pdf`` に解決
         """
         runner = reload_runner()
         self._install_fakes(runner, monkeypatch, pages=1)
@@ -373,20 +387,53 @@ class TestGenerateVisualizations:
 
         # 既存 PDF と、Office 変換後 PDF を並置 (原本拡張子は無し)。
         (input_dir / "native.pdf").write_bytes(b"%PDF-")
-        (input_dir / "converted.pdf").write_bytes(b"%PDF-")
-        (output_dir / "native.json").write_text(json.dumps({"pages": []}))
-        (output_dir / "converted.json").write_text(json.dumps({"pages": []}))
+        (input_dir / "deck.pdf").write_bytes(b"%PDF-")
+        (output_dir / "native.pdf.json").write_text(json.dumps({"pages": []}))
+        (output_dir / "deck.pptx.json").write_text(json.dumps({"pages": []}))
 
         errors = runner.generate_all_visualizations(
-            input_dir=str(input_dir), output_dir=str(output_dir)
+            input_dir=str(input_dir),
+            output_dir=str(output_dir),
+            original_to_local={"deck.pptx": "deck.pdf"},
         )
 
         # 両者とも同じパイプラインで処理され、エラーゼロかつ同形式の JPEG が出る。
         assert errors == {}
         generated = sorted(p.name for p in output_dir.glob("*.jpg"))
         assert generated == [
-            "converted_layout_page_0.jpg",
-            "converted_ocr_page_0.jpg",
+            "deck_layout_page_0.jpg",
+            "deck_ocr_page_0.jpg",
             "native_layout_page_0.jpg",
             "native_ocr_page_0.jpg",
         ]
+
+    def test_lookup_miss_for_office_when_map_missing_entry(
+        self, reload_runner, monkeypatch, tmp_path
+    ):
+        """lookup miss (Office): ``original_to_local`` に entry が無く、原本名
+        (``deck.pptx``) と一致する PDF も input_dir に無い場合、identity 解決で
+        ``deck.pptx`` が試行され、PDF 不在で silent skip される。
+
+        エラーメッセージは ``"local PDF not found: deck.pptx"``、キーは
+        ``original_input_name`` (= ``deck.pptx``)。
+        """
+        runner = reload_runner()
+        self._install_fakes(runner, monkeypatch)
+
+        input_dir = tmp_path / "input"
+        output_dir = tmp_path / "output"
+        input_dir.mkdir()
+        output_dir.mkdir()
+
+        # Office JSON のみ存在、対応 PDF は input_dir に無い (map も空)。
+        (output_dir / "deck.pptx.json").write_text("{}")
+
+        errors = runner.generate_all_visualizations(
+            input_dir=str(input_dir),
+            output_dir=str(output_dir),
+            original_to_local=None,
+        )
+
+        # identity で deck.pptx が試行される → PDF 不在で skip。
+        assert errors == {"deck.pptx": ["local PDF not found: deck.pptx"]}
+        assert not list(output_dir.glob("*.jpg"))

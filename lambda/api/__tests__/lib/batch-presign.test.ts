@@ -217,7 +217,7 @@ describe("BatchPresign", () => {
   describe("createResultUrl", () => {
     it("結果 JSON 向け署名付き GET URL を発行する（有効期限 60 分）", async () => {
       const url = await presign.createResultUrl(
-        "batches/batch-001/output/sample.json",
+        "batches/batch-001/output/sample.pdf.json",
       );
 
       expect(url).toContain("https://");

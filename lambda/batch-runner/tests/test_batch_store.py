@@ -101,7 +101,7 @@ class TestUpdateFileResult:
                 status="COMPLETED",
                 dpi=200,
                 processing_time_ms=5432,
-                result_key=f"batches/{BATCH_ID}/output/a.json",
+                result_key=f"batches/{BATCH_ID}/output/a.pdf.json",
             )
             assert updated is True
 
@@ -113,7 +113,7 @@ class TestUpdateFileResult:
             assert item["status"] == "COMPLETED"
             assert int(item["dpi"]) == 200
             assert int(item["processingTimeMs"]) == 5432
-            assert item["resultKey"] == f"batches/{BATCH_ID}/output/a.json"
+            assert item["resultKey"] == f"batches/{BATCH_ID}/output/a.pdf.json"
 
     def test_marks_file_failed_with_error_message(self):
         with mock_aws():
@@ -184,7 +184,7 @@ class TestUpdateFileResult:
                 table=table, batch_job_id=BATCH_ID,
                 file_key=f"batches/{BATCH_ID}/input/ghost.pdf",
                 status="COMPLETED",
-                result_key=f"batches/{BATCH_ID}/output/ghost.json",
+                result_key=f"batches/{BATCH_ID}/output/ghost.pdf.json",
             )
             # 既存行が無いため ConditionalCheckFailedException → False
             assert updated is False
@@ -310,7 +310,7 @@ class TestApplyProcessLog:
                 ProcessLogEntry(
                     file_path="/tmp/input/a.pdf", filename="a.pdf",
                     success=True, dpi=200,
-                    output_path="/tmp/output/a.json",
+                    output_path="/tmp/output/a.pdf.json",
                 ),
                 ProcessLogEntry(
                     file_path="/tmp/input/b.pdf", filename="b.pdf",
@@ -319,7 +319,7 @@ class TestApplyProcessLog:
                 ProcessLogEntry(
                     file_path="/tmp/input/c.pdf", filename="c.pdf",
                     success=True, dpi=200,
-                    output_path="/tmp/output/c.json",
+                    output_path="/tmp/output/c.pdf.json",
                 ),
             ]
             totals = batch_store.apply_process_log(
@@ -332,7 +332,7 @@ class TestApplyProcessLog:
                 "SK": f"FILE#batches/{BATCH_ID}/input/a.pdf",
             })["Item"]
             assert a_item["status"] == "COMPLETED"
-            assert a_item["resultKey"] == f"batches/{BATCH_ID}/output/a.json"
+            assert a_item["resultKey"] == f"batches/{BATCH_ID}/output/a.pdf.json"
             b_item = table.get_item(Key={
                 "PK": f"BATCH#{BATCH_ID}",
                 "SK": f"FILE#batches/{BATCH_ID}/input/b.pdf",
@@ -370,7 +370,7 @@ class TestApplyProcessLog:
                 ProcessLogEntry(
                     file_path="/tmp/input/ok.pdf", filename="ok.pdf",
                     success=True, dpi=200,
-                    output_path="/tmp/output/ok.json",
+                    output_path="/tmp/output/ok.pdf.json",
                 ),
             ]
             totals = batch_store.apply_process_log(
@@ -426,13 +426,15 @@ class TestApplyProcessLogConvertedFilenameMap:
             import batch_store
 
             entries = [
-                # process_log says deck.pdf because soffice converted it
+                # process_log says deck.pdf (= post-conversion local file) but
+                # async_invoker は local_to_original 経由で原本 deck.pptx 名で
+                # JSON を書く。よって output_path は deck.pptx.json (新仕様 R1.2)
                 ProcessLogEntry(
                     file_path="/tmp/input/deck.pdf",
                     filename="deck.pdf",
                     success=True,
                     dpi=200,
-                    output_path="/tmp/output/deck.json",
+                    output_path="/tmp/output/deck.pptx.json",
                 ),
             ]
             totals = batch_store.apply_process_log(
@@ -449,10 +451,11 @@ class TestApplyProcessLogConvertedFilenameMap:
                 "SK": f"FILE#batches/{BATCH_ID}/input/deck.pptx",
             })["Item"]
             assert deck_pptx["status"] == "COMPLETED"
-            # resultKey points at deck.json (the actual S3 output path,
-            # which is .pdf-stem-based — not rewritten)
+            # 新仕様 (R1.2): resultKey は原本 Office 名 (`deck.pptx.json`) を指す。
+            # 変換後 PDF basename ではなく、async_invoker で原本ファイル名を
+            # local_to_original 経由で書き戻した結果。
             assert deck_pptx["resultKey"] == (
-                f"batches/{BATCH_ID}/output/deck.json"
+                f"batches/{BATCH_ID}/output/deck.pptx.json"
             )
 
             # No phantom deck.pdf row
@@ -480,7 +483,7 @@ class TestApplyProcessLogConvertedFilenameMap:
                     filename="report.pdf",
                     success=True,
                     dpi=200,
-                    output_path="/tmp/output/report.json",
+                    output_path="/tmp/output/report.pdf.json",
                 ),
             ]
             totals = batch_store.apply_process_log(
@@ -512,7 +515,7 @@ class TestApplyProcessLogConvertedFilenameMap:
                     filename="a.pdf",
                     success=True,
                     dpi=200,
-                    output_path="/tmp/output/a.json",
+                    output_path="/tmp/output/a.pdf.json",
                 ),
             ]
             # No converted_filename_map argument
@@ -548,20 +551,22 @@ class TestApplyProcessLogConvertedFilenameMap:
                     error="encrypted",
                     error_category="CONVERSION_FAILED",
                 ),
-                # OCR success rows from yomitoku-client
+                # OCR success rows from async_invoker (新仕様 {原本名}.json):
+                # report.pdf は native PDF → report.pdf.json
+                # deck.pdf は変換後 → 原本 deck.pptx 名で deck.pptx.json
                 ProcessLogEntry(
                     file_path="/tmp/input/report.pdf",
                     filename="report.pdf",
                     success=True,
                     dpi=200,
-                    output_path="/tmp/output/report.json",
+                    output_path="/tmp/output/report.pdf.json",
                 ),
                 ProcessLogEntry(
-                    file_path="/tmp/input/deck.pdf",  # post-conversion
+                    file_path="/tmp/input/deck.pdf",  # post-conversion local file
                     filename="deck.pdf",
                     success=True,
                     dpi=200,
-                    output_path="/tmp/output/deck.json",
+                    output_path="/tmp/output/deck.pptx.json",
                 ),
             ]
             totals = batch_store.apply_process_log(
@@ -585,7 +590,7 @@ class TestApplyProcessLogConvertedFilenameMap:
             })["Item"]
             assert deck_pptx_item["status"] == "COMPLETED"
             assert deck_pptx_item["resultKey"] == (
-                f"batches/{BATCH_ID}/output/deck.json"
+                f"batches/{BATCH_ID}/output/deck.pptx.json"
             )
 
             broken_item = table.get_item(Key={
@@ -601,6 +606,188 @@ class TestApplyProcessLogConvertedFilenameMap:
                 "SK": f"FILE#batches/{BATCH_ID}/input/deck.pdf",
             })
             assert "Item" not in phantom
+
+
+class TestResultKeyExtensionPreservation:
+    """Task 4.1 (a): result-filename-extension-preservation の resultKey 全形式検証。
+
+    PDF / PPTX / DOCX / XLSX + 変換失敗 PPTX が混在するバッチで、各 FILE の
+    resultKey が新仕様 ``{原本ファイル名}.json`` で書き込まれることを assert。
+    変換失敗ファイルは resultKey 未設定 + errorCategory=CONVERSION_FAILED を確認
+    (R1.1, R1.2, R1.3, R1.5, R3.1)。
+    """
+
+    def test_all_office_formats_get_extension_preserved_result_key(self):
+        from process_log_reader import ProcessLogEntry
+
+        with mock_aws():
+            table = _create_batch_table()
+            _seed_batch(table, BATCH_ID, [
+                "report.pdf",   # native PDF
+                "deck.pptx",    # PPTX → 変換成功
+                "memo.docx",    # DOCX → 変換成功
+                "sheet.xlsx",   # XLSX → 変換成功
+                "broken.pptx",  # PPTX → 変換失敗
+            ])
+            import batch_store
+
+            entries = [
+                ProcessLogEntry(
+                    file_path="/tmp/input/broken.pptx",
+                    filename="broken.pptx",
+                    success=False,
+                    error="encrypted PPTX",
+                    error_category="CONVERSION_FAILED",
+                ),
+                ProcessLogEntry(
+                    file_path="/tmp/input/report.pdf",
+                    filename="report.pdf",
+                    success=True, dpi=200,
+                    output_path="/tmp/output/report.pdf.json",
+                ),
+                ProcessLogEntry(
+                    file_path="/tmp/input/deck.pdf",
+                    filename="deck.pdf",
+                    success=True, dpi=200,
+                    output_path="/tmp/output/deck.pptx.json",
+                ),
+                ProcessLogEntry(
+                    file_path="/tmp/input/memo.pdf",
+                    filename="memo.pdf",
+                    success=True, dpi=200,
+                    output_path="/tmp/output/memo.docx.json",
+                ),
+                ProcessLogEntry(
+                    file_path="/tmp/input/sheet.pdf",
+                    filename="sheet.pdf",
+                    success=True, dpi=200,
+                    output_path="/tmp/output/sheet.xlsx.json",
+                ),
+            ]
+            totals = batch_store.apply_process_log(
+                table=table, batch_job_id=BATCH_ID, entries=entries,
+                converted_filename_map={
+                    "deck.pdf": "deck.pptx",
+                    "memo.pdf": "memo.docx",
+                    "sheet.pdf": "sheet.xlsx",
+                },
+            )
+            assert totals == {"succeeded": 4, "failed": 1, "skipped": 0}
+
+            # 各原本ファイル行で resultKey 値が新仕様であることを assert
+            expected = {
+                "report.pdf": "report.pdf.json",
+                "deck.pptx": "deck.pptx.json",
+                "memo.docx": "memo.docx.json",
+                "sheet.xlsx": "sheet.xlsx.json",
+            }
+            for orig_filename, expected_basename in expected.items():
+                item = table.get_item(Key={
+                    "PK": f"BATCH#{BATCH_ID}",
+                    "SK": f"FILE#batches/{BATCH_ID}/input/{orig_filename}",
+                })["Item"]
+                assert item["status"] == "COMPLETED"
+                assert item["resultKey"] == (
+                    f"batches/{BATCH_ID}/output/{expected_basename}"
+                )
+
+            # 変換失敗 PPTX は resultKey 未設定 + errorCategory=CONVERSION_FAILED
+            broken = table.get_item(Key={
+                "PK": f"BATCH#{BATCH_ID}",
+                "SK": f"FILE#batches/{BATCH_ID}/input/broken.pptx",
+            })["Item"]
+            assert broken["status"] == "FAILED"
+            assert broken["errorCategory"] == "CONVERSION_FAILED"
+            assert "resultKey" not in broken
+
+
+class TestPreExistingResultKeyImmutability:
+    """Task 4.1 (c): R5.1 / R5.2 ガード — 既存バッチ非影響の検証。
+
+    旧フォーマット ``{stem}.json`` の resultKey を持つ既存 FILE 行が、
+    別バッチで新仕様の ``apply_process_log`` を実行したときに、
+    遡及的に書き換えられないことを assert (R5.1: S3 オブジェクト遡及リネーム
+    なし / R5.2: DDB resultKey 値遡及更新なし)。
+    """
+
+    def test_existing_batch_legacy_result_key_unchanged_after_new_batch(self):
+        from process_log_reader import ProcessLogEntry
+
+        legacy_batch_id = "old-batch-001"
+        new_batch_id = "new-batch-002"
+
+        with mock_aws():
+            table = _create_batch_table()
+            # 1. 既存 (旧仕様デプロイ前) のバッチを seed: report.pdf に
+            #    旧フォーマット resultKey が既に書かれている
+            _seed_batch(table, legacy_batch_id, ["report.pdf"])
+            import batch_store
+            batch_store.update_file_result(
+                table=table, batch_job_id=legacy_batch_id,
+                file_key=f"batches/{legacy_batch_id}/input/report.pdf",
+                status="COMPLETED",
+                dpi=200,
+                processing_time_ms=1000,
+                # legacy-on-purpose: R5.1/R5.2 検証用の旧フォーマット (stem ベース)
+                # 値を意図的に DDB に書き込み、新仕様 deploy 後の遡及更新が
+                # 起きないことを確認する。本リテラルは契約ガードの除外対象。
+                result_key=f"batches/{legacy_batch_id}/output/report.json",  # legacy-on-purpose
+            )
+
+            # 2. 別の新規バッチを seed して新仕様で apply_process_log を実行
+            _seed_batch(table, new_batch_id, ["report.pdf"])
+            entries = [
+                ProcessLogEntry(
+                    file_path="/tmp/input/report.pdf",
+                    filename="report.pdf",
+                    success=True, dpi=200,
+                    output_path="/tmp/output/report.pdf.json",
+                ),
+            ]
+            totals = batch_store.apply_process_log(
+                table=table, batch_job_id=new_batch_id, entries=entries,
+            )
+            assert totals == {"succeeded": 1, "failed": 0, "skipped": 0}
+
+            # 3. 既存バッチの resultKey 値が unchanged (= 旧フォーマットのまま) を assert
+            legacy = table.get_item(Key={
+                "PK": f"BATCH#{legacy_batch_id}",
+                "SK": f"FILE#batches/{legacy_batch_id}/input/report.pdf",
+            })["Item"]
+            assert legacy["resultKey"] == (
+                f"batches/{legacy_batch_id}/output/report.json"  # legacy-on-purpose
+            ), (
+                "R5.2 違反: 既存バッチの resultKey が遡及更新された "
+                f"(現値: {legacy.get('resultKey')})"
+            )
+
+            # 4. 新規バッチは新仕様で書かれている
+            new = table.get_item(Key={
+                "PK": f"BATCH#{new_batch_id}",
+                "SK": f"FILE#batches/{new_batch_id}/input/report.pdf",
+            })["Item"]
+            assert new["resultKey"] == (
+                f"batches/{new_batch_id}/output/report.pdf.json"
+            )
+
+
+class TestPendingProcessingFilesHaveNoResultKey:
+    """Task 4.1 / R3.3: PENDING / PROCESSING 状態の FILE で resultKey 属性が
+    存在しないことを assert。``_seed_batch`` 直後の PENDING 行は resultKey が
+    未設定 (optional default 動作) であることを契約としてテストする。
+    """
+
+    def test_pending_file_has_no_result_key_attribute(self):
+        with mock_aws():
+            table = _create_batch_table()
+            _seed_batch(table, BATCH_ID, ["pending.pdf"])
+
+            item = table.get_item(Key={
+                "PK": f"BATCH#{BATCH_ID}",
+                "SK": f"FILE#batches/{BATCH_ID}/input/pending.pdf",
+            })["Item"]
+            assert item["status"] == "PENDING"
+            assert "resultKey" not in item
 
 
 class TestFinalizeBatchStatus:
