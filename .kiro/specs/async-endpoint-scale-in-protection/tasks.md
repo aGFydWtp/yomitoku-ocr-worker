@@ -9,7 +9,7 @@
   - _Boundary: lib/async-runtime-context.ts_
 
 - [ ] 2. Core 実装 (3 ファイル独立、並列実行可能)
-- [ ] 2.1 (P) `InflightPublisher` モジュールを新規作成し、in-flight 数を CloudWatch Embedded Metric Format で stdout に発信する仕組みを実装する
+- [x] 2.1 (P) `InflightPublisher` モジュールを新規作成し、in-flight 数を CloudWatch Embedded Metric Format で stdout に発信する仕組みを実装する
   - `Yomitoku/AsyncEndpoint::InflightInvocations` を `EndpointName` dimension のみで publish する EMF レコード生成を実装する
   - 起動時に `publish_zero` を 1 回呼び、`threading.Thread(daemon=True)` で 60 秒周期スレッドを起動する `start()`、`Event.set()` でループを抜けて `publish_zero` を 1 回呼ぶ `stop()` を持つ
   - publish 失敗 (`OSError` / `ValueError`) と provider 例外を try/except で吸収しログのみ残すことで、observability-only な振る舞いを保証する
@@ -104,3 +104,8 @@
   - _Depends: 2.3, 4.1_
   - _Requirements: 1.4, 5.1, 5.2, 5.3, 5.4_
   - _Boundary: docs/runbooks/async-endpoint-scale-in-debug.md_
+
+## Implementation Notes
+
+- **Task 2.1 で発生した境界例外 (Dockerfile 1 行追加)**: `tests/test_dockerfile_completeness.py::test_every_source_module_is_copied` が top-level `*.py` を全スキャンして Dockerfile の `COPY` 列と突き合わせる動的検査を行うため、新規モジュール (`inflight_publisher.py`) 追加時は同一 commit で `COPY inflight_publisher.py .` を Dockerfile に追加しないと既存 pytest baseline が即 red になる。Task 3.1 の Dockerfile COPY 追加は 2.1 で完了済み。Task 3.1 は `tests/test_dockerfile_completeness.py` の `test_known_modules_are_present` parametrize list へのアンカー追加のみが残作業。
+- **Reviewer/Implementer subagent への指示**: 散文形式の status / verdict は parent の strict parser を通らない。`## Status Report` / `## Review Verdict` の見出し直下に `- STATUS: ...` / `- VERDICT: ...` の structured field block を必ず明示すること。

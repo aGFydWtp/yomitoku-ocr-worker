@@ -43,6 +43,7 @@ COPY process_log_reader.py .
 COPY ddb_client.py .
 COPY batch_store.py .
 COPY control_table.py .
+COPY inflight_publisher.py .
 COPY office_converter.py .
 COPY main.py .
 
