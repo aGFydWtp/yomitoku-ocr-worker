@@ -423,7 +423,6 @@ describe("SagemakerStack", () => {
                   Id: "m1",
                   ReturnData: false,
                   MetricStat: Match.objectLike({
-                    Period: 60,
                     Stat: "Average",
                     Metric: Match.objectLike({
                       Namespace: "AWS/SageMaker",
@@ -438,7 +437,6 @@ describe("SagemakerStack", () => {
                   Id: "m2",
                   ReturnData: false,
                   MetricStat: Match.objectLike({
-                    Period: 60,
                     Stat: "Sum",
                     Metric: Match.objectLike({
                       Namespace: "Yomitoku/AsyncEndpoint",
@@ -463,6 +461,39 @@ describe("SagemakerStack", () => {
           }),
         },
       );
+    });
+
+    it("AsyncBacklogScalingPolicy の MetricStat に CFN 非対応の Period を出力しない", () => {
+      const { template } = createStack();
+      const policies = template.findResources(
+        "AWS::ApplicationAutoScaling::ScalingPolicy",
+      );
+      const targetTrackingPolicy = Object.values(policies).find(
+        (resource) =>
+          (
+            resource.Properties as {
+              PolicyName?: string;
+            }
+          ).PolicyName === "AsyncBacklogTargetTracking",
+      );
+      expect(targetTrackingPolicy).toBeDefined();
+
+      const metrics = (
+        targetTrackingPolicy?.Properties as {
+          TargetTrackingScalingPolicyConfiguration: {
+            CustomizedMetricSpecification: {
+              Metrics: Array<{
+                Id?: string;
+                MetricStat?: Record<string, unknown>;
+              }>;
+            };
+          };
+        }
+      ).TargetTrackingScalingPolicyConfiguration.CustomizedMetricSpecification
+        .Metrics;
+      for (const metric of metrics.filter((item) => item.MetricStat)) {
+        expect(metric.MetricStat).not.toHaveProperty("Period");
+      }
     });
 
     it("AsyncBacklogScalingPolicy の targetValue と metric math 閾値が同期している", () => {

@@ -177,7 +177,7 @@
 - **EMF vs PutMetricData**: 第一候補は EMF (steering の構造方針に同居 + IAM 追加ゼロ)。ただし EMF は CloudWatch Logs 取り込み遅延 (経験則 10-60 秒) があり、`scaleOutCooldown=60s` の鮮度に対して影響が出るかは要確認。PutMetricData は同期 API でレイテンシ低いが API rate / Fargate egress を消費。本件は `scaleInCooldown=900s` がボトルネックなので EMF で十分という想定だが、Design で明示的に判断する。
 - **publisher の実装形態**: (a) `threading.Thread` を daemon=True で立てる / (b) `asyncio.create_task` で `run_batch` の event loop に編み込む / (c) main.py の同期ループから時刻判定 — どれが Fargate 上で最も信頼性高いか。Design で決定。
 - **複数 batch-runner 並走時の period 重複**: 各 task が period=60s 内で 1 回ずつ publish するなら Sum 集約は正確。複数 task が同 period に publish したときの合算は Sum で意図通りだが、period をまたぐ jitter があると一時的に過大評価される可能性。本件は `asyncMaxCapacity=1` 前提のため過大評価でも scale-in 抑止側に倒れて安全。Design で許容範囲を明文化。
-- **Math 式の正確な記述**: `Expression: "FILL(m1, 0) + FILL(m2, 0)"`, `MetricStat[m1] = AWS/SageMaker:ApproximateBacklogSize:Sum:60s:[EndpointName=...]`, `MetricStat[m2] = Yomitoku/AsyncEndpoint:InflightInvocations:Sum:60s:[EndpointName=...]`, `ReturnData=true` を 1 つだけ。CFN シンタックスでの `MetricStat.Stat` のケース表記、`Period` の単位 (秒) を Design で固定。
+- **Math 式の正確な記述**: `Expression: "FILL(m1, 0) + FILL(m2, 0)"`, `MetricStat[m1] = AWS/SageMaker:ApproximateBacklogSize:Average:[EndpointName=...]`, `MetricStat[m2] = Yomitoku/AsyncEndpoint:InflightInvocations:Sum:[EndpointName=...]`, `ReturnData=true` を 1 つだけ。CFN シンタックスでの `MetricStat.Stat` のケース表記と、Application Auto Scaling の `TargetTrackingMetricStat` では `Period` を出力しないことを Design で固定。
 - **Runbook の置き先**: 新規ファイル `docs/runbooks/async-endpoint-scale-in-debug.md` を作るか、既存 `sagemaker-async-cutover.md` の「事前条件」セクションに追記するか。Design で決定。
 - **`asyncMaxCapacity` 引き上げ時のガード強度**: コメントだけで十分か、`bin/app.ts` で `asyncMaxCapacity > 1` を検知して `Annotations.of(...).addWarning(...)` を出すか、unit test で `asyncMaxCapacity == 1` を assert するか。Design で強度を選ぶ。
 
@@ -207,7 +207,7 @@
 1. **発信手段**: EMF / PutMetricData の選択 (推奨: EMF。Steering の awslogs パイプに同居)
 2. **publisher 実装形態**: thread / asyncio task / 同期ループ判定 (推奨: thread daemon。`run_batch` 自体に介入せず、`main.run()` の入口で start・出口で stop できる単純形)
 3. **dimension 設計**: `EndpointName` のみで Sum 集約 (推奨)。複数 task 並走の period 重複は許容
-4. **Math 式の Stat / Period**: `Sum` / `60s`。`scaleInCooldown=900s` に対して period が十分小さい
+4. **Math 式の Stat / 評価粒度**: `m1=Average` / `m2=Sum`。Application Auto Scaling の `TargetTrackingMetricStat` には `Period` を出力せず、publisher の 60 秒周期とサービス既定の評価粒度を前提にする
 5. **Runbook 置き先**: 新規 `docs/runbooks/async-endpoint-scale-in-debug.md` を推奨 (既存 cutover Runbook は責務が違う)
 6. **`asyncMaxCapacity` ガード強度**: コードコメント + `test/sagemaker-stack.test.ts` で `MaxCapacity == 1` を assert する 2 段階を推奨
 

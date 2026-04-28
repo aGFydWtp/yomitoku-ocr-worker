@@ -27,7 +27,7 @@
   - _Boundary: lambda/batch-runner/async_invoker.py_
 
 - [x] 2.3 (P) `AsyncBacklogScalingPolicy` のターゲット追跡入力を floor saturation 形式の metric math 式に置き換え、`asyncMaxCapacity > 1` の synth 警告を組み込む
-  - `customizedMetricSpecification` を `metrics: [...]` 配列構造に書き換え、`m1 = ApproximateBacklogSize (Average, 60s, EndpointName)`、`m2 = InflightInvocations (Sum, 60s, EndpointName)`、`e1 = FILL(m1, 0) + IF(FILL(m2, 0) > 0, 5, 0)` (label `BacklogPlusInflightFloor`, `ReturnData=true`) を定義する
+  - `customizedMetricSpecification` を `metrics: [...]` 配列構造に書き換え、`m1 = ApproximateBacklogSize (Average, EndpointName)`、`m2 = InflightInvocations (Sum, EndpointName)`、`e1 = FILL(m1, 0) + IF(FILL(m2, 0) > 0, 5, 0)` (label `BacklogPlusInflightFloor`, `ReturnData=true`) を定義する
   - `targetValue=5` / `scaleInCooldown=900` / `scaleOutCooldown=60` は不変で維持する。式中の閾値 `5` が `targetValue` と同期する旨を CDK コメントに明記する
   - `asyncRuntime.asyncMaxCapacity > 1` のときに `Annotations.of(this).addWarning("async-endpoint-scale-in-protection: ... 再設計が必要 ...")` を呼ぶガードロジックを Stack コンストラクタに追加する
   - 既存の `AsyncScaleOutOnBacklogPolicy` / `AsyncHasBacklogWithoutCapacityAlarm` / `CfnScalableTarget` は変更しない
@@ -85,7 +85,8 @@
   - _Boundary: lambda/batch-runner/tests/test_runner.py_
 
 - [x] 5.4 (P) `SagemakerStack` の ScalingPolicy / synth 警告 / 既存パラメータ不変を CDK synth テストで固定する
-  - `AWS::ApplicationAutoScaling::ScalingPolicy` の `Metrics` 配列に `m1` (Stat=Average, Period=60, MetricName=ApproximateBacklogSize), `m2` (Stat=Sum, Period=60, MetricName=InflightInvocations), `e1` (Expression="FILL(m1, 0) + IF(FILL(m2, 0) > 0, 5, 0)", Label=BacklogPlusInflightFloor, ReturnData=true) が含まれることを assert する (R3.1, R2.4)
+  - `AWS::ApplicationAutoScaling::ScalingPolicy` の `Metrics` 配列に `m1` (Stat=Average, MetricName=ApproximateBacklogSize), `m2` (Stat=Sum, MetricName=InflightInvocations), `e1` (Expression="FILL(m1, 0) + IF(FILL(m2, 0) > 0, 5, 0)", Label=BacklogPlusInflightFloor, ReturnData=true) が含まれることを assert する (R3.1, R2.4)
+  - Application Auto Scaling の `TargetTrackingMetricStat` は CloudFormation 仕様上 `Period` を持たないため、`MetricStat.Period` が出力されないことを assert する
   - `e1.Expression` の中に `targetValue` (5) と同じ閾値が現れることを assert し、将来 target 変更時の式更新忘れを catch する
   - `asyncMaxCapacity` を `1` で synth したとき `MaxCapacity == 1` で警告なし、`2` で synth したときに `Annotations.fromStack(stack).hasWarning("*async-endpoint-scale-in-protection*")` が成立することを assert する (R4.3, R4.4)
   - `targetValue=5` / `scaleInCooldown=900` / `scaleOutCooldown=60` / `AsyncScaleOutOnBacklogPolicy` / `AsyncHasBacklogWithoutCapacityAlarm` の存在と構造が変更されていないことを assert する (R3.3, R3.5)
@@ -109,5 +110,5 @@
 
 - **Task 2.1 で発生した境界例外 (Dockerfile 1 行追加)**: `tests/test_dockerfile_completeness.py::test_every_source_module_is_copied` が top-level `*.py` を全スキャンして Dockerfile の `COPY` 列と突き合わせる動的検査を行うため、新規モジュール (`inflight_publisher.py`) 追加時は同一 commit で `COPY inflight_publisher.py .` を Dockerfile に追加しないと既存 pytest baseline が即 red になる。Task 3.1 の Dockerfile COPY 追加は 2.1 で完了済み。Task 3.1 は `tests/test_dockerfile_completeness.py` の `test_known_modules_are_present` parametrize list へのアンカー追加のみが残作業。
 - **Reviewer/Implementer subagent への指示**: 散文形式の status / verdict は parent の strict parser を通らない。`## Status Report` / `## Review Verdict` の見出し直下に `- STATUS: ...` / `- VERDICT: ...` の structured field block を必ず明示すること。
-- **Task 2.3 で発見した CDK 型定義の遅延**: `aws-cdk-lib` 2.240.0 (本リポジトリ使用バージョン) の `CfnScalingPolicy.TargetTrackingMetricStatProperty` 型が CFN spec の `Period` プロパティを未だ宣言していない。対処として `as CfnScalingPolicy.TargetTrackingMetricStatProperty` 型キャスト + `addPropertyOverride("...MetricStat.Period", 60)` の escape hatch を採用。`pnpm cdk synth` で `MetricStat.Period: 60` が CFN テンプレに正しく注入されることを目視確認済。CDK 型定義が CFN spec に追いついた段階で props 直接指定に戻すコメントを残してある。
+- **Task 2.3 修正メモ**: `AWS::ApplicationAutoScaling::ScalingPolicy` の `TargetTrackingMetricStat` は CloudFormation 仕様上 `Period` を持たないため、`MetricStat.Period` の escape hatch は採用しない。publisher 側は 60 秒周期を維持し、TargetTracking 側は Application Auto Scaling の既定評価粒度に委ねる。
 - **Task 4.1 で発生した境界例外 (`_FakeAsyncInvoker` 2 行追加)**: `runner.run_async_batch` 内で `provider=invoker.inflight_count` を直接渡す設計のため、既存 `tests/test_runner.py` の `_FakeAsyncInvoker` fixture に `def inflight_count(self) -> int: return 0` を追加しないと既存 27 件のテストが `AttributeError` で fail する。design.md は holder/closure 等の defensive wrapper を明確に reject しているため、fake 側で minimal な compat method を追加するのが正解。Task 5.3 は `_FakeAsyncInvoker` を spy/recorder 化するため、本 task の `return 0` 実装は 5.3 で置き換えられる前提。

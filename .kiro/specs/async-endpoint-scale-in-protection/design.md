@@ -453,7 +453,7 @@ class AsyncInvoker:
 - `targetValue: 5`、`scaleInCooldown: 900`、`scaleOutCooldown: 60` は不変 (R3.5)。式中の定数 `5` は `targetValue` と同じ値で揃える (=「inflight 残存 → 出力 ≥ target → scale-in しない」を保証)
 - `m1` (`ApproximateBacklogSize`) の `MetricStat.Stat` は **`Average`** (AWS 公式が SageMaker Async 系メトリクスで `Sum` を受理しないため。`Average` / `Maximum` / `Minimum` のみサポート。SageMaker は本メトリクスを 1 分粒度で publish しているので Average=Maximum=Minimum)
 - `m2` (`InflightInvocations`) の `MetricStat.Stat` は **`Sum`** (複数 batch-runner task 並走時の合算が必要 / R2.4)
-- 両者の `Period` は 60 秒で揃える (R2.6)
+- Application Auto Scaling の `TargetTrackingMetricStat` は CloudFormation 仕様上 `Period` を持たないため、CDK では `Period` を出力しない。評価粒度はサービス既定の 60 秒に委ね、publisher 側の 60 秒周期と整合させる (R2.6)
 
 **Dependencies**
 
@@ -491,7 +491,6 @@ new CfnScalingPolicy(this, "AsyncBacklogScalingPolicy", {
             // SageMaker Async 系メトリクスは Sum を受理しない (公式: Average/Max/Min のみ)。
             // SageMaker が 1 分粒度で publish するため Average は Maximum と等価。
             stat: "Average",
-            period: 60,
           },
           returnData: false,
         },
@@ -506,7 +505,6 @@ new CfnScalingPolicy(this, "AsyncBacklogScalingPolicy", {
             // 複数 batch-runner task 並走時に同一 EndpointName dimension に
             // publish された値を合算する必要があるため Sum を採用 (R2.4)。
             stat: "Sum",
-            period: 60,
           },
           returnData: false,
         },
@@ -611,8 +609,8 @@ new CfnScalingPolicy(this, "AsyncBacklogScalingPolicy", {
 
 ### CloudWatch Metric Math Series
 
-- **m1 (input)**: `AWS/SageMaker::ApproximateBacklogSize`, **Average**, 60s, dim=`EndpointName`, `ReturnData=false`
-- **m2 (input)**: `Yomitoku/AsyncEndpoint::InflightInvocations`, **Sum**, 60s, dim=`EndpointName`, `ReturnData=false`
+- **m1 (input)**: `AWS/SageMaker::ApproximateBacklogSize`, **Average**, dim=`EndpointName`, `ReturnData=false`
+- **m2 (input)**: `Yomitoku/AsyncEndpoint::InflightInvocations`, **Sum**, dim=`EndpointName`, `ReturnData=false`
 - **e1 (output)**: `FILL(m1, 0) + IF(FILL(m2, 0) > 0, 5, 0)` (floor saturation), single time series, `ReturnData=true`
   - 式中の定数 `5` は ScalingPolicy の `targetValue` と同値で同期する必要がある。`targetValue` を変更する場合は式の閾値も同時更新する (Revalidation Trigger)
   - 採用式の妥当性は staging で `aws cloudwatch get-metric-data` を用いて長尺ジョブ中の `m1` と `m2` の実推移を観測してから本番投入する (Migration Strategy 参照)
@@ -647,7 +645,7 @@ new CfnScalingPolicy(this, "AsyncBacklogScalingPolicy", {
 - **`tests/test_runner.py::test_publisher_started_after_invoker_construction_and_stopped_in_finally`**: `runner.run_async_batch` 内で `InflightPublisher.start` が `AsyncInvoker` 構築直後に呼ばれ、`AsyncInvoker.run_batch` が成功 / 例外いずれの場合も `finally` 句で `InflightPublisher.stop` が呼ばれることを assert (R2.2, R2.3)
 - **`tests/test_runner.py::test_publisher_provider_is_invoker_inflight_count`**: publisher に渡される provider callable が `invoker.inflight_count` メソッドであることを assert (= holder/closure を介さず直接渡しの実装契約 / R3.6)
 - **`tests/test_runner.py::test_publisher_failure_does_not_fail_run_async_batch`**: `InflightPublisher.start` が `RuntimeError` を投げても `run_async_batch` が `BatchResult` を返し終了することを確認 (R2.7)
-- **`test/sagemaker-stack.test.ts::AsyncBacklogScalingPolicy が metric math 式構成を持つ`**: `Match.objectLike({ Metrics: Match.arrayWith([...]) })` で `m1` の `Stat=Average, Period=60` / `m2` の `Stat=Sum, Period=60`、`e1` の `Expression="FILL(m1, 0) + IF(FILL(m2, 0) > 0, 5, 0)", ReturnData=true, Label=BacklogPlusInflightFloor` を assert (R3.1, R2.4)
+- **`test/sagemaker-stack.test.ts::AsyncBacklogScalingPolicy が metric math 式構成を持つ`**: `Match.objectLike({ Metrics: Match.arrayWith([...]) })` で `m1` の `Stat=Average` / `m2` の `Stat=Sum`、`e1` の `Expression="FILL(m1, 0) + IF(FILL(m2, 0) > 0, 5, 0)", ReturnData=true, Label=BacklogPlusInflightFloor` を assert (R3.1, R2.4)。別テストで `MetricStat.Period` が出力されないことを固定する。
 - **`test/sagemaker-stack.test.ts::e1 式の閾値が targetValue と同期する`**: `targetValue` を抽出し、`e1.Expression` の中に同じ値が現れることを assert (Revalidation Trigger 検知用 — 将来 target を変更した際に式を更新し忘れるバグを catch)
 - **`test/sagemaker-stack.test.ts::asyncMaxCapacity = 1 が固定されている`**: CDK context default で `MaxCapacity == 1` であることを synth 後に assert (R4.3)
 - **`test/sagemaker-stack.test.ts::asyncMaxCapacity > 1 で synth したとき warning が出る`**: `Annotations.fromStack` で warning メッセージに spec 名が含まれることを確認 (R4.4)

@@ -438,10 +438,9 @@ export class SagemakerStack extends Stack {
             // 2 以上に引き上げると (m1 + m2 floor saturation) が per-instance utilization と等価でなくなり
             // scale-in 抑止が誤動作するため、async-endpoint-scale-in-protection spec を
             // 再設計する必要がある (Revalidation Trigger)。
-            // NOTE: aws-cdk-lib 2.240.0 の `TargetTrackingMetricStatProperty` 型は
-            // CFN spec が後から追加した `Period` プロパティを未だ宣言していないため、
-            // `metricStat` レベルで型キャストして `period` を注入する。
-            // CFN テンプレ上は `MetricStat.Period` として正しく出力される。
+            // NOTE: Application Auto Scaling の TargetTrackingMetricStat は
+            // CloudFormation 仕様上 Period を持たない。評価粒度はサービス既定の
+            // 60 秒に委ね、publisher 側の 60 秒周期と合わせる。
             metrics: [
               {
                 id: "m1",
@@ -454,8 +453,7 @@ export class SagemakerStack extends Stack {
                   // SageMaker Async 系メトリクスは Sum を受理しない (公式: Average/Max/Min のみ)。
                   // SageMaker が 1 分粒度で publish するため Average は Maximum と等価。
                   stat: "Average",
-                  period: 60,
-                } as CfnScalingPolicy.TargetTrackingMetricStatProperty,
+                },
                 returnData: false,
               },
               {
@@ -469,8 +467,7 @@ export class SagemakerStack extends Stack {
                   // 複数 batch-runner task 並走時に同一 EndpointName dimension に
                   // publish された値を合算する必要があるため Sum を採用 (R2.4)。
                   stat: "Sum",
-                  period: 60,
-                } as CfnScalingPolicy.TargetTrackingMetricStatProperty,
+                },
                 returnData: false,
               },
               {
@@ -490,20 +487,6 @@ export class SagemakerStack extends Stack {
       },
     );
     Tags.of(scalingPolicy).add("yomitoku:component", "autoscaling");
-    // aws-cdk-lib 2.240.0 の `TargetTrackingMetricStatProperty` 型は CFN spec の
-    // `Period` プロパティを未だ宣言しておらず、TypeScript レベルでは値を渡せても
-    // L1 コード生成器が unknown property として silently drop する。
-    // CDK 公式の escape hatch (`addPropertyOverride`) で MetricStat.Period を
-    // 直接 CFN テンプレに注入する。CDK 型定義が更新された段階で props 直接指定に
-    // 戻すこと (Revalidation Trigger)。
-    scalingPolicy.addPropertyOverride(
-      "TargetTrackingScalingPolicyConfiguration.CustomizedMetricSpecification.Metrics.0.MetricStat.Period",
-      60,
-    );
-    scalingPolicy.addPropertyOverride(
-      "TargetTrackingScalingPolicyConfiguration.CustomizedMetricSpecification.Metrics.1.MetricStat.Period",
-      60,
-    );
 
     // --------------------------------------------------------------
     // 7b. Scale-from-Zero bootstrap
