@@ -553,7 +553,44 @@ export class BatchExecutionStack extends Stack {
     });
 
     // --- Mark* states (idempotent UpdateItem on META.status) ---
-    const buildMarkStatus = (id: string, status: string) =>
+    //
+    // COMPLETED / PARTIAL は runner の `finalize_batch_status` が
+    // status / totals / updatedAt / GSI1PK までセット済みなので、SFN 側は
+    // status の冪等再書き込みのみで十分 (totals 等を再計算すると runner の
+    // 集計値を破壊しかねない & 月境界で GSI1PK を誤更新するリスクがある)。
+    //
+    // FAILED 系は次のいずれかの経路で到達し、いずれの場合も runner が
+    // `finalize_batch_status` を呼ぶ前に異常終了している可能性がある:
+    //   - MarkFailed: AggregateResults が META.status を読んだ際に
+    //     COMPLETED/PARTIAL 以外 (= runner が finalize しなかった or
+    //     既に FAILED が書かれている)
+    //   - MarkFailedForced: RunBatchTask が Timeout / TaskFailed / States.ALL
+    //     で catch された (ECS タスクが SIGKILL / OOM / 起動失敗 等)
+    //
+    // この経路で META を放置すると以下 3 点の不整合が UX に漏れる:
+    //   1. `totals.failed=0` (API seed のまま) → 「FAILED なのに失敗件数 0」
+    //   2. `updatedAt = startedAt` のまま → 終端時刻が反映されない
+    //   3. `GSI1PK = STATUS#PROCESSING#YYYYMM` のまま →
+    //      `listBatchesByStatus` (GSI1) で FAILED 検索時に拾えず、
+    //      PROCESSING 検索に死んだバッチが混入する
+    //
+    // 失敗マーカーでは runner の `transition_batch_status` (batch_store.py)
+    // と同じ 4 フィールド (status / totals.failed / totals.inProgress /
+    // updatedAt / GSI1PK) を一括更新する。runner はインクリメンタルに totals
+    // を更新しないため、この時点で `totals.succeeded` は確定値 (通常 0) と
+    // みなしてよく、残りの未処理ファイルを全て失敗扱いとして
+    // `failed = total - succeeded`, `inProgress = 0` に補正する。
+    //
+    // GSI1PK の年月は SFN の `$$.State.EnteredTime` (ISO8601 UTC,
+    // 例 `2026-04-27T13:24:35.201Z`) を `-` で split し year/month を取り出して
+    // `STATUS#FAILED#YYYYMM` を構築する。
+    const enteredTime = JsonPath.stringAt("$$.State.EnteredTime");
+    const isoParts = JsonPath.stringSplit(enteredTime, "-");
+    const year = JsonPath.arrayGetItem(isoParts, 0);
+    const month = JsonPath.arrayGetItem(isoParts, 1);
+    const failedGsi1pk = JsonPath.format("STATUS#FAILED#{}{}", year, month);
+
+    const buildMarkSuccess = (id: string, status: string) =>
       new DynamoUpdateItem(this, id, {
         table: batchTable,
         key: { PK: batchPkKey, SK: metaSortKey },
@@ -564,10 +601,38 @@ export class BatchExecutionStack extends Stack {
         updateExpression: "SET #s = :s",
         resultPath: JsonPath.DISCARD,
       });
-    const markCompleted = buildMarkStatus("MarkCompleted", "COMPLETED");
-    const markPartial = buildMarkStatus("MarkPartial", "PARTIAL");
-    const markFailed = buildMarkStatus("MarkFailed", "FAILED");
-    const markFailedForced = buildMarkStatus("MarkFailedForced", "FAILED");
+    const buildMarkFailed = (id: string) =>
+      new DynamoUpdateItem(this, id, {
+        table: batchTable,
+        key: { PK: batchPkKey, SK: metaSortKey },
+        expressionAttributeNames: {
+          "#s": "status",
+          "#t": "totals",
+          "#failed": "failed",
+          "#total": "total",
+          "#succeeded": "succeeded",
+          "#inProgress": "inProgress",
+          "#updatedAt": "updatedAt",
+          "#GSI1PK": "GSI1PK",
+        },
+        expressionAttributeValues: {
+          ":s": DynamoAttributeValue.fromString("FAILED"),
+          ":zero": DynamoAttributeValue.fromNumber(0),
+          ":now": DynamoAttributeValue.fromString(enteredTime),
+          ":newGSI1PK": DynamoAttributeValue.fromString(failedGsi1pk),
+        },
+        updateExpression:
+          "SET #s = :s, " +
+          "#t.#failed = #t.#total - #t.#succeeded, " +
+          "#t.#inProgress = :zero, " +
+          "#updatedAt = :now, " +
+          "#GSI1PK = :newGSI1PK",
+        resultPath: JsonPath.DISCARD,
+      });
+    const markCompleted = buildMarkSuccess("MarkCompleted", "COMPLETED");
+    const markPartial = buildMarkSuccess("MarkPartial", "PARTIAL");
+    const markFailed = buildMarkFailed("MarkFailed");
+    const markFailedForced = buildMarkFailed("MarkFailedForced");
 
     // --- ReleaseBatchLock (success & error variants) ---
     const releaseBatchLock = new DynamoDeleteItem(this, "ReleaseBatchLock", {

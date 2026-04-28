@@ -49,6 +49,48 @@ function createStack(): {
   return { app, stack, template };
 }
 
+/**
+ * StateMachine の `DefinitionString` を JSON オブジェクトに復元する。
+ *
+ * CDK は `DefinitionString` を `Fn::Join` (区切り文字 "" で配列を連結) で
+ * 出力する。配列要素は string または `{Ref: ...}` 等の CFn intrinsic だが、
+ * intrinsic は CFn 解決時の値が決まるためテストでは展開できない。テスト目的
+ * ではプレースホルダ文字列に置換して JSON.parse 可能にする。
+ */
+type StateMachineDefinition = {
+  States: Record<
+    string,
+    { Parameters?: Record<string, unknown> } & Record<string, unknown>
+  >;
+  StartAt: string;
+};
+function parseStateMachineDefinition(
+  template: Template,
+): StateMachineDefinition {
+  const sms = template.findResources("AWS::StepFunctions::StateMachine");
+  const keys = Object.keys(sms);
+  if (keys.length !== 1) {
+    throw new Error(`expected exactly 1 StateMachine, got ${keys.length}`);
+  }
+  const def = sms[keys[0]].Properties.DefinitionString;
+  let str: string;
+  if (typeof def === "string") {
+    str = def;
+  } else if (def && typeof def === "object" && "Fn::Join" in def) {
+    const [_sep, parts] = (def as { "Fn::Join": [string, unknown[]] })[
+      "Fn::Join"
+    ];
+    str = parts
+      .map((p) => (typeof p === "string" ? p : "__CFN_REF__"))
+      .join("");
+  } else {
+    throw new Error(
+      `unexpected DefinitionString shape: ${JSON.stringify(def)}`,
+    );
+  }
+  return JSON.parse(str) as StateMachineDefinition;
+}
+
 describe("BatchExecutionStack", () => {
   describe("ECS Cluster", () => {
     it("ECS クラスタが 1 つ存在する", () => {
@@ -549,6 +591,73 @@ describe("BatchExecutionStack", () => {
       expect(defStr).toContain("States.TaskFailed");
       // SFN が .sync (RUN_JOB) で自動的にタスクを停止するため、
       // SFN 実行ロールには ecs:StopTask が自動付与される (IAM テスト参照)
+    });
+
+    it("MarkFailed / MarkFailedForced が totals / updatedAt / GSI1PK を補正する", () => {
+      // runner が finalize_batch_status 前に異常終了した場合、API が seed した
+      // 初期 META (status=PROCESSING, totals.failed=0, updatedAt=startedAt,
+      // GSI1PK=STATUS#PROCESSING#YYYYMM) のまま FAILED に遷移すると 3 点の
+      // UX 不整合が起きる:
+      //   1. 「FAILED なのに failed=0」
+      //   2. updatedAt が終端時刻を反映しない
+      //   3. listBatchesByStatus (GSI1) で FAILED 検索時に拾えない
+      // 失敗マーカーは status と同時に totals / updatedAt / GSI1PK を補正する。
+      const definition = parseStateMachineDefinition(createStack().template);
+      for (const id of ["MarkFailed", "MarkFailedForced"]) {
+        const state = definition.States[id];
+        expect(state, `state ${id} not found`).toBeDefined();
+        const params = state.Parameters as Record<string, unknown>;
+        const expr = params.UpdateExpression as string;
+
+        // totals 補正
+        expect(expr).toContain("#t.#failed = #t.#total - #t.#succeeded");
+        expect(expr).toContain("#t.#inProgress = :zero");
+        // updatedAt / GSI1PK 補正
+        expect(expr).toContain("#updatedAt = :now");
+        expect(expr).toContain("#GSI1PK = :newGSI1PK");
+
+        const ean = params.ExpressionAttributeNames as Record<string, string>;
+        expect(ean["#updatedAt"]).toBe("updatedAt");
+        expect(ean["#GSI1PK"]).toBe("GSI1PK");
+        expect(ean["#t"]).toBe("totals");
+        expect(ean["#failed"]).toBe("failed");
+        expect(ean["#total"]).toBe("total");
+        expect(ean["#succeeded"]).toBe("succeeded");
+        expect(ean["#inProgress"]).toBe("inProgress");
+
+        // :newGSI1PK は SFN intrinsic で STATUS#FAILED#YYYYMM を構築する
+        const eav = params.ExpressionAttributeValues as Record<string, unknown>;
+        expect(eav).toBeDefined();
+        const eavStr = JSON.stringify(eav);
+        expect(eavStr).toContain("STATUS#FAILED#");
+        expect(eavStr).toContain("$$.State.EnteredTime");
+        // :now は $$.State.EnteredTime を直接埋め込む (SFN 実行開始時刻)
+        const nowVal = eav[":now"] as Record<string, string>;
+        expect(nowVal["S.$"]).toBe("$$.State.EnteredTime");
+        // :newGSI1PK は States.Format + States.StringSplit で YYYYMM を構築
+        const gsi1Val = eav[":newGSI1PK"] as Record<string, string>;
+        expect(gsi1Val["S.$"]).toContain("States.Format");
+        expect(gsi1Val["S.$"]).toContain("States.StringSplit");
+        expect(gsi1Val["S.$"]).toContain("STATUS#FAILED#");
+      }
+    });
+
+    it("MarkCompleted / MarkPartial は status のみ更新する (runner が META を確定済み)", () => {
+      // 成功系は runner が finalize_batch_status で
+      // status / totals / updatedAt / GSI1PK を書き終えているので、SFN 側は
+      // status の冪等再書き込みのみで十分。totals/GSI1PK を再計算すると
+      // runner の集計値や月パーティションを壊す危険がある (月境界跨ぎで
+      // SFN MarkCompleted が翌月の GSI1PK で上書きしてしまうケース等)。
+      const definition = parseStateMachineDefinition(createStack().template);
+      for (const id of ["MarkCompleted", "MarkPartial"]) {
+        const state = definition.States[id];
+        expect(state, `state ${id} not found`).toBeDefined();
+        const params = state.Parameters as Record<string, unknown>;
+        const expr = params.UpdateExpression as string;
+        expect(expr).toBe("SET #s = :s");
+        const ean = params.ExpressionAttributeNames as Record<string, string>;
+        expect(Object.keys(ean)).toEqual(["#s"]);
+      }
     });
 
     it("AcquireBatchLock が ControlTable への putItem を ConditionExpression 付きで発行する", () => {
