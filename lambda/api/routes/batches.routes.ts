@@ -85,11 +85,11 @@ export const listBatchesRoute = createRoute({
 });
 
 // ---------------------------------------------------------------------------
-// GET /:batchJobId — バッチ詳細
+// GET /{batchJobId} — バッチ詳細
 // ---------------------------------------------------------------------------
 export const getBatchRoute = createRoute({
   method: "get",
-  path: "/:batchJobId",
+  path: "/{batchJobId}",
   summary: "バッチ詳細",
   description: [
     "バッチの現在のステータスと totals (total / succeeded / failed / inProgress) を返します。",
@@ -115,11 +115,11 @@ export const getBatchRoute = createRoute({
 });
 
 // ---------------------------------------------------------------------------
-// GET /:batchJobId/files — ファイル一覧
+// GET /{batchJobId}/files — ファイル一覧
 // ---------------------------------------------------------------------------
 export const listBatchFilesRoute = createRoute({
   method: "get",
-  path: "/:batchJobId/files",
+  path: "/{batchJobId}/files",
   summary: "バッチファイル一覧",
   description: [
     "バッチ内の全ファイルのステータス、メタデータ、および完了ファイルの `resultUrl` を返します。",
@@ -147,11 +147,11 @@ export const listBatchFilesRoute = createRoute({
 });
 
 // ---------------------------------------------------------------------------
-// GET /:batchJobId/process-log — process_log.jsonl 署名付き URL
+// GET /{batchJobId}/process-log — process_log.jsonl 署名付き URL
 // ---------------------------------------------------------------------------
 export const getProcessLogRoute = createRoute({
   method: "get",
-  path: "/:batchJobId/process-log",
+  path: "/{batchJobId}/process-log",
   summary: "process_log.jsonl 取得 URL",
   description:
     "終端状態（COMPLETED/PARTIAL/FAILED/CANCELLED）のバッチのみ利用可能。",
@@ -175,11 +175,11 @@ export const getProcessLogRoute = createRoute({
 });
 
 // ---------------------------------------------------------------------------
-// POST /:batchJobId/start — バッチ実行開始 (Task 2.5)
+// POST /{batchJobId}/start — バッチ実行開始 (Task 2.5)
 // ---------------------------------------------------------------------------
 export const startBatchRoute = createRoute({
   method: "post",
-  path: "/:batchJobId/start",
+  path: "/{batchJobId}/start",
   summary: "バッチ実行開始",
   description: [
     "PENDING 状態のバッチを PROCESSING へ遷移させ、BatchExecutionStateMachine を起動します。",
@@ -215,11 +215,11 @@ export const startBatchRoute = createRoute({
 });
 
 // ---------------------------------------------------------------------------
-// DELETE /:batchJobId — バッチキャンセル
+// DELETE /{batchJobId} — バッチキャンセル
 // ---------------------------------------------------------------------------
 export const cancelBatchRoute = createRoute({
   method: "delete",
-  path: "/:batchJobId",
+  path: "/{batchJobId}",
   summary: "バッチキャンセル",
   description: [
     "`PENDING` 状態のバッチを `CANCELLED` に遷移させます。",
@@ -249,11 +249,11 @@ export const cancelBatchRoute = createRoute({
 });
 
 // ---------------------------------------------------------------------------
-// POST /:batchJobId/reanalyze — 失敗ファイルの再解析
+// POST /{batchJobId}/reanalyze — 失敗ファイルの再解析
 // ---------------------------------------------------------------------------
 export const reanalyzeBatchRoute = createRoute({
   method: "post",
-  path: "/:batchJobId/reanalyze",
+  path: "/{batchJobId}/reanalyze",
   summary: "再解析バッチ作成",
   description: [
     "親バッチの `FAILED` ファイル (および `PARTIAL` バッチ内の失敗分) のみを対象とした**新しいバッチ**を作成します。",

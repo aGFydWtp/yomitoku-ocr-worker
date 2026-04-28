@@ -111,7 +111,7 @@ batchesRoutes.openapi(listBatchesRoute, async (c) => {
 });
 
 // ---------------------------------------------------------------------------
-// GET /:batchJobId — バッチ詳細
+// GET /{batchJobId} — バッチ詳細
 // ---------------------------------------------------------------------------
 batchesRoutes.openapi(getBatchRoute, async (c) => {
   const batchTableName = requireEnv("BATCH_TABLE_NAME");
@@ -128,7 +128,7 @@ batchesRoutes.openapi(getBatchRoute, async (c) => {
 });
 
 // ---------------------------------------------------------------------------
-// GET /:batchJobId/files — ファイル一覧（完了ファイルに署名付き URL を付与）
+// GET /{batchJobId}/files — ファイル一覧（完了ファイルに署名付き URL を付与）
 // ---------------------------------------------------------------------------
 batchesRoutes.openapi(listBatchFilesRoute, async (c) => {
   const batchTableName = requireEnv("BATCH_TABLE_NAME");
@@ -156,7 +156,7 @@ batchesRoutes.openapi(listBatchFilesRoute, async (c) => {
 });
 
 // ---------------------------------------------------------------------------
-// GET /:batchJobId/process-log — process_log.jsonl 署名付き URL
+// GET /{batchJobId}/process-log — process_log.jsonl 署名付き URL
 // ---------------------------------------------------------------------------
 batchesRoutes.openapi(getProcessLogRoute, async (c) => {
   const batchTableName = requireEnv("BATCH_TABLE_NAME");
@@ -181,7 +181,7 @@ batchesRoutes.openapi(getProcessLogRoute, async (c) => {
 });
 
 // ---------------------------------------------------------------------------
-// DELETE /:batchJobId — バッチキャンセル
+// DELETE /{batchJobId} — バッチキャンセル
 // ---------------------------------------------------------------------------
 batchesRoutes.openapi(cancelBatchRoute, async (c) => {
   const batchTableName = requireEnv("BATCH_TABLE_NAME");
@@ -209,7 +209,7 @@ batchesRoutes.openapi(cancelBatchRoute, async (c) => {
 });
 
 // ---------------------------------------------------------------------------
-// POST /:batchJobId/reanalyze — 失敗ファイルの再解析
+// POST /{batchJobId}/reanalyze — 失敗ファイルの再解析
 // ---------------------------------------------------------------------------
 batchesRoutes.openapi(reanalyzeBatchRoute, async (c) => {
   const batchTableName = requireEnv("BATCH_TABLE_NAME");
@@ -276,7 +276,7 @@ batchesRoutes.openapi(reanalyzeBatchRoute, async (c) => {
 });
 
 // ---------------------------------------------------------------------------
-// POST /:batchJobId/start — バッチ実行開始 (Task 2.5 / H2)
+// POST /{batchJobId}/start — バッチ実行開始 (Task 2.5 / H2)
 // ---------------------------------------------------------------------------
 batchesRoutes.openapi(startBatchRoute, async (c) => {
   const batchTableName = requireEnv("BATCH_TABLE_NAME");
