@@ -178,6 +178,29 @@ class AsyncInvoker:
         # パス計算で参照する。Office 形式のみ entry あり、ネイティブ PDF 入力は
         # ``dict.get(name, name)`` で identity 解決される。
         self._local_to_original: dict[str, str] = dict(local_to_original or {})
+        # async-endpoint-scale-in-protection R2.1 / R3.6:
+        # ``run_batch`` 内で従来ローカル変数だった ``in_flight`` (``InferenceId``
+        # → ``file_stem`` 写像) を ``InflightPublisher`` から read-only 観測
+        # するためインスタンス属性に昇格する。``inflight_count()`` getter のみ
+        # が外部参照経路となり、本属性自体は ``run_batch`` / ``_drain_queue``
+        # の内部実装に閉じる。``run_batch`` 開始時に空 dict であることを
+        # 保証するため、``run_batch`` 終了時に ``clear()`` で初期化を戻す。
+        self._in_flight: dict[str, str] = {}
+
+    # ------------------------------------------------------------------
+    # async-endpoint-scale-in-protection: in-flight 数の read-only 観測 API
+    # ------------------------------------------------------------------
+    def inflight_count(self) -> int:
+        """現在 in-flight として保持している ``InferenceId`` 数を返す。
+
+        ``InflightPublisher`` が ``provider`` callable として呼び出し、
+        CloudWatch カスタムメトリクス ``InflightInvocations`` の datapoint
+        として publish する。``len(dict)`` は CPython の GIL 下で atomic な
+        ため publisher thread と ``run_batch`` (asyncio main thread) の並走
+        下でも破綻しない (R3.6: 件数の精度に厳密性は要らない)。read-only:
+        ``_in_flight`` の中身は返さず・改変しない。
+        """
+        return len(self._in_flight)
 
     # ------------------------------------------------------------------
     # Task 3.1: S3 ステージング + invoke_endpoint_async
@@ -356,108 +379,122 @@ class AsyncInvoker:
         deadline = time.monotonic() + deadline_seconds
         result = BatchResult()
 
-        # in_flight: InferenceId → file_stem
-        in_flight: dict[str, str] = {}
-        # stem → 元の入力 Path。process_log の file_path 欄と
-        # 成功時の output パス生成で使う。
-        stem_to_input: dict[str, Path] = {}
-        pending: list[Path] = list(input_files)
+        # in_flight 状態は ``self._in_flight`` (InferenceId → file_stem) で
+        # 保持する。``run_batch`` は同一 ``AsyncInvoker`` インスタンスでの
+        # 二度呼び出しを想定していないが、防御的に開始時点で空にする。
+        # 並行 ``run_batch`` 呼び出しはサポートしない (publisher の観測値が
+        # 二バッチ合計になる)。
+        self._in_flight.clear()
+        try:
+            # stem → 元の入力 Path。process_log の file_path 欄と
+            # 成功時の output パス生成で使う。
+            stem_to_input: dict[str, Path] = {}
+            pending: list[Path] = list(input_files)
 
-        while pending or in_flight:
-            if time.monotonic() >= deadline:
-                break
+            while pending or self._in_flight:
+                if time.monotonic() >= deadline:
+                    break
 
-            # Phase A: in-flight 上限まで invoke を発行
-            while pending and len(in_flight) < self.max_concurrent:
-                file_path = pending.pop(0)
-                file_stem = file_path.stem
-                stem_to_input[file_stem] = file_path
-                try:
-                    inference_id = self._build_inference_id(batch_job_id, file_stem)
-                    input_location = self._stage_input(file_path)
-                    self._invoke_async(
-                        inference_id=inference_id,
-                        input_location=input_location,
-                        content_type=_guess_content_type(file_path),
-                    )
-                except ClientError as exc:
-                    # 4xx は即時失敗確定 (リトライなし)。エラーコード + message を残す
-                    code = exc.response.get("Error", {}).get("Code", "ClientError")
-                    message = exc.response.get("Error", {}).get("Message", str(exc))
-                    reason = f"{code}: {message}"
-                    result.failed_files.append((file_stem, reason))
-                    self._append_log_entry(
-                        log_path=log_path,
-                        file_path=file_path,
-                        output_path=None,
-                        success=False,
-                        error=reason,
-                    )
-                    continue
-                except (OSError, ValueError) as exc:
-                    # 入力 read 失敗 / InferenceId 長さ超過 / prefix 逸脱等
-                    reason = str(exc)
-                    result.failed_files.append((file_stem, reason))
-                    self._append_log_entry(
-                        log_path=log_path,
-                        file_path=file_path,
-                        output_path=None,
-                        success=False,
-                        error=reason,
-                    )
-                    continue
-                in_flight[inference_id] = file_stem
+                # Phase A: in-flight 上限まで invoke を発行
+                while pending and len(self._in_flight) < self.max_concurrent:
+                    file_path = pending.pop(0)
+                    file_stem = file_path.stem
+                    stem_to_input[file_stem] = file_path
+                    try:
+                        inference_id = self._build_inference_id(
+                            batch_job_id, file_stem
+                        )
+                        input_location = self._stage_input(file_path)
+                        self._invoke_async(
+                            inference_id=inference_id,
+                            input_location=input_location,
+                            content_type=_guess_content_type(file_path),
+                        )
+                    except ClientError as exc:
+                        # 4xx は即時失敗確定 (リトライなし)。エラーコード + message を残す
+                        code = exc.response.get("Error", {}).get(
+                            "Code", "ClientError"
+                        )
+                        message = exc.response.get("Error", {}).get(
+                            "Message", str(exc)
+                        )
+                        reason = f"{code}: {message}"
+                        result.failed_files.append((file_stem, reason))
+                        self._append_log_entry(
+                            log_path=log_path,
+                            file_path=file_path,
+                            output_path=None,
+                            success=False,
+                            error=reason,
+                        )
+                        continue
+                    except (OSError, ValueError) as exc:
+                        # 入力 read 失敗 / InferenceId 長さ超過 / prefix 逸脱等
+                        reason = str(exc)
+                        result.failed_files.append((file_stem, reason))
+                        self._append_log_entry(
+                            log_path=log_path,
+                            file_path=file_path,
+                            output_path=None,
+                            success=False,
+                            error=reason,
+                        )
+                        continue
+                    self._in_flight[inference_id] = file_stem
 
-            if not in_flight:
-                # 全件 invoke 前エラー or 全件完了
-                break
+                if not self._in_flight:
+                    # 全件 invoke 前エラー or 全件完了
+                    break
 
-            # Phase B: SQS を交互に polling して完了通知を回収
-            self._drain_queue(
-                queue_url=self.success_queue_url,
-                in_flight=in_flight,
-                stem_to_input=stem_to_input,
-                result=result,
-                output_dir=output_dir,
-                log_path=log_path,
-                is_failure=False,
-            )
-            self._drain_queue(
-                queue_url=self.failure_queue_url,
-                in_flight=in_flight,
-                stem_to_input=stem_to_input,
-                result=result,
-                output_dir=output_dir,
-                log_path=log_path,
-                is_failure=True,
-            )
-
-        # deadline 超過で抜けた場合、残 in-flight をタイムアウト扱い
-        for file_stem in sorted(in_flight.values()):
-            result.in_flight_timeout.append(file_stem)
-            file_path = stem_to_input.pop(file_stem, None)
-            if file_path is not None:
-                self._append_log_entry(
+                # Phase B: SQS を交互に polling して完了通知を回収
+                self._drain_queue(
+                    queue_url=self.success_queue_url,
+                    stem_to_input=stem_to_input,
+                    result=result,
+                    output_dir=output_dir,
                     log_path=log_path,
-                    file_path=file_path,
-                    output_path=None,
-                    success=False,
-                    error="timeout: deadline exceeded before Async notification",
+                    is_failure=False,
                 )
-        return result
+                self._drain_queue(
+                    queue_url=self.failure_queue_url,
+                    stem_to_input=stem_to_input,
+                    result=result,
+                    output_dir=output_dir,
+                    log_path=log_path,
+                    is_failure=True,
+                )
+
+            # deadline 超過で抜けた場合、残 in-flight をタイムアウト扱い
+            for file_stem in sorted(self._in_flight.values()):
+                result.in_flight_timeout.append(file_stem)
+                file_path = stem_to_input.pop(file_stem, None)
+                if file_path is not None:
+                    self._append_log_entry(
+                        log_path=log_path,
+                        file_path=file_path,
+                        output_path=None,
+                        success=False,
+                        error="timeout: deadline exceeded before Async notification",
+                    )
+            return result
+        finally:
+            # 次回 ``run_batch`` 呼び出しおよび ``inflight_count()`` の
+            # 返値が残骸を持たないよう、確実に空に戻す (R3.6: 件数の
+            # 精度に厳密性は要らないが、終了後の永続的な過大値は避ける)。
+            self._in_flight.clear()
 
     def _drain_queue(
         self,
         *,
         queue_url: str,
-        in_flight: dict[str, str],
         stem_to_input: dict[str, Path],
         result: BatchResult,
         output_dir: Path,
         log_path: Path,
         is_failure: bool,
     ) -> None:
-        """1 回 ``_poll_queue`` を実行し、結果を result / in_flight に反映する。
+        """1 回 ``_poll_queue`` を実行し、結果を result / ``self._in_flight``
+        に反映する。
 
         成功通知を受けた場合は ``responseParameters.outputLocation`` から
         JSON を S3 経由でダウンロードし、``output_dir/{output_filename}.json``
@@ -472,10 +509,10 @@ class AsyncInvoker:
         """
         notifications = self._poll_queue(
             queue_url=queue_url,
-            in_flight=set(in_flight.keys()),
+            in_flight=set(self._in_flight.keys()),
         )
         for notif in notifications:
-            file_stem = in_flight.pop(notif.inference_id, None)
+            file_stem = self._in_flight.pop(notif.inference_id, None)
             if file_stem is None:
                 # 別 iteration で既に取り込み済 (重複配信)。at-least-once 耐性。
                 continue

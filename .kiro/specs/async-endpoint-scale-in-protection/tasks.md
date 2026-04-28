@@ -18,7 +18,7 @@
   - _Requirements: 1.3, 2.1, 2.2, 2.3, 2.5, 2.6, 2.7_
   - _Boundary: lambda/batch-runner/inflight_publisher.py_
 
-- [ ] 2.2 (P) `AsyncInvoker` の `in_flight` 状態を read-only で外部から観測可能にする
+- [x] 2.2 (P) `AsyncInvoker` の `in_flight` 状態を read-only で外部から観測可能にする
   - `run_batch` ローカル変数 `in_flight` をインスタンス属性 `self._in_flight: dict[str, str]` に昇格し、`__init__` で空 dict を初期化する
   - `inflight_count(self) -> int` getter (`return len(self._in_flight)`) を追加する。read-only で `_in_flight` の中身を改変しない
   - `Phase A` での `_in_flight[inference_id] = file_stem` と `_drain_queue` 経由の `del _in_flight[inference_id]` を新属性参照に書き換える (既存挙動と等価)
