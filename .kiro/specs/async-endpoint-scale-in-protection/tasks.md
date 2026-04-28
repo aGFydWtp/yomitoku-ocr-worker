@@ -1,7 +1,7 @@
 # Implementation Plan
 
 - [ ] 1. Foundation: コンテキスト定義のガードコメント整備
-- [ ] 1.1 `asyncMaxCapacity` 引き上げ時の前提崩れを下流コードへ伝える誘導コメントを context 定義に追加する
+- [x] 1.1 `asyncMaxCapacity` 引き上げ時の前提崩れを下流コードへ伝える誘導コメントを context 定義に追加する
   - `AsyncRuntimeContext` の `asyncMaxCapacity` フィールドに「2 以上に変更すると `async-endpoint-scale-in-protection` spec の math 式前提が崩れるため、本 spec のポリシー再設計が必要」を明記する
   - `DEFAULT_ASYNC_RUNTIME_CONTEXT.asyncMaxCapacity` の既定値 (1) 近傍にも同主旨の short コメントを残す
   - 当該ファイルを `pnpm tsc --noEmit` で型チェックが通ることをローカル確認できる状態にする
